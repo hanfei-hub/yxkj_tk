@@ -1127,29 +1127,22 @@ class ProductCard(QFrame):
     def __init__(self, item: dict[str, Any], index: int) -> None:
         super().__init__()
         self.setObjectName("ProductCard")
-        self.setMinimumSize(220, 280)
-        self.setMaximumWidth(260)
+        self.setMinimumSize(190, 238)
+        self.setMaximumWidth(220)
 
         title = str(item.get("title") or item.get("derived_title") or "未命名商品")
-        category = str(item.get("category") or "智能推荐")
         price = item.get("price") or item.get("suggested_price_min") or 0
         sales = int(float(item.get("sales_count") or (4200 + index * 850)))
-        ai_score = int(float(item.get("ai_score") or item.get("weighted_score") or max(80, 96 - index)))
-        rating = float(item.get("rating") or round(4.9 - (index % 5) * 0.1, 1))
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(10)
-        layout.addWidget(create_product_image(str(item.get("image_url") or ""), "📦", 206, 136))
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        layout.addWidget(create_product_image(str(item.get("image_url") or ""), "📦", 176, 118))
 
         name = QLabel(title)
         name.setObjectName("ProductName")
         name.setWordWrap(True)
         layout.addWidget(name)
-
-        tag = QLabel(category)
-        tag.setObjectName("CategoryTag")
-        layout.addWidget(tag)
 
         metrics = QHBoxLayout()
         price_label = QLabel(format_jpy_price(price))
@@ -1161,16 +1154,6 @@ class ProductCard(QFrame):
         metrics.addWidget(sales_label)
         layout.addLayout(metrics)
 
-        footer = QHBoxLayout()
-        rating_label = QLabel(f"★ {rating:.1f}")
-        rating_label.setObjectName("RatingText")
-        score_label = QLabel(f"AI评分: {ai_score}")
-        score_label.setObjectName("AiScore")
-        footer.addWidget(rating_label)
-        footer.addStretch()
-        footer.addWidget(score_label)
-        layout.addLayout(footer)
-
 
 class StudentSelectionPage(Page):
     def __init__(self, gateway: DataGateway) -> None:
@@ -1181,13 +1164,6 @@ class StudentSelectionPage(Page):
         self.layout.setSpacing(18)
 
         self.layout.addWidget(make_title("🤖 AI 智能选品", "根据日本 TK 市场趋势、商品评论和选品属性，生成可审核的衍生品方向。"))
-
-        overview = QHBoxLayout()
-        overview.setSpacing(14)
-        overview.addWidget(metric_card("今日推荐", "10", "AI 选品候选"))
-        overview.addWidget(metric_card("日区热销", "实时", "FastMoss 数据入口"))
-        overview.addWidget(metric_card("审核闭环", "可追踪", "属性权重沉淀"))
-        self.layout.addLayout(overview)
 
         chat_box = QFrame()
         chat_box.setObjectName("SelectionHero")
@@ -1230,7 +1206,7 @@ class StudentSelectionPage(Page):
         content.setObjectName("ProductGridWrap")
         self.grid = QGridLayout(content)
         self.grid.setContentsMargins(4, 4, 16, 18)
-        self.grid.setHorizontalSpacing(34)
+        self.grid.setHorizontalSpacing(22)
         self.grid.setVerticalSpacing(18)
         scroll.setWidget(content)
         self.layout.addWidget(scroll, 1)
@@ -1262,11 +1238,12 @@ class StudentSelectionPage(Page):
             child = self.grid.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
-        for index, item in enumerate(self.load_card_items()):
-            row = index // 4
-            col = index % 4
+        items = self.load_card_items()
+        for index, item in enumerate(items):
+            row = index // 5
+            col = index % 5
             self.grid.addWidget(ProductCard(item, index), row, col)
-        self.grid.setRowStretch(3, 1)
+        self.grid.setRowStretch((len(items) // 5) + 1, 1)
 
 
 class TeacherProductCard(QFrame):
