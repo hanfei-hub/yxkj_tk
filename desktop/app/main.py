@@ -1215,7 +1215,7 @@ def format_jpy_price(value: Any) -> str:
         amount = float(value or 0)
     except (TypeError, ValueError):
         amount = 0
-    return f"￥{amount:,.0f}"
+    return f"{amount:,.0f}円"
 
 
 IMAGE_CACHE: dict[tuple[str, int, int], bytes] = {}
@@ -1333,6 +1333,8 @@ class ProductCard(QFrame):
         name = QLabel(title)
         name.setObjectName("ProductName")
         name.setWordWrap(True)
+        name.setToolTip(title)
+        name.setText(title[:10])
         layout.addWidget(name)
 
         metrics = QHBoxLayout()
@@ -1865,10 +1867,7 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             background: $panel2; border: 1px solid $border; border-radius: 14px;
         }
         #ProductCard:hover, #TeacherProductCard:hover { border: 1px solid $accent; }
-        #ProductImage, #TeacherProductImage {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 $image_a, stop:1 $image_b);
-            border-radius: 12px;
-        }
+        #ProductImage, #TeacherProductImage { background: transparent; border-radius: 0; }
         #ProductIcon {
             background: transparent; font-size: 38px;
         }
