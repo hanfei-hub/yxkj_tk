@@ -56,7 +56,7 @@ def request_new_listed(config: ThirdPartyConfig, page: int = 1, page_size: int =
     token = config.access_key_encrypted or config.secret_key_encrypted
     base_url = (config.api_base_url or FASTMOSS_BASE_URL).rstrip("/")
     request_date = (date.today() - timedelta(days=4)).strftime("%Y-%m-%d")
-    extra_config = parse_extra_config(getattr(config, "extra_config_json", "") or config.remark)
+    extra_config = parse_extra_config(config.remark)
     request_date = str(extra_config.get("date") or extra_config.get("rank_date") or request_date)
     payload = {
         "filter": {
@@ -113,6 +113,11 @@ def extract_items(data: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def clean_text(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return text.replace("\ufffd", "").strip()
+
+
 def parse_price(value: Any) -> float:
     if value is None:
         return 0
@@ -141,7 +146,7 @@ CATEGORY_TRANSLATIONS = {
     "Stress Relief Toys": "解压玩具",
     "Dolls & Stuffed Toys": "娃娃与毛绒玩具",
     "Dolls": "娃娃",
-    "Action & Toy Figures": "手办与玩偶",
+    "Action & Toy Figures": "手办与玩具公仔",
     "Womenswear & Underwear": "女装与内衣",
     "Women's Bottoms": "女士下装",
     "Trousers": "长裤",
@@ -168,16 +173,37 @@ def translate_category(category: str) -> str:
 
 
 def get_default_model_config(db: Session) -> ModelConfig | None:
+    default_config = db.scalar(
+        select(ModelConfig)
+        .where(
+            ModelConfig.status == 1,
+            ModelConfig.is_default == 1,
+            ModelConfig.api_key_encrypted != "",
+            ModelConfig.base_url != "",
+            ModelConfig.model_name != "",
+        )
+        .order_by(ModelConfig.id.desc())
+    )
+    if default_config:
+        return default_config
     return db.scalar(
-        select(ModelConfig).where(ModelConfig.status == 1, ModelConfig.is_default == 1).order_by(ModelConfig.id.desc())
+        select(ModelConfig)
+        .where(
+            ModelConfig.status == 1,
+            ModelConfig.api_key_encrypted != "",
+            ModelConfig.base_url != "",
+            ModelConfig.model_name != "",
+        )
+        .order_by(ModelConfig.id.desc())
     )
 
 
 def translate_to_chinese(db: Session, text: str) -> str:
+    text = clean_text(text)
     if not text:
         return text
     config = get_default_model_config(db)
-    if not config or not config.api_key_encrypted or not config.base_url or not config.model_name:
+    if not config:
         return text
     endpoint = config.base_url.rstrip("/")
     if not endpoint.endswith("/chat/completions"):
@@ -244,14 +270,14 @@ def upsert_new_listed_products(db: Session, raw: dict[str, Any]) -> int:
         external_id = str(
             pick_value(item, ["product_id", "id", "goods_id", "item_id", "productId"], f"fastmoss_{request_date}_{index}")
         )
-        original_title = str(pick_value(item, ["title", "product_title", "name", "productName"], "未命名商品"))
+        original_title = clean_text(pick_value(item, ["title", "product_title", "name", "productName"], "未命名商品"))
         product = FmProduct(fm_product_id=external_id)
         db.add(product)
         product.region = "JP"
         product.platform = "TikTok"
         product.list_type = "new"
         product.title = translate_to_chinese(db, original_title)
-        product.image_url = str(pick_value(item, ["image_url", "cover", "img", "image", "product_image"], ""))
+        product.image_url = clean_text(pick_value(item, ["image_url", "cover", "img", "image", "product_image"], ""))
         product.price = parse_price(pick_value(item, ["price", "real_price", "sale_price", "product_price"], 0))
         product.currency = "JPY"
         product.sales_count = int(
@@ -268,7 +294,7 @@ def upsert_new_listed_products(db: Session, raw: dict[str, Any]) -> int:
         product.category = translate_category(parse_category(pick_value(item, ["category", "category_name", "cate_name"], "")))
         product.shop_name = parse_shop_name(pick_value(item, ["shop", "shop_name", "seller_name", "store_name"], ""))
         product.comment_count = int(float(pick_value(item, ["comment_count", "comments", "review_count"], 0) or 0))
-        product.source_url = str(pick_value(item, ["source_url", "url", "product_url"], ""))
+        product.source_url = clean_text(pick_value(item, ["source_url", "url", "product_url"], ""))
         product.data_date = request_date
         product.raw_data = json.dumps({"original_title": original_title, "fastmoss": item}, ensure_ascii=False)
         count += 1

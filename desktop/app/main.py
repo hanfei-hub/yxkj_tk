@@ -1059,15 +1059,18 @@ class ImageLoadTask(QRunnable):
                 headers={"User-Agent": "Mozilla/5.0 TKSelectionAssistant/1.0"},
             )
             response.raise_for_status()
-            image_obj = Image.open(BytesIO(response.content))
-            image_obj = ImageOps.exif_transpose(image_obj).convert("RGBA")
-            image_obj.thumbnail((self.width, self.height), Image.Resampling.LANCZOS)
-            png_buffer = BytesIO()
-            image_obj.save(png_buffer, format="PNG", optimize=True)
-            content = png_buffer.getvalue()
+            try:
+                image_obj = Image.open(BytesIO(response.content))
+                image_obj = ImageOps.exif_transpose(image_obj).convert("RGBA")
+                image_obj.thumbnail((self.width, self.height), Image.Resampling.LANCZOS)
+                png_buffer = BytesIO()
+                image_obj.save(png_buffer, format="PNG", optimize=True)
+                content = png_buffer.getvalue()
+            except OSError:
+                content = response.content
             IMAGE_CACHE[cache_key] = content
             self.signals.loaded.emit(self.url, self.width, self.height, content)
-        except (requests.RequestException, OSError):
+        except requests.RequestException:
             self.signals.loaded.emit(self.url, self.width, self.height, b"")
 
 
@@ -1114,7 +1117,9 @@ def create_product_image(url: str, fallback: str, width: int = 206, height: int 
         pixmap = pixmap_from_bytes(content)
         if not pixmap.isNull():
             label.setText("")
-            label.setPixmap(pixmap)
+            label.setPixmap(pixmap.scaled(width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        elif url:
+            label.setText("图片加载失败")
 
     signals = ImageLoadSignals()
     signals.loaded.connect(apply_image)
