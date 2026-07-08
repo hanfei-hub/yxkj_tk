@@ -1,12 +1,13 @@
 ﻿from __future__ import annotations
 
 import sys
+import json
 from io import BytesIO
 from string import Template
 from typing import Any
 
 import requests
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QPixmap
 from PIL import Image, ImageOps
 from PySide6.QtWidgets import (
@@ -147,6 +148,7 @@ class DataGateway:
         self.client = ApiClient()
         self.offline = False
         self.user: dict[str, Any] | None = None
+        self.settings = QSettings("YXKJ", "TKCrossBorderAssistant")
         self.offline_model_configs = [
             {
                 "id": 1,
@@ -162,12 +164,43 @@ class DataGateway:
                 "remark": "",
             }
         ]
+        self.restore_session()
+
+    def restore_session(self) -> None:
+        token = self.settings.value("auth/token", "", str)
+        raw_user = self.settings.value("auth/user", "", str)
+        offline = self.settings.value("auth/offline", False, bool)
+        if not raw_user:
+            return
+        try:
+            user = json.loads(raw_user)
+        except (TypeError, ValueError):
+            self.clear_session()
+            return
+        if not isinstance(user, dict):
+            self.clear_session()
+            return
+        self.user = user
+        self.offline = bool(offline)
+        if token and not self.offline:
+            self.client.token = token
+
+    def save_session(self) -> None:
+        self.settings.setValue("auth/user", json.dumps(self.user or {}, ensure_ascii=False))
+        self.settings.setValue("auth/token", self.client.token or "")
+        self.settings.setValue("auth/offline", self.offline)
+        self.settings.sync()
+
+    def clear_session(self) -> None:
+        self.settings.remove("auth")
+        self.settings.sync()
 
     def login(self, username: str, password: str) -> dict[str, Any]:
         try:
             data = self.client.login(username, password)
             self.offline = False
             self.user = data["user"]
+            self.save_session()
             return self.user
         except ApiError:
             demo = MOCK_USERS.get(username)
@@ -175,6 +208,7 @@ class DataGateway:
                 raise
             self.offline = True
             self.user = demo["user"]
+            self.save_session()
             return self.user
 
     def hot_products(self) -> list[dict[str, Any]]:
@@ -551,6 +585,8 @@ class MainWindow(QMainWindow):
     def __init__(self, gateway: DataGateway, user: dict[str, Any] | None = None) -> None:
         super().__init__()
         self.gateway = gateway
+        if user is None:
+            user = self.gateway.user
         if user is None:
             self.gateway.offline = True
         self.user = user
@@ -1257,48 +1293,30 @@ class TeacherProductCard(QFrame):
         self.product = product
         self.on_open = on_open
         self.setObjectName("TeacherProductCard")
-        self.setMinimumSize(260, 250)
-        self.setMaximumWidth(320)
+        self.setMinimumSize(178, 255)
+        self.setMaximumWidth(210)
 
         title = str(product.get("title") or "未命名原商品")
-        category = str(product.get("category") or "未分类")
         price = product.get("price") or 0
         sales = int(float(product.get("sales_count") or 0))
-        rank_no = product.get("rank_no") or "-"
-        derived_count = product.get("derived_count") or 0
-        pending_count = product.get("pending_count") or 0
-        comment_count = product.get("comment_count") or 0
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
-        top = QHBoxLayout()
-        rank = QLabel(f"#{rank_no}")
-        rank.setObjectName("RankBadge")
-        category_label = QLabel(category)
-        category_label.setObjectName("CategoryTag")
-        top.addWidget(rank)
-        top.addStretch()
-        top.addWidget(category_label)
-        layout.addLayout(top)
-
-        layout.addWidget(create_product_image(str(product.get("image_url") or ""), "📦", 230, 148))
+        layout.addWidget(create_product_image(str(product.get("image_url") or ""), "📦", 158, 104))
 
         name = QLabel(title)
         name.setObjectName("ProductName")
         name.setWordWrap(True)
         layout.addWidget(name)
 
-        metrics = QGridLayout()
-        metrics.setHorizontalSpacing(10)
-        metrics.setVerticalSpacing(8)
-        metrics.addWidget(self.metric("价格", format_jpy_price(price)), 0, 0)
-        metrics.addWidget(self.metric("销量", f"{sales:,} 个"), 0, 1)
-        metrics.addWidget(self.metric("衍生品", str(derived_count)), 1, 0)
-        metrics.addWidget(self.metric("待审核", str(pending_count)), 1, 1)
-        metrics.addWidget(self.metric("评论", str(comment_count)), 2, 0)
+        metrics = QHBoxLayout()
+        metrics.setSpacing(8)
+        metrics.addWidget(self.metric("价格", format_jpy_price(price)))
+        metrics.addWidget(self.metric("销量", f"{sales:,} 个"))
         layout.addLayout(metrics)
+        layout.addStretch()
 
         open_button = QPushButton("查看衍生品")
         open_button.setObjectName("PrimaryAction")
@@ -1353,8 +1371,8 @@ class TeacherDashboardPage(Page):
         content.setObjectName("ProductGridWrap")
         self.grid = QGridLayout(content)
         self.grid.setContentsMargins(4, 4, 16, 18)
-        self.grid.setHorizontalSpacing(28)
-        self.grid.setVerticalSpacing(18)
+        self.grid.setHorizontalSpacing(14)
+        self.grid.setVerticalSpacing(16)
         scroll.setWidget(content)
         self.layout.addWidget(scroll, 1)
 
@@ -1374,9 +1392,10 @@ class TeacherDashboardPage(Page):
             child = self.grid.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
+        columns = 6
         for index, product in enumerate(self.products):
-            self.grid.addWidget(TeacherProductCard(product, self.open_product), index // 3, index % 3)
-        self.grid.setRowStretch((len(self.products) // 3) + 1, 1)
+            self.grid.addWidget(TeacherProductCard(product, self.open_product), index // columns, index % columns)
+        self.grid.setRowStretch((len(self.products) // columns) + 1, 1)
 
     def open_product(self, product: dict[str, Any]) -> None:
         dialog = DerivedDialog(self.gateway, product, self)
