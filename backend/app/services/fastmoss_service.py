@@ -233,11 +233,13 @@ def clear_old_fastmoss_products(db: Session) -> None:
     db.execute(delete(FmProduct).where(FmProduct.id.in_(product_ids)))
 
 
-def upsert_new_listed_products(db: Session, raw: dict[str, Any]) -> int:
+def upsert_new_listed_products(db: Session, raw: dict[str, Any]) -> dict[str, int]:
     items = extract_items(raw)
     request_date = str(raw.get("request", {}).get("filter", {}).get("date_info", {}).get("value", ""))
     clear_old_fastmoss_products(db)
     count = 0
+    translation_success_count = 0
+    translation_failed_count = 0
     for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
@@ -250,7 +252,12 @@ def upsert_new_listed_products(db: Session, raw: dict[str, Any]) -> int:
         product.region = "JP"
         product.platform = "TikTok"
         product.list_type = "new"
-        product.title = translate_to_chinese(db, original_title)
+        translated_title = translate_to_chinese(db, original_title)
+        product.title = translated_title
+        if translated_title and translated_title != original_title:
+            translation_success_count += 1
+        else:
+            translation_failed_count += 1
         product.image_url = clean_text(pick_value(item, ["image_url", "cover", "img", "image", "product_image"], ""))
         product.price = parse_price(pick_value(item, ["price", "real_price", "sale_price", "product_price"], 0))
         product.currency = "JPY"
@@ -273,4 +280,9 @@ def upsert_new_listed_products(db: Session, raw: dict[str, Any]) -> int:
         product.raw_data = json.dumps({"original_title": original_title, "fastmoss": item}, ensure_ascii=False)
         count += 1
     db.commit()
-    return count
+    return {
+        "requested_count": len(items),
+        "synced_count": count,
+        "translation_success_count": translation_success_count,
+        "translation_failed_count": translation_failed_count,
+    }

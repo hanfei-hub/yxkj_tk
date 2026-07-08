@@ -7,6 +7,7 @@ from app.models.entities import (
     DailyRecommendation,
     DerivedProductAttributeScore,
     DerivedProductRecommendation,
+    FastMossSyncLog,
     FmProduct,
     ModelConfig,
     SelectionAttribute,
@@ -160,4 +161,23 @@ def review_to_dict(item: TeacherReviewRecord) -> dict[str, Any]:
         "review_comment": item.review_comment,
         "review_snapshot": item.review_snapshot,
         "created_at": fmt_dt(item.created_at),
+    }
+
+
+def fastmoss_sync_log_to_dict(item: FastMossSyncLog) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "status": item.status,
+        "request_date": item.request_date,
+        "page": item.page,
+        "pagesize": item.pagesize,
+        "requested_count": item.requested_count,
+        "synced_count": item.synced_count,
+        "translation_success_count": item.translation_success_count,
+        "translation_failed_count": item.translation_failed_count,
+        "error_message": item.error_message,
+        "request_snapshot": item.request_snapshot,
+        "response_snapshot": item.response_snapshot,
+        "started_at": fmt_dt(item.started_at),
+        "finished_at": fmt_dt(item.finished_at),
     }

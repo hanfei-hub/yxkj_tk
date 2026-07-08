@@ -55,6 +55,11 @@ Import behavior:
 - Saves image URL, title, price, currency, sales count, rank, category, shop, source URL, and raw data.
 - Currency is saved as `JPY`.
 - Title translation tries to use a usable model config.
+- Each sync writes one row to `fastmoss_sync_logs`, including request date, requested count, synced count, translation success/failure count, status, and error message.
+
+`GET /api/fastmoss/sync-logs?limit=20`
+
+Admin-only endpoint for reading recent FastMoss sync records.
 
 ## Product APIs
 

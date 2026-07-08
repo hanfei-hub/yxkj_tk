@@ -166,3 +166,22 @@ class DailyRecommendation(Base):
     reason_summary: Mapped[str] = mapped_column(Text, default="")
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class FastMossSyncLog(Base):
+    __tablename__ = "fastmoss_sync_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    request_date: Mapped[str] = mapped_column(String(32), default="")
+    page: Mapped[int] = mapped_column(Integer, default=1)
+    pagesize: Mapped[int] = mapped_column(Integer, default=20)
+    requested_count: Mapped[int] = mapped_column(Integer, default=0)
+    synced_count: Mapped[int] = mapped_column(Integer, default=0)
+    translation_success_count: Mapped[int] = mapped_column(Integer, default=0)
+    translation_failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    request_snapshot: Mapped[str] = mapped_column(Text, default="{}")
+    response_snapshot: Mapped[str] = mapped_column(Text, default="{}")
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
