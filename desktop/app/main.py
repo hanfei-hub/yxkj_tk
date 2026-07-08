@@ -8,7 +8,7 @@ from typing import Any
 
 import requests
 from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QPixmap
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PIL import Image, ImageOps
 from PySide6.QtWidgets import (
     QApplication,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSlider,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -665,6 +666,7 @@ class MainWindow(QMainWindow):
         self.add_page("模型配置", SimpleConfigPage("模型配置", self.gateway.model_configs, ["配置名称", "服务商", "Base URL", "模型", "Key", "状态", "默认"], self.gateway, "model"), "🤖")
         self.add_page("第三方 API", SimpleConfigPage("第三方 API 配置", self.gateway.third_party_configs, ["配置名称", "服务类型", "状态"], self.gateway, "third"), "🔌")
         self.add_page("选品属性", AttributePage(self.gateway), "⚖️")
+        self.add_page("像素尺子", PixelRulerPage(), "📏")
         self.add_page("主题皮肤", ThemePage(self.apply_theme), "🎨")
 
     def update_login_status(self) -> None:
@@ -1042,6 +1044,155 @@ class ThemePage(Page):
 
     def change_theme(self) -> None:
         self.on_theme_change(str(self.theme_select.currentData()))
+
+
+class PixelRulerCanvas(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.orientation = "horizontal"
+        self.ruler_length = 500
+        self.ruler_thickness = 96
+        self.setMinimumSize(220, 80)
+        self.update_size()
+
+    def update_values(self, orientation: str, length: int, thickness: int) -> None:
+        self.orientation = orientation
+        self.ruler_length = int(length)
+        self.ruler_thickness = int(thickness)
+        self.update_size()
+        self.update()
+
+    def update_size(self) -> None:
+        if self.orientation == "vertical":
+            self.setFixedSize(self.ruler_thickness, self.ruler_length)
+        else:
+            self.setFixedSize(self.ruler_length, self.ruler_thickness)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        painter.fillRect(self.rect(), QColor("#ffffff"))
+        painter.setPen(QPen(QColor("#2563eb"), 1))
+        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+
+        is_vertical = self.orientation == "vertical"
+        major = self.height() if is_vertical else self.width()
+        cross = self.width() if is_vertical else self.height()
+        painter.setPen(QPen(QColor("#0f172a"), 1))
+        for pos in range(0, major + 1):
+            if pos % 100 == 0:
+                tick = cross
+            elif pos % 50 == 0:
+                tick = int(cross * 0.72)
+            elif pos % 10 == 0:
+                tick = int(cross * 0.48)
+            else:
+                tick = int(cross * 0.22)
+
+            if is_vertical:
+                painter.drawLine(0, pos, tick, pos)
+                if pos % 50 == 0:
+                    painter.drawText(8, min(pos + 14, major - 4), f"{pos}px")
+            else:
+                painter.drawLine(pos, 0, pos, tick)
+                if pos % 50 == 0:
+                    painter.drawText(pos + 4, 18, f"{pos}px")
+
+        painter.setPen(QPen(QColor("#16a34a"), 2))
+        if is_vertical:
+            painter.drawLine(cross - 1, 0, cross - 1, major)
+        else:
+            painter.drawLine(0, cross - 1, major, cross - 1)
+
+
+class PixelRulerPage(Page):
+    def __init__(self) -> None:
+        super().__init__()
+        self.layout.addWidget(make_title("像素尺子", "用于测量界面元素的逻辑像素尺寸，和商品卡图片区域尺寸口径一致。"))
+
+        panel = QFrame()
+        panel.setObjectName("Card")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(18, 18, 18, 18)
+        panel_layout.setSpacing(14)
+
+        mode_row = QHBoxLayout()
+        mode_label = QLabel("方向")
+        self.mode_select = QComboBox()
+        self.mode_select.addItem("横向", "horizontal")
+        self.mode_select.addItem("纵向", "vertical")
+        self.mode_select.currentIndexChanged.connect(self.update_ruler)
+        mode_row.addWidget(mode_label)
+        mode_row.addWidget(self.mode_select)
+        mode_row.addStretch()
+        panel_layout.addLayout(mode_row)
+
+        self.length_label = QLabel()
+        self.length_slider = QSlider(Qt.Horizontal)
+        self.length_slider.setRange(100, 1200)
+        self.length_slider.setValue(500)
+        self.length_slider.valueChanged.connect(self.update_ruler)
+        panel_layout.addWidget(self.length_label)
+        panel_layout.addWidget(self.length_slider)
+
+        self.thickness_label = QLabel()
+        self.thickness_slider = QSlider(Qt.Horizontal)
+        self.thickness_slider.setRange(40, 240)
+        self.thickness_slider.setValue(96)
+        self.thickness_slider.valueChanged.connect(self.update_ruler)
+        panel_layout.addWidget(self.thickness_label)
+        panel_layout.addWidget(self.thickness_slider)
+
+        quick_row = QHBoxLayout()
+        for text, length, thickness, orientation in [
+            ("智能选品图 176x118", 176, 118, "horizontal"),
+            ("教师看板图 158x104", 158, 104, "horizontal"),
+            ("教师卡片宽 178", 178, 255, "vertical"),
+        ]:
+            button = QPushButton(text)
+            button.clicked.connect(lambda checked=False, l=length, t=thickness, o=orientation: self.apply_preset(l, t, o))
+            quick_row.addWidget(button)
+        quick_row.addStretch()
+        panel_layout.addLayout(quick_row)
+
+        self.size_label = QLabel()
+        self.size_label.setObjectName("CardTitle")
+        panel_layout.addWidget(self.size_label)
+        self.layout.addWidget(panel)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("ProductScroll")
+        scroll.setWidgetResizable(False)
+        wrap = QWidget()
+        wrap.setObjectName("ProductGridWrap")
+        wrap_layout = QVBoxLayout(wrap)
+        wrap_layout.setContentsMargins(20, 20, 20, 20)
+        self.canvas = PixelRulerCanvas()
+        wrap_layout.addWidget(self.canvas, 0, Qt.AlignTop | Qt.AlignLeft)
+        wrap_layout.addStretch()
+        scroll.setWidget(wrap)
+        self.layout.addWidget(scroll, 1)
+        self.update_ruler()
+
+    def apply_preset(self, length: int, thickness: int, orientation: str) -> None:
+        index = self.mode_select.findData(orientation)
+        if index >= 0:
+            self.mode_select.setCurrentIndex(index)
+        self.length_slider.setValue(length)
+        self.thickness_slider.setValue(thickness)
+        self.update_ruler()
+
+    def update_ruler(self) -> None:
+        orientation = str(self.mode_select.currentData())
+        length = self.length_slider.value()
+        thickness = self.thickness_slider.value()
+        self.length_label.setText(f"长度：{length}px")
+        self.thickness_label.setText(f"厚度：{thickness}px")
+        if hasattr(self, "canvas"):
+            self.canvas.update_values(orientation, length, thickness)
+        width, height = (thickness, length) if orientation == "vertical" else (length, thickness)
+        self.size_label.setText(f"当前尺子尺寸：{width}px x {height}px")
 
 
 DEMO_PRODUCT_CARDS = [
