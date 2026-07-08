@@ -206,6 +206,14 @@ class DataGateway:
             return build_demo_derived_products(product)
         return self.client.get(f"/api/teacher/products/{product_id}/derived-products")
 
+    def generate_derived_products(self, product_id: int) -> dict[str, Any]:
+        if self.offline:
+            product = next((item for item in FASTMOSS_REAL_PRODUCTS if int(item["id"]) == int(product_id)), None)
+            items = build_demo_derived_products(product or {"id": product_id, "title": "演示商品", "category": "演示类目"})
+            MOCK_DERIVED[product_id] = items
+            return {"ok": True, "model_used": False, "count": len(items), "items": items}
+        return self.client.post(f"/api/ai/products/{product_id}/generate-derived")
+
     def attributes(self) -> list[dict[str, Any]]:
         if self.offline:
             return MOCK_ATTRIBUTES
@@ -1404,6 +1412,17 @@ class DerivedDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(make_title(product["title"], "审核对象是 AI 衍生品，不是具体 1688 商品。"))
 
+        toolbar = QFrame()
+        toolbar.setObjectName("Toolbar")
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(14, 12, 14, 12)
+        generate_button = QPushButton("AI 生成衍生品")
+        generate_button.setObjectName("PrimaryAction")
+        generate_button.clicked.connect(self.generate_items)
+        toolbar_layout.addWidget(generate_button)
+        toolbar_layout.addStretch()
+        layout.addWidget(toolbar)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         wrap = QWidget()
@@ -1411,9 +1430,33 @@ class DerivedDialog(QDialog):
         scroll.setWidget(wrap)
         layout.addWidget(scroll)
 
-        for item in self.gateway.derived_products(product["id"]):
+        self.refresh_cards()
+
+    def clear_cards(self) -> None:
+        while self.cards.count():
+            child = self.cards.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+    def refresh_cards(self) -> None:
+        self.clear_cards()
+        items = self.gateway.derived_products(self.product["id"])
+        if not items:
+            empty = QLabel("暂无衍生品，点击上方按钮由 AI 生成。")
+            empty.setObjectName("Muted")
+            self.cards.addWidget(empty)
+        for item in items:
             self.cards.addWidget(self.card(item))
         self.cards.addStretch()
+
+    def generate_items(self) -> None:
+        try:
+            result = self.gateway.generate_derived_products(int(self.product["id"]))
+            self.refresh_cards()
+            mode = "大模型" if result.get("model_used") else "本地规则"
+            QMessageBox.information(self, "生成完成", f"已生成 {result.get('count', 0)} 个衍生品方向。\n生成方式：{mode}")
+        except Exception as exc:
+            QMessageBox.warning(self, "生成失败", str(exc))
 
     def card(self, item: dict[str, Any]) -> QWidget:
         frame = QFrame()
