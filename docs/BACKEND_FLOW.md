@@ -152,7 +152,13 @@ POST {base_url}/chat/completions
 Authorization: Bearer <api_key>
 ```
 
-Known gap: `ai_model_service.py` currently selects only the default active model. `fastmoss_service.py` has a more tolerant model selection strategy. These should be unified.
+Model selection is centralized in `ai_model_service.py`. The current priority is:
+
+1. Active and complete Doubao config.
+2. Active and complete default config.
+3. Any active and complete config.
+
+FastMoss title translation and AI derived-product generation both use this same selection logic.
 
 ## Desktop Interaction
 
@@ -170,4 +176,3 @@ Important mappings:
 - `model_configs()` -> `GET /api/admin/model-configs`
 - `third_party_configs()` -> `GET /api/admin/third-party-configs`
 - `sync_fastmoss_products()` -> `POST /api/fastmoss/sync-products?page=1&pagesize=20`
-

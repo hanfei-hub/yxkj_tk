@@ -15,10 +15,33 @@ class ModelCallError(RuntimeError):
     pass
 
 
-def get_default_model_config(db: Session) -> ModelConfig | None:
-    return db.scalar(
-        select(ModelConfig).where(ModelConfig.status == 1, ModelConfig.is_default == 1).order_by(ModelConfig.id.desc())
+def usable_model_filter():
+    return (
+        ModelConfig.status == 1,
+        ModelConfig.api_key_encrypted != "",
+        ModelConfig.base_url != "",
+        ModelConfig.model_name != "",
     )
+
+
+def get_default_model_config(db: Session) -> ModelConfig | None:
+    doubao_config = db.scalar(
+        select(ModelConfig)
+        .where(*usable_model_filter(), ModelConfig.provider == "doubao")
+        .order_by(ModelConfig.is_default.desc(), ModelConfig.id.desc())
+    )
+    if doubao_config:
+        return doubao_config
+
+    default_config = db.scalar(
+        select(ModelConfig)
+        .where(*usable_model_filter(), ModelConfig.is_default == 1)
+        .order_by(ModelConfig.id.desc())
+    )
+    if default_config:
+        return default_config
+
+    return db.scalar(select(ModelConfig).where(*usable_model_filter()).order_by(ModelConfig.id.desc()))
 
 
 def chat_completion(
@@ -29,8 +52,8 @@ def chat_completion(
     max_tokens: int | None = None,
 ) -> str:
     config = get_default_model_config(db)
-    if not config or not config.api_key_encrypted or not config.base_url or not config.model_name:
-        raise ModelCallError("未配置可用的默认大模型。")
+    if not config:
+        raise ModelCallError("未配置可用的大模型。")
 
     endpoint = config.base_url.rstrip("/")
     if not endpoint.endswith("/chat/completions"):

@@ -14,10 +14,10 @@ from app.models.entities import (
     DerivedProductAttributeScore,
     DerivedProductRecommendation,
     FmProduct,
-    ModelConfig,
     TeacherReviewRecord,
     ThirdPartyConfig,
 )
+from app.services.ai_model_service import get_default_model_config
 
 
 FASTMOSS_BASE_URL = "https://openapi.fastmoss.com"
@@ -170,32 +170,6 @@ def translate_category(category: str) -> str:
         return ""
     parts = [part.strip() for part in category.split("/") if part.strip()]
     return " / ".join(CATEGORY_TRANSLATIONS.get(part, part) for part in parts)
-
-
-def get_default_model_config(db: Session) -> ModelConfig | None:
-    default_config = db.scalar(
-        select(ModelConfig)
-        .where(
-            ModelConfig.status == 1,
-            ModelConfig.is_default == 1,
-            ModelConfig.api_key_encrypted != "",
-            ModelConfig.base_url != "",
-            ModelConfig.model_name != "",
-        )
-        .order_by(ModelConfig.id.desc())
-    )
-    if default_config:
-        return default_config
-    return db.scalar(
-        select(ModelConfig)
-        .where(
-            ModelConfig.status == 1,
-            ModelConfig.api_key_encrypted != "",
-            ModelConfig.base_url != "",
-            ModelConfig.model_name != "",
-        )
-        .order_by(ModelConfig.id.desc())
-    )
 
 
 def translate_to_chinese(db: Session, text: str) -> str:
