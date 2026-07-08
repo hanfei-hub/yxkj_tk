@@ -1446,7 +1446,7 @@ class TeacherProductCard(QFrame):
         self.product = product
         self.on_open = on_open
         self.setObjectName("TeacherProductCard")
-        self.setMinimumSize(250, 388)
+        self.setMinimumSize(250, 410)
         self.setMaximumWidth(270)
 
         title = str(product.get("title") or "未命名原商品")
@@ -1454,22 +1454,26 @@ class TeacherProductCard(QFrame):
         sales = int(float(product.get("sales_count") or 0))
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
-
         layout.addWidget(create_product_image(str(product.get("image_url") or ""), "📦", 230, 230))
 
         name = QLabel(title)
         name.setObjectName("ProductName")
         name.setWordWrap(True)
+        name.setToolTip(title)
+        name.setText(title[:10])
         layout.addWidget(name)
 
         metrics = QHBoxLayout()
-        metrics.setSpacing(8)
-        metrics.addWidget(self.metric("价格", format_jpy_price(price)))
-        metrics.addWidget(self.metric("销量", f"{sales:,} 个"))
+        price_label = QLabel(format_jpy_price(price))
+        price_label.setObjectName("ProductPrice")
+        sales_label = QLabel(f"销量 {sales:,} 个")
+        sales_label.setObjectName("ProductMuted")
+        metrics.addWidget(price_label)
+        metrics.addStretch()
+        metrics.addWidget(sales_label)
         layout.addLayout(metrics)
-        layout.addStretch()
 
         open_button = QPushButton("查看衍生品")
         open_button.setObjectName("PrimaryAction")
