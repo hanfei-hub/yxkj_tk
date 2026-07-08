@@ -1146,9 +1146,9 @@ class PixelRulerPage(Page):
 
         quick_row = QHBoxLayout()
         for text, length, thickness, orientation in [
-            ("智能选品图 176x118", 176, 118, "horizontal"),
-            ("教师看板图 158x104", 158, 104, "horizontal"),
-            ("教师卡片宽 178", 178, 255, "vertical"),
+            ("商品图 230x230", 230, 230, "horizontal"),
+            ("智能卡片宽 250", 250, 370, "vertical"),
+            ("教师卡片宽 250", 250, 388, "vertical"),
         ]:
             button = QPushButton(text)
             button.clicked.connect(lambda checked=False, l=length, t=thickness, o=orientation: self.apply_preset(l, t, o))
@@ -1284,8 +1284,7 @@ def pixmap_from_bytes(content: bytes) -> QPixmap:
 def create_product_image(url: str, fallback: str, width: int = 206, height: int = 136) -> QFrame:
     image = QFrame()
     image.setObjectName("ProductImage")
-    image.setFixedHeight(height)
-    image.setMinimumWidth(width)
+    image.setFixedSize(width, height)
     image_layout = QVBoxLayout(image)
     image_layout.setContentsMargins(0, 0, 0, 0)
     label = QLabel(fallback)
@@ -1319,8 +1318,8 @@ class ProductCard(QFrame):
     def __init__(self, item: dict[str, Any], index: int) -> None:
         super().__init__()
         self.setObjectName("ProductCard")
-        self.setMinimumSize(190, 238)
-        self.setMaximumWidth(220)
+        self.setMinimumSize(250, 370)
+        self.setMaximumWidth(270)
 
         title = str(item.get("title") or item.get("derived_title") or "未命名商品")
         price = item.get("price") or item.get("suggested_price_min") or 0
@@ -1329,7 +1328,7 @@ class ProductCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
-        layout.addWidget(create_product_image(str(item.get("image_url") or ""), "📦", 176, 118))
+        layout.addWidget(create_product_image(str(item.get("image_url") or ""), "📦", 230, 230))
 
         name = QLabel(title)
         name.setObjectName("ProductName")
@@ -1431,11 +1430,12 @@ class StudentSelectionPage(Page):
             if child.widget():
                 child.widget().deleteLater()
         items = self.load_card_items()
+        columns = 6
         for index, item in enumerate(items):
-            row = index // 5
-            col = index % 5
+            row = index // columns
+            col = index % columns
             self.grid.addWidget(ProductCard(item, index), row, col)
-        self.grid.setRowStretch((len(items) // 5) + 1, 1)
+        self.grid.setRowStretch((len(items) // columns) + 1, 1)
 
 
 class TeacherProductCard(QFrame):
@@ -1444,8 +1444,8 @@ class TeacherProductCard(QFrame):
         self.product = product
         self.on_open = on_open
         self.setObjectName("TeacherProductCard")
-        self.setMinimumSize(178, 255)
-        self.setMaximumWidth(210)
+        self.setMinimumSize(250, 388)
+        self.setMaximumWidth(270)
 
         title = str(product.get("title") or "未命名原商品")
         price = product.get("price") or 0
@@ -1455,7 +1455,7 @@ class TeacherProductCard(QFrame):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        layout.addWidget(create_product_image(str(product.get("image_url") or ""), "📦", 158, 104))
+        layout.addWidget(create_product_image(str(product.get("image_url") or ""), "📦", 230, 230))
 
         name = QLabel(title)
         name.setObjectName("ProductName")
