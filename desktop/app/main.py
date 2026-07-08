@@ -323,6 +323,16 @@ class DataGateway:
         if not self.offline:
             self.client.post(f"/api/teacher/derived-products/{derived_id}/reject", {"attribute_ids": attribute_ids, "review_comment": comment})
 
+    def search_1688(self, keyword: str, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+        if self.offline:
+            return {"ok": False, "keyword": keyword, "items": []}
+        return self.client.post("/api/suppliers/1688/search", {"keyword": keyword, "page": page, "page_size": page_size})
+
+    def search_1688_for_derived(self, derived_id: int, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+        if self.offline:
+            return {"ok": False, "items": []}
+        return self.client.post(f"/api/suppliers/1688/derived-products/{derived_id}/search?page={page}&page_size={page_size}")
+
 
 def make_title(text: str, subtitle: str = "") -> QWidget:
     box = QFrame()
@@ -798,7 +808,19 @@ class SimpleConfigPage(Page):
         ]
 
     def third_fields(self) -> list[tuple[str, str, str]]:
-        return [("config_name", "配置名称", ""), ("service_type", "服务类型", "fastmoss/1688_api/1688_mysql"), ("api_base_url", "API 地址", "https://openapi.fastmoss.com"), ("access_key_encrypted", "Access Key", "FastMoss Bearer token"), ("secret_key_encrypted", "Secret Key", "可选"), ("db_host", "数据库地址", ""), ("db_port", "端口", "3306"), ("db_name", "数据库名", ""), ("db_user", "用户名", ""), ("status", "状态", "1/0"), ("remark", "备注", "")]
+        return [
+            ("config_name", "配置名称", "1688 寻源 API"),
+            ("service_type", "服务类型", "fastmoss/1688_api/custom_api"),
+            ("api_base_url", "API 地址", "https://example.com"),
+            ("access_key_encrypted", "Access Key", "API Key 或 Bearer Token"),
+            ("secret_key_encrypted", "Secret Key", "可选"),
+            (
+                "remark",
+                "适配 JSON",
+                '{"search_path":"/search","method":"POST","items_path":"data.items","total_path":"data.total"}',
+            ),
+            ("status", "状态", "1/0"),
+        ]
 
     def normalize(self, data: dict[str, str]) -> dict[str, Any]:
         if self.config_type == "model":
