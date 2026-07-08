@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+backend/.venv/
+
+# Runtime data
+backend/data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# PyInstaller
+desktop/build/
+desktop/dist/
+desktop/TKCrossBorderAssistant_v*.spec
+desktop/TK跨境助手.spec
+*.spec.bak
+
+# App outputs and archives
+outputs/
+*.exe
+*.zip
+*.tar.gz
+
+# Logs
+*.log
+logs/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
