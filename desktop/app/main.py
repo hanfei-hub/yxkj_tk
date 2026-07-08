@@ -687,9 +687,6 @@ class MainWindow(QMainWindow):
             for page in self.pages:
                 if hasattr(page, "loaded"):
                     setattr(page, "loaded", False)
-                refresh = getattr(page, "refresh", None)
-                if callable(refresh):
-                    refresh()
             self.on_page_changed(self.nav.currentRow())
 
     def on_page_changed(self, index: int) -> None:
@@ -698,7 +695,10 @@ class MainWindow(QMainWindow):
             page = self.pages[index]
             activate = getattr(page, "activate", None)
             if callable(activate):
-                activate()
+                try:
+                    activate()
+                except Exception as exc:
+                    QMessageBox.warning(self, "加载失败", str(exc))
 
     def apply_theme(self, theme_name: str) -> None:
         app = QApplication.instance()
