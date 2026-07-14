@@ -50,6 +50,9 @@ def ensure_runtime_schema() -> None:
     model_columns = {
         "model_type": "VARCHAR(64) DEFAULT 'general'",
     }
+    user_columns = {
+        "credit_balance": "INTEGER DEFAULT 0",
+    }
     with engine.begin() as conn:
         dialect = engine.dialect.name
         if dialect == "mysql":
@@ -74,6 +77,13 @@ def ensure_runtime_schema() -> None:
                 ).first()
                 if not exists:
                     conn.execute(text(f"ALTER TABLE model_configs ADD COLUMN {column} {definition}"))
+            for column, definition in user_columns.items():
+                exists = conn.execute(
+                    text("SHOW COLUMNS FROM users LIKE :column"),
+                    {"column": column},
+                ).first()
+                if not exists:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {column} {definition}"))
         else:
             raise RuntimeError(f"Unsupported database dialect: {dialect}")
 

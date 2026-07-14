@@ -20,6 +20,7 @@ class User(Base, TimestampMixin):
     real_name: Mapped[str] = mapped_column(String(64))
     role: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[int] = mapped_column(Integer, default=1)
+    credit_balance: Mapped[int] = mapped_column(Integer, default=0)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -276,6 +277,23 @@ class DailyRecommendation(Base):
     price: Mapped[float] = mapped_column(Float, default=0)
     sales_count: Mapped[int] = mapped_column(Integer, default=0)
     reason_summary: Mapped[str] = mapped_column(Text, default="")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class UserSearchRecommendation(Base):
+    __tablename__ = "user_search_recommendations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    task_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    search_query: Mapped[str] = mapped_column(Text, default="")
+    title: Mapped[str] = mapped_column(String(255))
+    image_url: Mapped[str] = mapped_column(Text, default="")
+    price: Mapped[float] = mapped_column(Float, default=0)
+    sales_count: Mapped[int] = mapped_column(Integer, default=0)
+    reason_summary: Mapped[str] = mapped_column(Text, default="")
+    analysis_report: Mapped[str] = mapped_column(Text, default="{}")
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
