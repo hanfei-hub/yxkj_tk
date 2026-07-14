@@ -28,6 +28,7 @@ def user_to_dict(user: User) -> dict[str, Any]:
         "real_name": user.real_name,
         "role": user.role,
         "status": user.status,
+        "credit_balance": user.credit_balance,
         "last_login_at": fmt_dt(user.last_login_at),
         "created_at": fmt_dt(user.created_at),
         "updated_at": fmt_dt(user.updated_at),

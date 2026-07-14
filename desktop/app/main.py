@@ -8,7 +8,7 @@ from string import Template
 from typing import Any
 
 import requests
-from PySide6.QtCore import QObject, QRunnable, QSettings, QSize, Qt, QThreadPool, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QSettings, QSize, Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QFont, QIcon, QPixmap
 from PIL import Image, ImageOps
 from PySide6.QtWidgets import (
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -163,6 +164,17 @@ class DataGateway:
     def set_user_status(self, user_id: int, status: int) -> dict[str, Any]:
         return self.client.patch(f"/api/admin/users/{user_id}/status", {"status": status})
 
+    def recharge_user_credits(self, user_id: int, credits: int, remark: str = "") -> dict[str, Any]:
+        return self.client.post(f"/api/admin/users/{user_id}/credits/recharge", {"credits": credits, "remark": remark})
+
+    def delete_user(self, user_id: int) -> dict[str, Any]:
+        return self.client.delete(f"/api/admin/users/{user_id}")
+
+    def refresh_me(self) -> dict[str, Any]:
+        self.user = self.client.get("/api/auth/me")
+        self.save_session()
+        return self.user
+
     def model_configs(self) -> list[dict[str, Any]]:
         if not self.user:
             return []
@@ -179,6 +191,9 @@ class DataGateway:
     def set_default_model(self, config_id: int) -> dict[str, Any]:
         return self.client.post(f"/api/admin/model-configs/{config_id}/default")
 
+    def delete_model_config(self, config_id: int) -> dict[str, Any]:
+        return self.client.delete(f"/api/admin/model-configs/{config_id}")
+
     def third_party_configs(self) -> list[dict[str, Any]]:
         if not self.user:
             return []
@@ -191,6 +206,9 @@ class DataGateway:
 
     def set_third_party_status(self, config_id: int, status: int) -> dict[str, Any]:
         return self.client.patch(f"/api/admin/third-party-configs/{config_id}/status", {"status": status})
+
+    def delete_third_party_config(self, config_id: int) -> dict[str, Any]:
+        return self.client.delete(f"/api/admin/third-party-configs/{config_id}")
 
     def sync_fastmoss_products(self) -> dict[str, Any]:
         return self.client.post("/api/fastmoss/sync-products?page=1&pagesize=20")
@@ -213,8 +231,16 @@ class DataGateway:
             {"limit": limit, "threshold": threshold, "max_candidates": max_candidates, "page_size": page_size},
         )
 
-    def ai_chat(self, message: str) -> str:
-        return self.client.post("/api/ai/chat-selection", {"message": message})["answer"]
+    def start_ai_selection(self, message: str) -> dict[str, Any]:
+        return self.client.post("/api/ai/chat-selection", {"message": message})
+
+    def ai_selection_task(self, task_id: int) -> dict[str, Any]:
+        return self.client.get(f"/api/ai/selection-tasks/{task_id}")
+
+    def user_search_results(self) -> list[dict[str, Any]]:
+        if not self.user:
+            return []
+        return self.client.get("/api/ai/search-results")
 
     def save_attribute(self, payload: dict[str, Any], attribute_id: int | None = None) -> dict[str, Any]:
         if attribute_id:
@@ -251,6 +277,92 @@ def make_title(text: str, subtitle: str = "") -> QWidget:
         sub.setObjectName("Muted")
         layout.addWidget(sub)
     return box
+
+
+DIMENSION_LABELS = [
+    ("dimension_1", "使用场景"),
+    ("dimension_2", "商品周期性"),
+    ("dimension_3", "目标群体"),
+    ("dimension_4", "短视频种草"),
+    ("dimension_5", "日本偏好"),
+    ("dimension_6", "新奇特"),
+    ("dimension_7", "复购属性"),
+    ("dimension_8", "竞品属性"),
+]
+
+
+def dimension_items_from_report(item: dict[str, Any]) -> list[tuple[str, str, str]]:
+    raw_report = item.get("analysis_report") or {}
+    if isinstance(raw_report, str):
+        try:
+            raw_report = json.loads(raw_report)
+        except (TypeError, ValueError):
+            raw_report = {}
+    result: list[tuple[str, str, str]] = []
+    for code, default_name in DIMENSION_LABELS:
+        row = raw_report.get(code) if isinstance(raw_report, dict) else None
+        if not row and isinstance(raw_report, dict):
+            row = raw_report.get(default_name)
+        if isinstance(row, dict):
+            name = str(row.get("dimension_name") or row.get("维度名称") or default_name)
+            level = str(row.get("判定等级") or row.get("rating_level") or row.get("level") or "")
+            content = str(row.get("客观分析内容") or row.get("analysis_content") or row.get("content") or "")
+            result.append((name, level, content))
+        else:
+            result.append((default_name, "", ""))
+    fallback = {
+        "使用场景": item.get("usage_scene") or "",
+        "目标群体": item.get("target_audience") or "",
+        "短视频种草": item.get("recommendation_reason") or "",
+        "竞品属性": item.get("risk_notes") or "",
+    }
+    return [(name, level, content or str(fallback.get(name, ""))) for name, level, content in result]
+
+
+def show_analysis_report(parent: QWidget, item: dict[str, Any]) -> None:
+    title = str(item.get("title") or item.get("derived_title") or "选品分析报告")
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(f"选品分析报告 - {title[:40]}")
+    dialog.resize(860, 620)
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(20, 20, 20, 20)
+    header = QLabel(title)
+    header.setObjectName("PageTitle")
+    header.setWordWrap(True)
+    layout.addWidget(header)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    content = QWidget()
+    grid = QGridLayout(content)
+    grid.setContentsMargins(0, 0, 10, 10)
+    grid.setHorizontalSpacing(10)
+    grid.setVerticalSpacing(10)
+    for index, (name, level, detail) in enumerate(dimension_items_from_report(item)):
+        box = QFrame()
+        box.setObjectName("MetricBox")
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(12, 10, 12, 10)
+        box_layout.setSpacing(6)
+        name_label = QLabel(name)
+        name_label.setObjectName("CardTitle")
+        level_label = QLabel(level or "暂无等级")
+        level_label.setObjectName("ProductPrice")
+        detail_label = QLabel(detail or "暂无分析内容")
+        detail_label.setObjectName("ProductMuted")
+        detail_label.setWordWrap(True)
+        box_layout.addWidget(name_label)
+        box_layout.addWidget(level_label)
+        box_layout.addWidget(detail_label)
+        grid.addWidget(box, index // 2, index % 2)
+    scroll.setWidget(content)
+    layout.addWidget(scroll, 1)
+    close_button = QPushButton("关闭")
+    close_button.clicked.connect(dialog.accept)
+    actions = QHBoxLayout()
+    actions.addStretch()
+    actions.addWidget(close_button)
+    layout.addLayout(actions)
+    dialog.exec()
 
 
 def table(headers: list[str]) -> QTableWidget:
@@ -562,10 +674,11 @@ class MainWindow(QMainWindow):
             role_map = {"admin": "系统管理员", "teacher": "选品老师", "student": "学生账号"}
             real_name = str(self.user.get("real_name") or self.user.get("username") or "用户")
             role = str(self.user.get("role") or "")
+            credits = int(self.user.get("credit_balance") or 0)
             self.user_avatar.setText(real_name[:1].upper())
             self.user_name.setText(real_name)
             self.user_role.setText(role_map.get(role, role or "已登录"))
-            self.user_status.setText(f"后端在线 · {api_host}")
+            self.user_status.setText(f"积分 {credits} · {api_host}")
             self.login_button.setText("切换登录")
             self.setWindowTitle(f"TK 日本跨境智能选品系统 - {self.user.get('real_name')}")
             return
@@ -733,15 +846,21 @@ class AdminUsersPage(Page):
         add = QPushButton("新增用户")
         edit = QPushButton("编辑选中")
         toggle = QPushButton("启用/禁用")
+        recharge = QPushButton("充值积分")
+        delete_button = QPushButton("删除选中")
         add.clicked.connect(self.add_user)
         edit.clicked.connect(self.edit_user)
         toggle.clicked.connect(self.toggle_user)
+        recharge.clicked.connect(self.recharge_user)
+        delete_button.clicked.connect(self.delete_user)
         actions.addWidget(add)
         actions.addWidget(edit)
         actions.addWidget(toggle)
+        actions.addWidget(recharge)
+        actions.addWidget(delete_button)
         actions.addStretch()
         self.layout.addWidget(action_bar)
-        self.user_table = table(["ID", "账号", "姓名", "角色", "状态", "最后登录"])
+        self.user_table = table(["ID", "账号", "姓名", "角色", "状态", "积分", "最后登录"])
         self.layout.addWidget(self.user_table)
         self.refresh()
 
@@ -760,7 +879,21 @@ class AdminUsersPage(Page):
                 return
             QMessageBox.warning(self, "加载失败", str(exc))
             return
-        fill_table(self.user_table, [[u.get("id"), u.get("username"), u.get("real_name"), u.get("role"), u.get("status", 1), u.get("last_login_at") or "-"] for u in self.items])
+        fill_table(
+            self.user_table,
+            [
+                [
+                    u.get("id"),
+                    u.get("username"),
+                    u.get("real_name"),
+                    u.get("role"),
+                    u.get("status", 1),
+                    u.get("credit_balance", 0),
+                    u.get("last_login_at") or "-",
+                ]
+                for u in self.items
+            ],
+        )
 
     def selected_item(self) -> dict[str, Any] | None:
         row = self.user_table.currentRow()
@@ -792,6 +925,42 @@ class AdminUsersPage(Page):
         self.gateway.set_user_status(int(item["id"]), 0 if int(item.get("status") or 1) else 1)
         self.refresh()
 
+    def recharge_user(self) -> None:
+        item = self.selected_item()
+        if not item:
+            QMessageBox.information(self, "提示", "请先选择用户。")
+            return
+        dialog = FormDialog("充值积分", [("credits", "充值积分", "例如：100"), ("remark", "备注", "手动充值")], parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        data = dialog.data()
+        try:
+            credits = int(data.get("credits") or 0)
+            if credits <= 0:
+                raise ValueError("充值积分必须大于0")
+            result = self.gateway.recharge_user_credits(int(item["id"]), credits, data.get("remark") or "")
+            self.refresh()
+            user = result.get("user") if isinstance(result, dict) else {}
+            QMessageBox.information(self, "充值成功", f"当前积分：{user.get('credit_balance', '')}")
+        except Exception as exc:
+            QMessageBox.warning(self, "充值失败", str(exc))
+
+    def delete_user(self) -> None:
+        item = self.selected_item()
+        if not item:
+            QMessageBox.information(self, "提示", "请先选择用户。")
+            return
+        name = str(item.get("username") or item.get("real_name") or item.get("id"))
+        confirm = QMessageBox.question(self, "确认删除", f"确定删除用户「{name}」吗？")
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            self.gateway.delete_user(int(item["id"]))
+            self.refresh()
+            QMessageBox.information(self, "删除成功", "用户已删除。")
+        except Exception as exc:
+            QMessageBox.warning(self, "删除失败", str(exc))
+
 
 class SimpleConfigPage(Page):
     def __init__(self, title: str, loader, headers: list[str], gateway: DataGateway | None = None, config_type: str = "") -> None:
@@ -808,16 +977,19 @@ class SimpleConfigPage(Page):
         add = QPushButton("新增配置")
         edit = QPushButton("编辑选中")
         toggle = QPushButton("启用/禁用")
+        delete_button = QPushButton("删除选中")
         default = QPushButton("设为默认")
         sync = QPushButton("同步 FastMoss")
         add.clicked.connect(self.add_config)
         edit.clicked.connect(self.edit_config)
         toggle.clicked.connect(self.toggle_config)
+        delete_button.clicked.connect(self.delete_config)
         default.clicked.connect(self.set_default)
         sync.clicked.connect(self.sync_fastmoss)
         actions.addWidget(add)
         actions.addWidget(edit)
         actions.addWidget(toggle)
+        actions.addWidget(delete_button)
         if config_type == "model":
             actions.addWidget(default)
         if config_type == "third":
@@ -955,6 +1127,25 @@ class SimpleConfigPage(Page):
         else:
             self.gateway.set_third_party_status(int(item["id"]), status)
         self.refresh()
+
+    def delete_config(self) -> None:
+        item = self.selected_item()
+        if not item or not self.gateway:
+            QMessageBox.information(self, "提示", "请先选择配置。")
+            return
+        name = str(item.get("config_name") or item.get("id"))
+        confirm = QMessageBox.question(self, "确认删除", f"确定删除配置「{name}」吗？")
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            if self.config_type == "model":
+                self.gateway.delete_model_config(int(item["id"]))
+            else:
+                self.gateway.delete_third_party_config(int(item["id"]))
+            self.refresh()
+            QMessageBox.information(self, "删除成功", "配置已删除。")
+        except Exception as exc:
+            QMessageBox.warning(self, "删除失败", str(exc))
 
     def set_default(self) -> None:
         item = self.selected_item()
@@ -1225,10 +1416,14 @@ class ProductCard(QFrame):
 
 
 class CompactProductCard(QFrame):
-    def __init__(self, item: dict[str, Any], index: int) -> None:
+    def __init__(self, item: dict[str, Any], index: int, on_click=None) -> None:
         super().__init__()
+        self.item = item
+        self.on_click = on_click
         self.setObjectName("CompactProductCard")
         self.setFixedSize(148, 242)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("点击查看选品分析报告")
 
         title = str(item.get("title") or item.get("derived_title") or "未命名商品")
         price = item.get("supplier_price") or item.get("price") or item.get("suggested_price_min") or 0
@@ -1253,6 +1448,11 @@ class CompactProductCard(QFrame):
         sales_label.setObjectName("CompactProductMuted")
         layout.addWidget(sales_label)
 
+    def mousePressEvent(self, event) -> None:
+        if self.on_click:
+            self.on_click(self.item)
+        super().mousePressEvent(event)
+
 
 class StudentSelectionPage(Page):
     def __init__(self, gateway: DataGateway) -> None:
@@ -1270,14 +1470,48 @@ class StudentSelectionPage(Page):
         row = QHBoxLayout()
         self.chat_input = QLineEdit()
         self.chat_input.setPlaceholderText("我想找适合东南亚市场的电子产品，预算在 $10-30 之间，重量轻、利润率高的商品。")
-        send = QPushButton("🚀 开始选品")
-        send.setObjectName("PrimaryAction")
-        send.clicked.connect(self.send_chat)
+        self.selection_task_id: int | None = None
+        self.selection_timer = QTimer(self)
+        self.selection_timer.setInterval(2500)
+        self.selection_timer.timeout.connect(self.poll_selection_task)
+        self.send_button = QPushButton("🚀 开始选品")
+        self.send_button.setObjectName("PrimaryAction")
+        self.send_button.clicked.connect(self.send_chat)
         row.addWidget(self.chat_input, 1)
-        row.addWidget(send)
+        row.addWidget(self.send_button)
         chat_layout.addLayout(row)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.hide()
+        self.progress_label = QLabel("")
+        self.progress_label.setObjectName("Muted")
+        self.progress_label.hide()
+        chat_layout.addWidget(self.progress_bar)
+        chat_layout.addWidget(self.progress_label)
 
         self.layout.addWidget(chat_box)
+
+        search_heading = QLabel("本次搜索结果")
+        search_heading.setObjectName("SectionHeading")
+        self.layout.addWidget(search_heading)
+
+        search_scroll = QScrollArea()
+        search_scroll.setObjectName("ProductScroll")
+        search_scroll.setWidgetResizable(True)
+        search_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        search_scroll.setMinimumHeight(420)
+        search_scroll.setMaximumHeight(450)
+        search_content = QWidget()
+        search_content.setObjectName("ProductGridWrap")
+        self.search_result_grid = QGridLayout(search_content)
+        self.search_result_grid.setContentsMargins(4, 4, 16, 18)
+        self.search_result_grid.setHorizontalSpacing(14)
+        self.search_result_grid.setVerticalSpacing(16)
+        search_scroll.setWidget(search_content)
+        self.search_result_content = search_content
+        self.layout.addWidget(search_scroll)
 
         heading_bar = QWidget()
         heading_layout = QHBoxLayout(heading_bar)
@@ -1365,13 +1599,71 @@ class StudentSelectionPage(Page):
     def load_new_items(self) -> list[dict[str, Any]]:
         return self.gateway.daily_recommendations()
 
+    def load_search_items(self) -> list[dict[str, Any]]:
+        return self.gateway.user_search_results()
+
     def send_chat(self) -> None:
         text = self.chat_input.text().strip()
         if not text:
             return
-        answer = self.gateway.ai_chat(text)
-        QMessageBox.information(self, "AI 选品结果", answer)
-        self.chat_input.clear()
+        try:
+            result = self.gateway.start_ai_selection(text)
+        except Exception as exc:
+            parent = self.window()
+            if self.gateway.is_invalid_token_error(exc) and hasattr(parent, "clear_invalid_session"):
+                parent.clear_invalid_session()
+                return
+            QMessageBox.warning(self, "启动失败", str(exc))
+            return
+        self.selection_task_id = int(result.get("task_id") or 0)
+        if not self.selection_task_id:
+            QMessageBox.warning(self, "启动失败", "后端没有返回任务ID")
+            return
+        if "credit_balance" in result and self.gateway.user is not None:
+            self.gateway.user["credit_balance"] = result.get("credit_balance")
+            parent = self.window()
+            if hasattr(parent, "user"):
+                parent.user = self.gateway.user
+            if hasattr(parent, "update_login_status"):
+                parent.update_login_status()
+        self.send_button.setEnabled(False)
+        self.chat_input.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.progress_label.setText(str(result.get("message") or "AI 智能选品任务已开始"))
+        self.progress_label.show()
+        self.selection_timer.start()
+        self.poll_selection_task()
+
+    def poll_selection_task(self) -> None:
+        if not self.selection_task_id:
+            return
+        try:
+            status = self.gateway.ai_selection_task(self.selection_task_id)
+        except Exception as exc:
+            self.selection_timer.stop()
+            self.send_button.setEnabled(True)
+            self.chat_input.setEnabled(True)
+            QMessageBox.warning(self, "任务查询失败", str(exc))
+            return
+        progress = int(status.get("progress") or 0)
+        message = str(status.get("message") or status.get("stage") or "正在选品")
+        self.progress_bar.setValue(max(0, min(100, progress)))
+        self.progress_label.setText(message)
+        if status.get("status") == "success":
+            self.selection_timer.stop()
+            self.progress_bar.setValue(100)
+            self.progress_label.setText(f"选品完成，生成 {status.get('success_count') or 0} 个商品")
+            self.send_button.setEnabled(True)
+            self.chat_input.setEnabled(True)
+            self.chat_input.clear()
+            self.refresh()
+        elif status.get("status") == "failed":
+            self.selection_timer.stop()
+            self.send_button.setEnabled(True)
+            self.chat_input.setEnabled(True)
+            self.progress_label.setText("选品失败")
+            QMessageBox.warning(self, "选品失败", str(status.get("error_message") or "任务执行失败"))
 
     def refresh(self) -> None:
         while self.product_row.count():
@@ -1382,26 +1674,50 @@ class StudentSelectionPage(Page):
             child = self.new_product_grid.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
+        while self.search_result_grid.count():
+            child = self.search_result_grid.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        search_items = self.load_search_items()
         derived_items = self.load_card_items()
         new_items = self.load_new_items()
+        columns = 6
+        self.search_result_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        if not search_items:
+            empty_search = QLabel("暂无搜索结果，输入需求后点击开始选品。")
+            empty_search.setObjectName("Muted")
+            self.search_result_grid.addWidget(empty_search, 0, 0)
+            self.search_result_content.setMinimumHeight(64)
+        else:
+            for index, item in enumerate(search_items):
+                card = ProductCard(item, index)
+                card.setCursor(Qt.PointingHandCursor)
+                card.setToolTip("点击查看选品分析报告")
+                card.mousePressEvent = lambda event, current=item: show_analysis_report(self, current)
+                self.search_result_grid.addWidget(card, index // columns, index % columns)
+            self.search_result_grid.setColumnStretch(columns, 1)
+            search_rows = max(1, (len(search_items) + columns - 1) // columns)
+            self.search_result_content.setMinimumHeight(search_rows * 386 + 24)
         if not derived_items:
             empty = QLabel("暂无衍生品，先在任务看板补齐衍生品。")
             empty.setObjectName("Muted")
             self.product_row.addWidget(empty)
         else:
             for index, item in enumerate(derived_items):
-                self.product_row.addWidget(CompactProductCard(item, index))
+                self.product_row.addWidget(CompactProductCard(item, index, self.show_derived_report))
         self.product_row.addStretch()
         content_width = max(1, len(derived_items)) * 148 + max(0, len(derived_items) - 1) * 10 + 8
         self.product_content.setFixedWidth(content_width)
         self.product_content.setFixedHeight(252)
-        columns = 6
         self.new_product_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         for index, item in enumerate(new_items):
             self.new_product_grid.addWidget(ProductCard(item, index), index // columns, index % columns)
         self.new_product_grid.setColumnStretch(columns, 1)
         rows = max(1, (len(new_items) + columns - 1) // columns)
         self.new_product_content.setMinimumHeight(rows * 386 + 24)
+
+    def show_derived_report(self, item: dict[str, Any]) -> None:
+        show_analysis_report(self, item)
 
     def scroll_products_next(self) -> None:
         self.product_content.adjustSize()
@@ -1459,7 +1775,7 @@ class TeacherProductCard(QFrame):
         open_button.clicked.connect(lambda: self.on_open(self.product))
         layout.addWidget(open_button)
 
-    def metric(self, label: str, value: str) -> QWidget:
+    def metric_box(self, label: str, value: str) -> QWidget:
         box = QFrame()
         box.setObjectName("MetricBox")
         layout = QVBoxLayout(box)
@@ -1673,39 +1989,7 @@ class DerivedDialog(QDialog):
         self.product_progress.setText(f"原商品 {self.product_index + 1}/{len(self.products)}")
 
     def dimension_items(self, item: dict[str, Any]) -> list[tuple[str, str, str]]:
-        names = [
-            ("dimension_1", "使用场景"),
-            ("dimension_2", "商品周期性"),
-            ("dimension_3", "目标群体"),
-            ("dimension_4", "短视频种草"),
-            ("dimension_5", "日本偏好"),
-            ("dimension_6", "新奇特"),
-            ("dimension_7", "复购属性"),
-            ("dimension_8", "竞品属性"),
-        ]
-        raw_report = item.get("analysis_report") or {}
-        if isinstance(raw_report, str):
-            try:
-                raw_report = json.loads(raw_report)
-            except (TypeError, ValueError):
-                raw_report = {}
-        result: list[tuple[str, str, str]] = []
-        for code, default_name in names:
-            row = raw_report.get(code) if isinstance(raw_report, dict) else None
-            if isinstance(row, dict):
-                name = str(row.get("dimension_name") or row.get("维度名称") or default_name)
-                level = str(row.get("判定等级") or row.get("rating_level") or row.get("level") or "")
-                content = str(row.get("客观分析内容") or row.get("analysis_content") or row.get("content") or "")
-                result.append((name, level, content))
-            else:
-                result.append((default_name, "", ""))
-        fallback = {
-            "使用场景": item.get("usage_scene") or "",
-            "目标群体": item.get("target_audience") or "",
-            "短视频种草": item.get("recommendation_reason") or "",
-            "竞品属性": item.get("risk_notes") or "",
-        }
-        return [(name, level, content or str(fallback.get(name, ""))) for name, level, content in result]
+        return dimension_items_from_report(item)
 
     def card(self, item: dict[str, Any]) -> QWidget:
         frame = QFrame()
