@@ -41,6 +41,7 @@ class StatusRequest(BaseModel):
 class ModelConfigPayload(BaseModel):
     config_name: str
     provider: str = "custom"
+    model_type: str = "general"
     base_url: str = ""
     api_key_encrypted: str = ""
     model_name: str = ""
@@ -142,7 +143,7 @@ def list_model_configs(db: Session = Depends(get_db)):
 @router.post("/model-configs")
 def create_model_config(payload: ModelConfigPayload, db: Session = Depends(get_db)):
     if payload.is_default:
-        for item in db.scalars(select(ModelConfig)).all():
+        for item in db.scalars(select(ModelConfig).where(ModelConfig.model_type == payload.model_type)).all():
             item.is_default = 0
     item = ModelConfig(**payload.model_dump())
     db.add(item)
@@ -157,7 +158,9 @@ def update_model_config(config_id: int, payload: ModelConfigPayload, db: Session
     if not item:
         raise HTTPException(status_code=404, detail="模型配置不存在")
     if payload.is_default:
-        for existing in db.scalars(select(ModelConfig).where(ModelConfig.id != config_id)).all():
+        for existing in db.scalars(
+            select(ModelConfig).where(ModelConfig.id != config_id, ModelConfig.model_type == payload.model_type)
+        ).all():
             existing.is_default = 0
     for key, value in payload.model_dump().items():
         setattr(item, key, value)
@@ -182,7 +185,7 @@ def set_default_model(config_id: int, db: Session = Depends(get_db)):
     item = db.get(ModelConfig, config_id)
     if not item:
         raise HTTPException(status_code=404, detail="模型配置不存在")
-    for existing in db.scalars(select(ModelConfig)).all():
+    for existing in db.scalars(select(ModelConfig).where(ModelConfig.model_type == item.model_type)).all():
         existing.is_default = 1 if existing.id == config_id else 0
     db.commit()
     db.refresh(item)

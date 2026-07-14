@@ -12,7 +12,13 @@ from app.models.entities import (
     DerivedProductAttributeScore,
     DerivedProductRecommendation,
     FmProduct,
+    SelectionAttribute,
     TeacherReviewRecord,
+)
+from app.services.product_family_service import (
+    adjust_family_weight_for_reject,
+    adjust_family_weights_for_approve,
+    attribute_to_dimension_code,
 )
 from app.services.serializers import derived_to_dict, product_to_dict, review_to_dict
 
@@ -59,6 +65,7 @@ def approve(
     derived.review_status = "approved"
     derived.reviewed_by = user["id"]
     derived.reviewed_at = datetime.utcnow()
+    adjust_family_weights_for_approve(db, family_id=derived.family_id)
     db.flush()
 
     item_dict = derived_to_dict(derived)
@@ -91,6 +98,13 @@ def reject(
     derived.review_status = "rejected"
     derived.reviewed_by = user["id"]
     derived.reviewed_at = datetime.utcnow()
+    for attribute_id in payload.attribute_ids:
+        attribute = db.get(SelectionAttribute, attribute_id)
+        adjust_family_weight_for_reject(
+            db,
+            family_id=derived.family_id,
+            dimension_code=attribute_to_dimension_code(attribute),
+        )
     db.flush()
 
     item_dict = derived_to_dict(derived)

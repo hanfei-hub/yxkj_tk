@@ -7,6 +7,7 @@ from app.models.entities import (
     DailyRecommendation,
     DerivedProductAttributeScore,
     DerivedProductRecommendation,
+    FastMossSyncLog,
     FmProduct,
     ModelConfig,
     SelectionAttribute,
@@ -38,6 +39,7 @@ def model_config_to_dict(item: ModelConfig) -> dict[str, Any]:
         "id": item.id,
         "config_name": item.config_name,
         "provider": item.provider,
+        "model_type": item.model_type,
         "base_url": item.base_url,
         "has_api_key": bool(item.api_key_encrypted),
         "model_name": item.model_name,
@@ -84,6 +86,7 @@ def product_to_dict(item: FmProduct) -> dict[str, Any]:
     pending = [child for child in derived if child.review_status == "pending"]
     return {
         "id": item.id,
+        "family_id": item.family_id,
         "fm_product_id": item.fm_product_id,
         "title": item.title,
         "image_url": item.image_url,
@@ -114,6 +117,7 @@ def attribute_score_to_dict(item: DerivedProductAttributeScore) -> dict[str, Any
 def derived_to_dict(item: DerivedProductRecommendation) -> dict[str, Any]:
     return {
         "id": item.id,
+        "family_id": item.family_id,
         "source_product_id": item.source_product_id,
         "derived_title": item.derived_title,
         "derived_description": item.derived_description,
@@ -124,9 +128,23 @@ def derived_to_dict(item: DerivedProductRecommendation) -> dict[str, Any]:
         "suggested_price_max": item.suggested_price_max,
         "search_keywords": item.search_keywords,
         "risk_notes": item.risk_notes,
+        "analysis_report": item.analysis_report,
+        "source_search_keywords": item.source_search_keywords,
+        "match_tags": item.match_tags,
+        "prompt_template_id": item.prompt_template_id,
+        "model_used": item.model_used,
         "ai_score": item.ai_score,
         "weighted_score": item.weighted_score,
         "supplier_search_status": item.supplier_search_status,
+        "supplier_product_id": item.supplier_product_id,
+        "supplier_title": item.supplier_title,
+        "supplier_image_url": item.supplier_image_url,
+        "supplier_price": item.supplier_price,
+        "supplier_sales_count": item.supplier_sales_count,
+        "supplier_shop_name": item.supplier_shop_name,
+        "supplier_source_url": item.supplier_source_url,
+        "supplier_match_score": item.supplier_match_score,
+        "supplier_match_report": item.supplier_match_report,
         "review_status": item.review_status,
         "reviewed_by": item.reviewed_by,
         "reviewed_at": fmt_dt(item.reviewed_at),
@@ -160,4 +178,23 @@ def review_to_dict(item: TeacherReviewRecord) -> dict[str, Any]:
         "review_comment": item.review_comment,
         "review_snapshot": item.review_snapshot,
         "created_at": fmt_dt(item.created_at),
+    }
+
+
+def fastmoss_sync_log_to_dict(item: FastMossSyncLog) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "status": item.status,
+        "request_date": item.request_date,
+        "page": item.page,
+        "pagesize": item.pagesize,
+        "requested_count": item.requested_count,
+        "synced_count": item.synced_count,
+        "translation_success_count": item.translation_success_count,
+        "translation_failed_count": item.translation_failed_count,
+        "error_message": item.error_message,
+        "request_snapshot": item.request_snapshot,
+        "response_snapshot": item.response_snapshot,
+        "started_at": fmt_dt(item.started_at),
+        "finished_at": fmt_dt(item.finished_at),
     }
