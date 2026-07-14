@@ -7,7 +7,12 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_role
 from app.core.database import get_db
 from app.models.entities import DerivedProductRecommendation
-from app.services.supplier_1688_service import Supplier1688Error, search_1688_products
+from app.services.supplier_1688_service import (
+    Supplier1688Error,
+    auto_match_1688_for_derived,
+    auto_match_pending_derived_products,
+    search_1688_products,
+)
 
 router = APIRouter(prefix="/api/suppliers", tags=["suppliers"], dependencies=[Depends(require_role("admin", "teacher"))])
 
@@ -18,10 +23,38 @@ class SupplierSearchRequest(BaseModel):
     page_size: int = 20
 
 
+class SupplierAutoMatchRequest(BaseModel):
+    threshold: float = 90
+    max_candidates: int = 200
+    page_size: int = 20
+
+
+class SupplierBatchAutoMatchRequest(SupplierAutoMatchRequest):
+    limit: int = 20
+
+
 @router.post("/1688/search")
 def search_1688(payload: SupplierSearchRequest, db: Session = Depends(get_db)):
     try:
         return search_1688_products(db, payload.keyword, page=payload.page, page_size=payload.page_size)
+    except Supplier1688Error as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/1688/derived-products/auto-match")
+def auto_match_pending_1688_products(
+    payload: SupplierBatchAutoMatchRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    payload = payload or SupplierBatchAutoMatchRequest()
+    try:
+        return auto_match_pending_derived_products(
+            db,
+            limit=payload.limit,
+            threshold=payload.threshold,
+            max_candidates=payload.max_candidates,
+            page_size=payload.page_size,
+        )
     except Supplier1688Error as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -49,3 +82,22 @@ def search_1688_for_derived_product(
     derived.supplier_search_status = "has_result" if result["items"] else "no_result"
     db.commit()
     return result | {"derived_id": derived.id, "supplier_search_status": derived.supplier_search_status}
+
+
+@router.post("/1688/derived-products/{derived_id}/auto-match")
+def auto_match_1688_for_derived_product(
+    derived_id: int,
+    payload: SupplierAutoMatchRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    payload = payload or SupplierAutoMatchRequest()
+    try:
+        return auto_match_1688_for_derived(
+            db,
+            derived_id,
+            threshold=payload.threshold,
+            max_candidates=payload.max_candidates,
+            page_size=payload.page_size,
+        )
+    except Supplier1688Error as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

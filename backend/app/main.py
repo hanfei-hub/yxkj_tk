@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, ai, auth, products, selection_attributes, suppliers, teacher
+from app.api import admin, ai, auth, pipeline, products, selection_attributes, suppliers, teacher
 from app.services.seed import init_db
 
 app = FastAPI(title="TK Japan Selection MVP", version="0.1.0")
@@ -21,6 +21,7 @@ app.include_router(selection_attributes.router)
 app.include_router(ai.router)
 app.include_router(teacher.router)
 app.include_router(suppliers.router)
+app.include_router(pipeline.router)
 
 
 @app.on_event("startup")

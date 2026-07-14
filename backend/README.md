@@ -1,14 +1,14 @@
 # TK Selection Backend
 
-MVP backend skeleton for the TK Japan cross-border selection tool.
+Backend service for the TK Japan cross-border selection tool.
 
-The backend now uses local SQLite by default:
+The backend now uses the server MySQL database only. Configure `DATABASE_URL` before startup:
 
 ```text
-data/tk_selection.db
+mysql+pymysql://USER:PASSWORD@HOST:3306/DB_NAME?charset=utf8mb4
 ```
 
-The database is created automatically on startup with demo seed data.
+Local SQLite fallback has been removed. If `DATABASE_URL` is missing or points to SQLite, startup will fail.
 
 ## Run
 
