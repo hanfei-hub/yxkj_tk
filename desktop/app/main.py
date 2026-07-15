@@ -6,12 +6,13 @@ from string import Template
 from typing import Any
 
 import requests
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QPixmap
 from PIL import Image, ImageOps
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFrame,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -297,6 +299,87 @@ class DataGateway:
         if self.offline:
             return {"ok": False, "message": "当前为离线演示模式，请先启动本地后端。"}
         return self.client.post("/api/fastmoss/sync-products?page=1&pagesize=20")
+
+    def auto_publish_candidates(self) -> list[dict[str, Any]]:
+        if self.offline:
+            product = FASTMOSS_REAL_PRODUCTS[0]
+            derived = build_demo_derived_products(product)[0]
+            derived["review_status"] = "approved"
+            return [{"derived": derived, "source_product": product}]
+        return self.client.get("/api/auto-publish/candidates")
+
+    def create_auto_publish_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.offline:
+            candidate = next(
+                (
+                    item
+                    for item in self.auto_publish_candidates()
+                    if int(item["derived"]["id"]) == int(payload.get("derived_id") or 0)
+                ),
+                self.auto_publish_candidates()[0],
+            )
+            return {
+                "task_id": f"offline-{candidate['derived']['id']}",
+                "status": "created",
+                "dry_run": payload.get("dry_run", False),
+                "publish_count": payload.get("publish_count", 1),
+                "target_channel": payload.get("target_channel", "TikTok Shop Japan"),
+                "erp_url": payload.get("erp_url", "https://erp.91miaoshou.com/?ac=1og270"),
+                "derived": candidate["derived"],
+                "source_product": candidate["source_product"],
+                "steps": ["离线演示：已创建自动上架任务。"],
+                "errors": [],
+                "product_infos": [],
+            }
+        return self.client.post("/api/auto-publish/tasks", payload)
+
+    def create_1688_auto_publish_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.offline:
+            return {
+                "task_id": "offline-1688",
+                "status": "created",
+                "workflow": "1688_to_miaoshou",
+                "offer_url": payload.get("offer_url", ""),
+                "dry_run": payload.get("dry_run", True),
+                "steps": ["离线演示：已创建 1688 链接自动上架任务。"],
+                "errors": [],
+                "product_infos": [],
+            }
+        return self.client.post("/api/auto-publish/1688/tasks", payload, timeout=60)
+
+    def run_auto_publish_task(self, task_id: str) -> dict[str, Any]:
+        if self.offline:
+            return {
+                "task_id": task_id,
+                "ok": True,
+                "status": "draft_ready",
+                "message": "离线演示：已模拟生成模板并导入妙手公用采集箱。",
+                "steps": [
+                    "已读取审核通过的衍生品。",
+                    "已生成妙手导入模板。",
+                    "已模拟提交到妙手公用采集箱。",
+                ],
+                "errors": [],
+                "product_infos": [],
+            }
+        return self.client.post(f"/api/auto-publish/tasks/{task_id}/run", timeout=1800)
+
+    def get_auto_publish_task(self, task_id: str) -> dict[str, Any]:
+        if self.offline:
+            return {
+                "task_id": task_id,
+                "status": "running",
+                "progress": {"stage": "offline", "current": 1, "total": 3, "message": "离线演示处理中", "percent": 33},
+                "steps": ["离线演示处理中。"],
+                "errors": [],
+                "product_infos": [],
+            }
+        return self.client.get(f"/api/auto-publish/tasks/{task_id}", timeout=20)
+
+    def latest_auto_publish_result(self) -> dict[str, Any]:
+        if self.offline:
+            return {"status": "idle", "message": "离线演示模式尚无任务。", "steps": [], "errors": []}
+        return self.client.get("/api/auto-publish/latest")
 
     def ai_chat(self, message: str) -> str:
         if self.offline:
@@ -607,6 +690,7 @@ class MainWindow(QMainWindow):
     def setup_pages(self) -> None:
         self.add_page("智能选品", StudentSelectionPage(self.gateway), "🏠")
         self.add_page("教师看板", TeacherDashboardPage(self.gateway), "📦")
+        self.add_page("自动上架", AutoPublishPage(self.gateway), "🚀")
         self.add_page("用户管理", AdminUsersPage(self.gateway), "👥")
         self.add_page("模型配置", SimpleConfigPage("模型配置", self.gateway.model_configs, ["配置名称", "服务商", "Base URL", "模型", "Key", "状态", "默认"], self.gateway, "model"), "🤖")
         self.add_page("第三方 API", SimpleConfigPage("第三方 API 配置", self.gateway.third_party_configs, ["配置名称", "服务类型", "状态"], self.gateway, "third"), "🔌")
@@ -798,7 +882,7 @@ class SimpleConfigPage(Page):
         ]
 
     def third_fields(self) -> list[tuple[str, str, str]]:
-        return [("config_name", "配置名称", ""), ("service_type", "服务类型", "fastmoss/1688_api/1688_mysql"), ("api_base_url", "API 地址", "https://openapi.fastmoss.com"), ("access_key_encrypted", "Access Key", "FastMoss Bearer token"), ("secret_key_encrypted", "Secret Key", "可选"), ("db_host", "数据库地址", ""), ("db_port", "端口", "3306"), ("db_name", "数据库名", ""), ("db_user", "用户名", ""), ("status", "状态", "1/0"), ("remark", "备注", "")]
+        return [("config_name", "配置名称", ""), ("service_type", "服务类型", "fastmoss/1688_api/1688_mysql/oxylabs/miaoshou/baidu_pictrans"), ("api_base_url", "API 地址", "https://openapi.fastmoss.com"), ("access_key_encrypted", "Access Key", "FastMoss Bearer token / Baidu API Key"), ("secret_key_encrypted", "Secret Key", "可选 / Baidu Secret Key"), ("db_host", "数据库地址", ""), ("db_port", "端口", "3306"), ("db_name", "数据库名", ""), ("db_user", "用户名", ""), ("status", "状态", "1/0"), ("remark", "备注", "")]
 
     def normalize(self, data: dict[str, str]) -> dict[str, Any]:
         if self.config_type == "model":
@@ -1310,6 +1394,295 @@ class TeacherProductCard(QFrame):
     def mouseDoubleClickEvent(self, event) -> None:
         self.on_open(self.product)
         super().mouseDoubleClickEvent(event)
+
+
+class AutoPublishSignals(QObject):
+    created = Signal(dict)
+    finished = Signal(dict)
+    failed = Signal(str)
+
+
+class AutoPublishTask(QRunnable):
+    def __init__(self, gateway: DataGateway, payload: dict[str, Any], signals: AutoPublishSignals) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.payload = payload
+        self.signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            task = self.gateway.create_1688_auto_publish_task(self.payload)
+            self.signals.created.emit(task)
+            result = self.gateway.run_auto_publish_task(str(task["task_id"]))
+            self.signals.finished.emit(result)
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
+class AutoPublishPage(Page):
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.loaded = False
+        self.current_task: dict[str, Any] | None = None
+        self.task_signals: AutoPublishSignals | None = None
+        self.progress_timer = QTimer(self)
+        self.progress_timer.setInterval(1500)
+        self.progress_timer.timeout.connect(self.refresh_task_progress)
+        self.layout.setContentsMargins(24, 22, 24, 22)
+        self.layout.setSpacing(14)
+        self.layout.addWidget(make_title("自动上架", "输入 1688 商品链接，抓取商品数据、优化信息、生成妙手模板并导入公用采集箱。"))
+
+        controls = QFrame()
+        controls.setObjectName("Card")
+        controls_layout = QGridLayout(controls)
+        controls_layout.setContentsMargins(16, 14, 16, 14)
+        controls_layout.setHorizontalSpacing(12)
+        controls_layout.setVerticalSpacing(10)
+
+        self.offer_url_input = QLineEdit()
+        self.offer_url_input.setPlaceholderText("粘贴 1688 商品链接，例如 https://detail.1688.com/offer/xxxx.html")
+        self.erp_input = QLineEdit("https://erp.91miaoshou.com/?ac=1og270")
+        self.miaoshou_user_input = QLineEdit()
+        self.miaoshou_user_input.setPlaceholderText("妙手手机号 / 子账号 / 邮箱")
+        self.miaoshou_password_input = QLineEdit()
+        self.miaoshou_password_input.setPlaceholderText("妙手密码")
+        self.miaoshou_password_input.setEchoMode(QLineEdit.Password)
+        self.dry_run = QCheckBox("仅生成模板")
+        self.dry_run.setChecked(False)
+        self.create_button = QPushButton("上架该产品")
+        self.refresh_button = QPushButton("刷新")
+        self.create_button.clicked.connect(self.create_1688_task)
+        self.refresh_button.clicked.connect(self.refresh)
+
+        controls_layout.addWidget(QLabel("1688 链接"), 0, 0)
+        controls_layout.addWidget(self.offer_url_input, 0, 1, 1, 5)
+        controls_layout.addWidget(QLabel("ERP 地址"), 1, 0)
+        controls_layout.addWidget(self.erp_input, 1, 1, 1, 5)
+        controls_layout.addWidget(QLabel("妙手账号"), 2, 0)
+        controls_layout.addWidget(self.miaoshou_user_input, 2, 1, 1, 2)
+        controls_layout.addWidget(QLabel("妙手密码"), 2, 3)
+        controls_layout.addWidget(self.miaoshou_password_input, 2, 4, 1, 2)
+        controls_layout.addWidget(self.dry_run, 3, 0, 1, 2)
+        controls_layout.addWidget(self.refresh_button, 3, 4)
+        controls_layout.addWidget(self.create_button, 3, 5)
+        self.layout.addWidget(controls)
+
+        progress_card = QFrame()
+        progress_card.setObjectName("Card")
+        progress_layout = QVBoxLayout(progress_card)
+        progress_layout.setContentsMargins(16, 12, 16, 12)
+        self.progress_label = QLabel("待开始")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        progress_layout.addWidget(self.progress_label)
+        progress_layout.addWidget(self.progress_bar)
+        self.layout.addWidget(progress_card)
+
+        self.flow_table = table(["步骤", "状态"])
+        fill_table(
+            self.flow_table,
+            [
+                ["1. 调 Oxylabs 抓 1688 数据", "待执行"],
+                ["2. AI 优化标题 / SKU / 描述", "待执行"],
+                ["3. 生成妙手导入模板", "待执行"],
+                ["4. 自动导入妙手公用采集箱", "待执行"],
+            ],
+        )
+        self.layout.addWidget(self.flow_table, 1)
+
+        self.result = QTextEdit()
+        self.result.setReadOnly(True)
+        self.result.setMinimumHeight(150)
+        self.result.setPlaceholderText("任务执行结果会显示在这里。")
+        self.layout.addWidget(self.result)
+
+    def activate(self) -> None:
+        if not self.loaded:
+            self.result.setPlaceholderText("粘贴 1688 商品链接后点击上架。长任务会在后台执行，窗口不会卡住。")
+            self.loaded = True
+
+    def refresh(self) -> None:
+        self.reset_flow()
+        self.result.clear()
+
+    def create_task(self) -> None:
+        if self.candidate_select.currentData() is None:
+            QMessageBox.information(self, "暂无候选", "请先让老师通过至少一个衍生品。")
+            return
+        payload = {
+            "derived_id": int(self.candidate_select.currentData()),
+            "publish_count": 1,
+            "target_channel": "TikTok Shop Japan",
+            "erp_url": self.erp_input.text().strip() or "https://erp.91miaoshou.com/?ac=1og270",
+            "dry_run": self.dry_run.isChecked(),
+        }
+        try:
+            self.current_task = self.gateway.create_auto_publish_task(payload)
+            self.render_result(self.current_task)
+            QMessageBox.information(self, "任务已创建", "自动上架任务已创建。")
+        except ApiError as exc:
+            QMessageBox.warning(self, "创建失败", str(exc))
+
+    def create_1688_task(self) -> None:
+        offer_url = self.offer_url_input.text().strip()
+        if not offer_url:
+            QMessageBox.information(self, "请输入链接", "请先粘贴 1688 商品链接。")
+            return
+        payload = {
+            "offer_url": offer_url,
+            "publish_count": 1,
+            "target_channel": "TikTok Shop Japan",
+            "erp_url": self.erp_input.text().strip() or "https://erp.91miaoshou.com/?ac=1og270",
+            "dry_run": self.dry_run.isChecked(),
+            "miaoshou_username": self.miaoshou_user_input.text().strip(),
+            "miaoshou_password": self.miaoshou_password_input.text().strip(),
+        }
+        self.start_background_task(payload)
+
+    def start_background_task(self, payload: dict[str, Any]) -> None:
+        self.create_button.setEnabled(False)
+        self.create_button.setText("处理中...")
+        self.progress_timer.stop()
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("正在创建任务")
+        self.result.setPlainText(
+            "任务已开始，正在后台执行。\n\n"
+            "这一步会调用 Oxylabs、百度图片翻译、必要时豆包补图、模板生成和妙手导入。\n"
+            "如果弹出妙手浏览器，请在 10 分钟内手动输入验证码并登录。"
+        )
+        fill_table(
+            self.flow_table,
+            [
+                ["1. 调 Oxylabs 抓 1688 数据", "处理中"],
+                ["2. AI 优化标题 / SKU / 描述", "等待"],
+                ["3. 生成妙手导入模板", "等待"],
+                ["4. 自动导入妙手公用采集箱", "等待"],
+            ],
+        )
+        self.task_signals = AutoPublishSignals()
+        self.task_signals.created.connect(self.on_task_created)
+        self.task_signals.finished.connect(self.on_task_finished)
+        self.task_signals.failed.connect(self.on_task_failed)
+        IMAGE_THREAD_POOL.start(AutoPublishTask(self.gateway, payload, self.task_signals))
+
+    def on_task_created(self, task: dict[str, Any]) -> None:
+        self.current_task = task
+        self.apply_progress(task)
+        self.progress_timer.start()
+
+    def refresh_task_progress(self) -> None:
+        if not self.current_task:
+            return
+        task_id = str(self.current_task.get("task_id") or "")
+        if not task_id:
+            return
+        try:
+            latest = self.gateway.get_auto_publish_task(task_id)
+        except ApiError:
+            return
+        self.current_task = latest
+        self.apply_progress(latest)
+
+    def apply_progress(self, result: dict[str, Any]) -> None:
+        progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
+        percent = int(progress.get("percent") or 0)
+        self.progress_bar.setValue(max(0, min(percent, 100)))
+        message = str(progress.get("message") or result.get("message") or "任务处理中")
+        current = progress.get("current")
+        total = progress.get("total")
+        if current is not None and total is not None and str(progress.get("stage") or "") == "images":
+            message = f"{message}"
+        self.progress_label.setText(message)
+        stage = str(progress.get("stage") or "")
+        if stage == "fetch":
+            rows = [["1. 抓取 1688 数据", "处理中"], ["2. 优化标题 / SKU / 描述", "等待"], ["3. 生成图片 / 模板", "等待"], ["4. 导入妙手公用采集箱", "等待"]]
+        elif stage == "copy":
+            rows = [["1. 抓取 1688 数据", "完成"], ["2. 优化标题 / SKU / 描述", "处理中"], ["3. 生成图片 / 模板", "等待"], ["4. 导入妙手公用采集箱", "等待"]]
+        elif stage in {"images", "template"}:
+            rows = [["1. 抓取 1688 数据", "完成"], ["2. 优化标题 / SKU / 描述", "完成"], ["3. 生成图片 / 模板", "处理中"], ["4. 导入妙手公用采集箱", "等待"]]
+        elif stage == "miaoshou":
+            rows = [["1. 抓取 1688 数据", "完成"], ["2. 优化标题 / SKU / 描述", "完成"], ["3. 生成图片 / 模板", "完成"], ["4. 导入妙手公用采集箱", "处理中"]]
+        elif stage == "done":
+            rows = [["1. 抓取 1688 数据", "完成"], ["2. 优化标题 / SKU / 描述", "完成"], ["3. 生成图片 / 模板", "完成"], ["4. 导入妙手公用采集箱", "完成"]]
+        else:
+            rows = [["1. 抓取 1688 数据", "等待"], ["2. 优化标题 / SKU / 描述", "等待"], ["3. 生成图片 / 模板", "等待"], ["4. 导入妙手公用采集箱", "等待"]]
+        fill_table(self.flow_table, rows)
+
+    def on_task_finished(self, result: dict[str, Any]) -> None:
+        self.progress_timer.stop()
+        self.current_task = result
+        self.apply_progress(result)
+        self.render_result(result)
+        self.create_button.setEnabled(True)
+        self.create_button.setText("上架该产品")
+        QMessageBox.information(self, "处理完成", result.get("message", "自动上架任务已执行。"))
+
+    def on_task_failed(self, message: str) -> None:
+        self.progress_timer.stop()
+        self.progress_label.setText("任务失败")
+        self.create_button.setEnabled(True)
+        self.create_button.setText("上架该产品")
+        QMessageBox.warning(self, "上架失败", message)
+
+    def reset_flow(self) -> None:
+        self.progress_timer.stop()
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("待开始")
+        fill_table(
+            self.flow_table,
+            [
+                ["1. 调 Oxylabs 抓 1688 数据", "待执行"],
+                ["2. AI 优化标题 / SKU / 描述", "待执行"],
+                ["3. 生成妙手导入模板", "待执行"],
+                ["4. 自动导入妙手公用采集箱", "待执行"],
+            ],
+        )
+
+    def run_task(self) -> None:
+        if not self.current_task:
+            QMessageBox.information(self, "请先创建任务", "请选择候选衍生品并创建任务。")
+            return
+        try:
+            result = self.gateway.run_auto_publish_task(str(self.current_task["task_id"]))
+            self.current_task = result
+            self.render_result(result)
+            QMessageBox.information(self, "执行完成", result.get("message", "任务执行完成。"))
+        except ApiError as exc:
+            QMessageBox.warning(self, "执行失败", str(exc))
+
+    def render_result(self, result: dict[str, Any]) -> None:
+        flow_rows = [
+            ["1. 调 Oxylabs 抓 1688 数据", "完成" if any("Oxylabs" in step or "1688" in step for step in result.get("steps", [])) else "待执行"],
+            ["2. AI 优化标题 / SKU / 描述", "完成" if any("优化" in step for step in result.get("steps", [])) else "待执行"],
+            ["3. 生成妙手导入模板", "完成" if result.get("template_path") else "待执行"],
+            ["4. 自动导入妙手公用采集箱", "完成" if result.get("status") == "imported" else ("失败" if result.get("status") == "import_failed" else "待执行")],
+        ]
+        fill_table(self.flow_table, flow_rows)
+        lines = [
+            f"状态：{result.get('status', '-')}",
+            f"消息：{result.get('message', '-')}",
+            "",
+            "步骤：",
+        ]
+        lines.extend([f"- {step}" for step in result.get("steps", [])])
+        errors = result.get("errors") or []
+        if errors:
+            lines.append("")
+            lines.append("错误：")
+            lines.extend([f"- {error}" for error in errors])
+        if result.get("template_path"):
+            lines.append("")
+            lines.append(f"模板文件：{result.get('template_path')}")
+        import_result = result.get("import_result") or {}
+        screenshots = import_result.get("screenshots") or []
+        if screenshots:
+            lines.append("")
+            lines.append("失败截图：")
+            lines.extend([f"- {path}" for path in screenshots])
+        self.result.setPlainText("\n".join(lines))
 
 
 class TeacherDashboardPage(Page):

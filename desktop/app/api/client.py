@@ -15,7 +15,7 @@ class ApiError(RuntimeError):
 class ApiClient:
     base_url: str = os.getenv("TK_SELECTION_API_BASE_URL", "http://120.26.207.89:8000")
     token: str | None = None
-    timeout: int = 5
+    timeout: int = 30
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -23,14 +23,14 @@ class ApiClient:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
 
-    def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+    def request(self, method: str, path: str, payload: dict[str, Any] | None = None, timeout: int | None = None) -> Any:
         try:
             response = requests.request(
                 method,
                 f"{self.base_url}{path}",
                 json=payload,
                 headers=self._headers(),
-                timeout=self.timeout,
+                timeout=timeout or self.timeout,
             )
         except requests.RequestException as exc:
             raise ApiError(str(exc)) from exc
@@ -50,11 +50,11 @@ class ApiClient:
         self.token = data["access_token"]
         return data
 
-    def get(self, path: str) -> Any:
-        return self.request("GET", path)
+    def get(self, path: str, timeout: int | None = None) -> Any:
+        return self.request("GET", path, timeout=timeout)
 
-    def post(self, path: str, payload: dict[str, Any] | None = None) -> Any:
-        return self.request("POST", path, payload or {})
+    def post(self, path: str, payload: dict[str, Any] | None = None, timeout: int | None = None) -> Any:
+        return self.request("POST", path, payload or {}, timeout=timeout)
 
     def put(self, path: str, payload: dict[str, Any] | None = None) -> Any:
         return self.request("PUT", path, payload or {})

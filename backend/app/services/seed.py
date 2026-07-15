@@ -26,6 +26,7 @@ def init_db() -> None:
     db = SessionLocal()
     try:
         seed_all(db)
+        ensure_volcengine_auto_publish_models(db)
     finally:
         db.close()
 
@@ -150,3 +151,115 @@ def seed_all(db: Session) -> None:
         ]
     )
     db.commit()
+
+
+def ensure_volcengine_auto_publish_models(db: Session) -> None:
+    ark_base_url = "https://ark.cn-beijing.volces.com/api/v3"
+    existing = db.scalars(select(ModelConfig)).all()
+    reusable_key = next(
+        (
+            item.api_key_encrypted
+            for item in existing
+            if item.api_key_encrypted and ("ark" in item.base_url.lower() or "volces.com" in item.base_url.lower())
+        ),
+        "",
+    )
+    has_default = any(item.status == 1 and item.is_default == 1 for item in existing)
+    wanted = [
+        {
+            "config_name": "Auto Publish Text - doubao-seed-2-0-lite",
+            "provider": "volcengine_ark",
+            "base_url": ark_base_url,
+            "model_name": "ep-20260710160935-grs59",
+            "temperature": 0.2,
+            "max_tokens": 1800,
+            "is_default": 0 if has_default else 1,
+            "status": 1,
+            "remark": "auto_publish:listing_text,image_analysis primary; model=doubao-seed-2-0-lite",
+        },
+        {
+            "config_name": "Auto Publish Text - doubao-seed-2-1-pro",
+            "provider": "volcengine_ark",
+            "base_url": ark_base_url,
+            "model_name": "ep-20260626105633-4gdhv",
+            "temperature": 0.2,
+            "max_tokens": 2400,
+            "is_default": 0,
+            "status": 1,
+            "remark": "auto_publish:listing_text fallback; model=doubao-seed-2-1-pro",
+        },
+        {
+            "config_name": "Auto Publish Translation - Doubao-Seed-Translation",
+            "provider": "volcengine_ark",
+            "base_url": ark_base_url,
+            "model_name": "ep-20260713102020-zgh99",
+            "temperature": 0.1,
+            "max_tokens": 1800,
+            "is_default": 0,
+            "status": 1,
+            "remark": "auto_publish:image_text_translation; model=Doubao-Seed-Translation",
+        },
+        {
+            "config_name": "Auto Publish Image - doubao-seedream-5-0",
+            "provider": "volcengine_ark",
+            "base_url": ark_base_url,
+            "model_name": "ep-20260710161912-qq7gf",
+            "temperature": 0.2,
+            "max_tokens": 2000,
+            "is_default": 0,
+            "status": 1,
+            "remark": "auto_publish:image_generation,image_edit low_cost; model=doubao-seedream-5-0",
+        },
+        {
+            "config_name": "Auto Publish Image - doubao-seedream-5-0-pro",
+            "provider": "volcengine_ark",
+            "base_url": ark_base_url,
+            "model_name": "ep-20260710162015-r5rv9",
+            "temperature": 0.2,
+            "max_tokens": 2000,
+            "is_default": 0,
+            "status": 1,
+            "remark": "auto_publish:image_generation,image_edit high_quality; model=doubao-seedream-5-0-pro",
+        },
+    ]
+    changed = False
+    existing_by_name = {item.config_name: item for item in existing}
+    existing_by_model = {item.model_name: item for item in existing}
+    for row in wanted:
+        item = existing_by_name.get(row["config_name"]) or existing_by_model.get(row["model_name"])
+        if item:
+            if not item.api_key_encrypted and reusable_key:
+                item.api_key_encrypted = reusable_key
+                changed = True
+            if item.model_name != row["model_name"]:
+                item.model_name = row["model_name"]
+                changed = True
+            if not item.base_url:
+                item.base_url = row["base_url"]
+                changed = True
+            if not item.provider:
+                item.provider = row["provider"]
+                changed = True
+            if "auto_publish:" not in (item.remark or ""):
+                item.remark = (item.remark + " " if item.remark else "") + row["remark"]
+                changed = True
+            continue
+        db.add(ModelConfig(api_key_encrypted=reusable_key, **row))
+        changed = True
+    active_endpoint_ids = {
+        "ep-20260710160935-grs59",
+        "ep-20260626105633-4gdhv",
+        "ep-20260713102020-zgh99",
+        "ep-20260710161912-qq7gf",
+        "ep-20260710162015-r5rv9",
+    }
+    for item in existing:
+        text = f"{item.config_name} {item.model_name} {item.remark}".lower()
+        if "doubao-seed-1.8" in text or "doubao-seed-1-8" in text:
+            item.status = 0
+            changed = True
+        if "auto_publish:" in text and item.model_name not in active_endpoint_ids:
+            item.status = 0
+            changed = True
+    if changed:
+        db.commit()
