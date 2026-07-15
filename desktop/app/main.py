@@ -612,18 +612,19 @@ class MainWindow(QMainWindow):
         brand_icon = QLabel()
         brand_icon.setPixmap(QIcon(icon_path("10_TK跨境助手.ico")).pixmap(28, 28))
         brand_icon.setFixedSize(30, 30)
-        brand = QLabel("TK跨境助手")
+        brand = QLabel("TikTok Japan 跨境选品平台")
         brand.setObjectName("BrandTitle")
         brand_row.addWidget(brand_icon)
         brand_row.addWidget(brand, 1)
-        brand_sub = QLabel("Japan TikTok Selection")
+        brand_sub = QLabel("AI 选品与审核工作台")
         brand_sub.setObjectName("BrandSub")
         brand_layout.addLayout(brand_row)
         brand_layout.addWidget(brand_sub)
 
+        sidebar.setFixedWidth(230)
         self.nav = QListWidget()
         self.nav.setObjectName("SideNav")
-        self.nav.setFixedWidth(220)
+        self.nav.setFixedWidth(230)
         self.nav.setIconSize(QSize(20, 20))
         self.stack = QStackedWidget()
 
@@ -2792,22 +2793,22 @@ THEMES = {
         "metric": "#10151c",
     },
     "light": {
-        "bg": "#eef3f8",
-        "sidebar": "#ffffff",
+        "bg": "#f4f8fb",
+        "sidebar": "#fbfdff",
         "panel": "#ffffff",
-        "panel2": "#f8fbff",
-        "hero": "#ffffff",
-        "input": "#f1f6fc",
-        "border": "#d8e2ef",
-        "text": "#172033",
-        "muted": "#64748b",
-        "accent": "#2563eb",
-        "accent_hover": "#1d4ed8",
-        "tag": "#dff4e8",
-        "tag_text": "#047857",
-        "image_a": "#dbeafe",
-        "image_b": "#e9d5ff",
-        "metric": "#f1f5f9",
+        "panel2": "#f8fbfd",
+        "hero": "#f1fbf8",
+        "input": "#f7fafc",
+        "border": "#e1eaf0",
+        "text": "#1f2a44",
+        "muted": "#718096",
+        "accent": "#159878",
+        "accent_hover": "#0f8065",
+        "tag": "#e7f7f1",
+        "tag_text": "#147b67",
+        "image_a": "#e9f5f2",
+        "image_b": "#fff0ec",
+        "metric": "#f2f7f9",
     },
 }
 
@@ -2877,7 +2878,7 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             background: $sidebar; border-bottom: 1px solid $border;
         }
         #BrandTitle {
-            background: transparent; color: $text; font-size: 20px; font-weight: 900;
+            background: transparent; color: $text; font-size: 15px; font-weight: 900;
         }
         #BrandSub {
             background: transparent; color: $muted; font-size: 11px; letter-spacing: 0px;
@@ -2886,9 +2887,9 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             background: $sidebar; color: $muted; border: 0; padding: 14px;
             outline: 0; font-size: 15px;
         }
-        #SideNav::item { height: 48px; border-radius: 10px; margin: 5px; padding-left: 14px; }
+        #SideNav::item { height: 44px; border-radius: 9px; margin: 4px 8px; padding-left: 12px; }
         #SideNav::item:hover { background: $panel2; color: $text; }
-        #SideNav::item:selected { background: $accent; color: #ffffff; }
+        #SideNav::item:selected { background: $tag; color: $tag_text; }
         #UserBox {
             background: $panel2; border: 1px solid $border; border-radius: 12px;
             margin: 10px 12px 14px 12px;
