@@ -1968,11 +1968,14 @@ class StudioSelectionPage(Page):
         report_layout.addWidget(report_title)
         report_tabs = QHBoxLayout()
         report_tabs.setSpacing(4)
+        self.report_tab_buttons: list[QPushButton] = []
         for tab_name in ("选品分析报告", "人群匹配", "使用场景"):
             tab = QPushButton(tab_name)
             tab.setObjectName("StudioReportTab")
             tab.setCheckable(True)
             tab.setChecked(tab_name == "选品分析报告")
+            tab.clicked.connect(lambda checked=False, name=tab_name, button=tab: self._select_report_tab(name, button))
+            self.report_tab_buttons.append(tab)
             report_tabs.addWidget(tab)
         report_layout.addLayout(report_tabs)
         self.report_product = QLabel("选择商品查看分析")
@@ -1997,6 +2000,8 @@ class StudioSelectionPage(Page):
         report_layout.addWidget(report_hint)
         workspace.addWidget(self.report_panel)
         self.layout.addLayout(workspace, 1)
+        self.report_item: dict[str, Any] | None = None
+        self.report_tab = "选品分析报告"
         self._show_report(None)
 
     def _carousel(self, title: str, empty_text: str):
@@ -2156,6 +2161,7 @@ class StudioSelectionPage(Page):
         self.new_product_grid.setColumnStretch(6, 1)
 
     def _show_report(self, item: dict[str, Any] | None) -> None:
+        self.report_item = item
         while self.report_image_layout.count():
             child = self.report_image_layout.takeAt(0)
             if child.widget():
@@ -2172,10 +2178,16 @@ class StudioSelectionPage(Page):
         price = item.get("supplier_price") or item.get("price") or item.get("suggested_price_min") or 0
         self.report_product.setText(f"{title[:32]}\n{format_jpy_price(price)}")
         sales = int(float(item.get("sales_count") or item.get("supplier_sales_count") or 0))
-        self.report_summary.setText(f"销量 {sales:,} · 综合参考")
+        score = item.get("weighted_score") or item.get("ai_score") or item.get("supplier_match_score") or 0
+        self.report_summary.setText(f"销量 {sales:,} · AI 参考 {float(score):.0f} 分")
         image = create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 278, 126)
         self.report_image_layout.addWidget(image)
-        for name, level, content in dimension_items_from_report(item):
+        dimensions = dimension_items_from_report(item)
+        if self.report_tab == "人群匹配":
+            dimensions = [row for row in dimensions if row[0] in {"目标群体", "日本偏好", "竞品属性"}]
+        elif self.report_tab == "使用场景":
+            dimensions = [row for row in dimensions if row[0] in {"使用场景", "商品周期性", "复购属性"}]
+        for name, level, content in dimensions:
             box = QFrame()
             box.setObjectName("StudioDimension")
             box_layout = QVBoxLayout(box)
@@ -2195,6 +2207,12 @@ class StudioSelectionPage(Page):
             detail.setWordWrap(True)
             box_layout.addWidget(detail)
             self.report_dimensions.addWidget(box)
+
+    def _select_report_tab(self, name: str, button: QPushButton) -> None:
+        self.report_tab = name
+        for tab in self.report_tab_buttons:
+            tab.setChecked(tab is button)
+        self._show_report(self.report_item)
 
 
 class TeacherProductCard(QFrame):
