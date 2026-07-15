@@ -1807,6 +1807,42 @@ class StudioNewProductCard(QFrame):
         super().mousePressEvent(event)
 
 
+class StudioCompactCard(QFrame):
+    def __init__(self, item: dict[str, Any], on_click=None) -> None:
+        super().__init__()
+        self.item = item
+        self.on_click = on_click
+        self.setObjectName("StudioCompactCard")
+        self.setFixedSize(132, 188)
+        self.setCursor(Qt.PointingHandCursor)
+        title = str(item.get("title") or item.get("derived_title") or "未命名商品")
+        price = item.get("supplier_price") or item.get("price") or item.get("suggested_price_min") or 0
+        sales = int(float(item.get("supplier_sales_count") or item.get("sales_count") or 0))
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+        layout.addWidget(create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 118, 105))
+        name = QLabel(title[:12])
+        name.setObjectName("StudioCompactName")
+        name.setWordWrap(True)
+        name.setToolTip(title)
+        layout.addWidget(name)
+        footer = QHBoxLayout()
+        price_label = QLabel(format_jpy_price(price))
+        price_label.setObjectName("StudioCompactPrice")
+        sales_label = QLabel(f"{sales:,}")
+        sales_label.setObjectName("StudioCompactMuted")
+        footer.addWidget(price_label)
+        footer.addStretch()
+        footer.addWidget(sales_label)
+        layout.addLayout(footer)
+
+    def mousePressEvent(self, event) -> None:
+        if self.on_click:
+            self.on_click(self.item)
+        super().mousePressEvent(event)
+
+
 class StudioSelectionPage(Page):
     """方案三：将搜索、推荐和分析报告放在同一工作台内。"""
 
@@ -1986,8 +2022,30 @@ class StudioSelectionPage(Page):
         empty.setObjectName("Muted")
         row.addWidget(empty)
         scroll.setWidget(content)
-        wrapper_layout.addWidget(scroll)
+        carousel_bar = QHBoxLayout()
+        carousel_bar.setContentsMargins(0, 0, 0, 0)
+        carousel_bar.setSpacing(4)
+        carousel_bar.addWidget(scroll, 1)
+        previous = QPushButton("‹")
+        previous.setObjectName("StudioCarouselArrow")
+        previous.setFixedSize(28, 54)
+        previous.setToolTip("向左查看")
+        previous.clicked.connect(lambda: scroll.horizontalScrollBar().setValue(max(0, scroll.horizontalScrollBar().value() - 260)))
+        following = QPushButton("›")
+        following.setObjectName("StudioCarouselArrow")
+        following.setFixedSize(28, 54)
+        following.setToolTip("向右查看")
+        following.clicked.connect(lambda: self._scroll_carousel(scroll, 260))
+        carousel_bar.insertWidget(0, previous)
+        carousel_bar.addWidget(following)
+        wrapper_layout.addLayout(carousel_bar)
         return wrapper, content, row
+
+    @staticmethod
+    def _scroll_carousel(scroll: QScrollArea, step: int) -> None:
+        bar = scroll.horizontalScrollBar()
+        value = bar.value() + step
+        bar.setValue(0 if value >= bar.maximum() else value)
 
     def activate(self) -> None:
         if not self.loaded:
@@ -2076,14 +2134,14 @@ class StudioSelectionPage(Page):
         self._clear_row(self.derived_row)
         if search_items:
             for item in search_items[:10]:
-                self.search_result_row.addWidget(CompactProductCard(item, 0, lambda current=item: self._show_report(current)))
+                self.search_result_row.addWidget(StudioCompactCard(item, lambda current=item: self._show_report(current)))
         else:
             empty = QLabel("暂无搜索结果，输入需求后开始选品。")
             empty.setObjectName("Muted")
             self.search_result_row.addWidget(empty)
         if derived_items:
             for item in derived_items[:10]:
-                self.derived_row.addWidget(CompactProductCard(item, 0, lambda current=item: self._show_report(current)))
+                self.derived_row.addWidget(StudioCompactCard(item, lambda current=item: self._show_report(current)))
         else:
             empty = QLabel("暂无衍生品，先在任务看板补齐衍生品。")
             empty.setObjectName("Muted")
@@ -3006,6 +3064,18 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #StudioDimensionName { background: transparent; color: $text; font-size: 11px; font-weight: 800; }
         #StudioDimensionGrade { background: transparent; color: $accent; font-size: 11px; font-weight: 800; }
         #StudioDimensionText { background: transparent; color: $muted; font-size: 10px; line-height: 1.25; }
+        #StudioCarouselArrow {
+            background: $panel; color: $accent; border: 1px solid $border; border-radius: 8px;
+            font-size: 25px; font-weight: 700; padding: 0;
+        }
+        #StudioCarouselArrow:hover { background: $tag; border-color: $accent; }
+        #StudioCompactCard {
+            background: $panel; border: 1px solid $border; border-radius: 9px;
+        }
+        #StudioCompactCard:hover { border: 1px solid $accent; }
+        #StudioCompactName { background: transparent; color: $text; font-size: 10px; font-weight: 800; }
+        #StudioCompactPrice { background: transparent; color: #ef6461; font-size: 13px; font-weight: 900; }
+        #StudioCompactMuted { background: transparent; color: $muted; font-size: 9px; }
         #StudioNewCard {
             background: $panel; border: 1px solid $border; border-radius: 10px;
         }
