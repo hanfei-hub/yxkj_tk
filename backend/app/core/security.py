@@ -1,13 +1,14 @@
 from datetime import datetime, timedelta, timezone
+import os
 from typing import Any
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
 
-SECRET_KEY = "replace-this-secret-in-production"
+SECRET_KEY = os.getenv("TK_SELECTION_SECRET_KEY") or os.getenv("SECRET_KEY") or "dev-only-secret-change-me"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 12
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 

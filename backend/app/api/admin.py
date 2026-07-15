@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_role
 from app.core.database import get_db
 from app.core.security import hash_password
-from app.models.entities import ModelConfig, SelectionAttribute, ThirdPartyConfig, User
+from app.models.entities import ModelConfig, SelectionAttribute, TeacherReviewRecord, ThirdPartyConfig, User, UserSearchRecommendation
 from app.services.serializers import (
     attribute_to_dict,
     model_config_to_dict,
@@ -38,9 +39,15 @@ class StatusRequest(BaseModel):
     status: int
 
 
+class CreditRechargeRequest(BaseModel):
+    credits: int
+    remark: str = ""
+
+
 class ModelConfigPayload(BaseModel):
     config_name: str
     provider: str = "custom"
+    model_type: str = "general"
     base_url: str = ""
     api_key_encrypted: str = ""
     model_name: str = ""
@@ -123,6 +130,19 @@ def update_user_status(user_id: int, payload: StatusRequest, db: Session = Depen
     return user_to_dict(user)
 
 
+@router.post("/users/{user_id}/credits/recharge")
+def recharge_user_credits(user_id: int, payload: CreditRechargeRequest, db: Session = Depends(get_db)):
+    if payload.credits <= 0:
+        raise HTTPException(status_code=400, detail="充值积分必须大于0")
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    user.credit_balance = int(user.credit_balance or 0) + int(payload.credits)
+    db.commit()
+    db.refresh(user)
+    return {"ok": True, "credits_added": payload.credits, "user": user_to_dict(user)}
+
+
 @router.post("/users/{user_id}/reset-password")
 def reset_password(user_id: int, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
     user = db.get(User, user_id)
@@ -131,6 +151,30 @@ def reset_password(user_id: int, payload: ResetPasswordRequest, db: Session = De
     user.password_hash = hash_password(payload.password)
     db.commit()
     return {"ok": True}
+
+
+@router.delete("/users/{user_id}")
+def delete_user(
+    user_id: int,
+    current_user: dict = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    if user_id == int(current_user.get("id") or 0):
+        raise HTTPException(status_code=400, detail="不能删除当前登录账号")
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    review_exists = db.scalar(select(TeacherReviewRecord.id).where(TeacherReviewRecord.teacher_id == user_id).limit(1))
+    if review_exists:
+        raise HTTPException(status_code=400, detail="该用户已有审核记录，不能直接删除，可先禁用账号")
+    db.execute(delete(UserSearchRecommendation).where(UserSearchRecommendation.user_id == user_id))
+    db.delete(user)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="该用户存在关联数据，不能直接删除，可先禁用账号") from exc
+    return {"ok": True, "deleted_id": user_id}
 
 
 @router.get("/model-configs")
@@ -142,7 +186,7 @@ def list_model_configs(db: Session = Depends(get_db)):
 @router.post("/model-configs")
 def create_model_config(payload: ModelConfigPayload, db: Session = Depends(get_db)):
     if payload.is_default:
-        for item in db.scalars(select(ModelConfig)).all():
+        for item in db.scalars(select(ModelConfig).where(ModelConfig.model_type == payload.model_type)).all():
             item.is_default = 0
     item = ModelConfig(**payload.model_dump())
     db.add(item)
@@ -157,7 +201,9 @@ def update_model_config(config_id: int, payload: ModelConfigPayload, db: Session
     if not item:
         raise HTTPException(status_code=404, detail="模型配置不存在")
     if payload.is_default:
-        for existing in db.scalars(select(ModelConfig).where(ModelConfig.id != config_id)).all():
+        for existing in db.scalars(
+            select(ModelConfig).where(ModelConfig.id != config_id, ModelConfig.model_type == payload.model_type)
+        ).all():
             existing.is_default = 0
     for key, value in payload.model_dump().items():
         setattr(item, key, value)
@@ -182,11 +228,21 @@ def set_default_model(config_id: int, db: Session = Depends(get_db)):
     item = db.get(ModelConfig, config_id)
     if not item:
         raise HTTPException(status_code=404, detail="模型配置不存在")
-    for existing in db.scalars(select(ModelConfig)).all():
+    for existing in db.scalars(select(ModelConfig).where(ModelConfig.model_type == item.model_type)).all():
         existing.is_default = 1 if existing.id == config_id else 0
     db.commit()
     db.refresh(item)
     return model_config_to_dict(item)
+
+
+@router.delete("/model-configs/{config_id}")
+def delete_model_config(config_id: int, db: Session = Depends(get_db)):
+    item = db.get(ModelConfig, config_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="模型配置不存在")
+    db.delete(item)
+    db.commit()
+    return {"ok": True, "deleted_id": config_id}
 
 
 @router.get("/third-party-configs")
@@ -225,6 +281,16 @@ def update_third_party_status(config_id: int, payload: StatusRequest, db: Sessio
     db.commit()
     db.refresh(item)
     return third_party_config_to_dict(item)
+
+
+@router.delete("/third-party-configs/{config_id}")
+def delete_third_party_config(config_id: int, db: Session = Depends(get_db)):
+    item = db.get(ThirdPartyConfig, config_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="第三方配置不存在")
+    db.delete(item)
+    db.commit()
+    return {"ok": True, "deleted_id": config_id}
 
 
 @router.get("/selection-attributes")

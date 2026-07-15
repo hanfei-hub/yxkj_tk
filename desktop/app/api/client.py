@@ -15,7 +15,7 @@ class ApiError(RuntimeError):
 class ApiClient:
     base_url: str = os.getenv("TK_SELECTION_API_BASE_URL", "http://120.26.207.89:8000")
     token: str | None = None
-    timeout: int = 30
+    timeout: int = 180
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -40,6 +40,8 @@ class ApiClient:
                 detail = response.json().get("detail", response.text)
             except ValueError:
                 detail = response.text
+            if response.status_code == 401:
+                detail = "请重新登录"
             raise ApiError(str(detail))
         if not response.text:
             return None
@@ -61,3 +63,6 @@ class ApiClient:
 
     def patch(self, path: str, payload: dict[str, Any] | None = None) -> Any:
         return self.request("PATCH", path, payload or {})
+
+    def delete(self, path: str) -> Any:
+        return self.request("DELETE", path)
