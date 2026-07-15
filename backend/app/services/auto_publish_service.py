@@ -648,12 +648,17 @@ try {
                 pass
 
 
-def import_template_to_miaoshou(db: Session, template_path: Path, erp_url: str) -> dict[str, Any]:
+def import_template_to_miaoshou(
+    db: Session,
+    template_path: Path,
+    erp_url: str,
+    task_id: str | None = None,
+) -> dict[str, Any]:
     steps: list[str] = []
     errors: list[str] = []
     screenshots: list[str] = []
     try:
-        username, password = get_miaoshou_credentials(db)
+        username, password = get_miaoshou_credentials(db, task_id)
     except AutoPublishError as exc:
         return {"ok": False, "steps": [], "errors": [str(exc)], "screenshots": []}
 
