@@ -1767,6 +1767,46 @@ class StudentSelectionPage(Page):
         bar.setValue(next_value)
 
 
+class StudioNewProductCard(QFrame):
+    def __init__(self, item: dict[str, Any], index: int, on_click=None) -> None:
+        super().__init__()
+        self.item = item
+        self.on_click = on_click
+        self.setObjectName("StudioNewCard")
+        self.setFixedSize(190, 286)
+        self.setCursor(Qt.PointingHandCursor)
+        title = str(item.get("title") or item.get("derived_title") or "未命名商品")
+        price = item.get("supplier_price") or item.get("price") or item.get("suggested_price_min") or 0
+        sales = int(float(item.get("supplier_sales_count") or item.get("sales_count") or 0))
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        layout.addWidget(create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 172, 132))
+        name = QLabel(title[:14])
+        name.setObjectName("StudioNewName")
+        name.setWordWrap(True)
+        name.setToolTip(title)
+        layout.addWidget(name)
+        tag = QLabel("新品")
+        tag.setObjectName("StudioNewTag")
+        tag.setFixedWidth(42)
+        layout.addWidget(tag)
+        metrics = QHBoxLayout()
+        price_label = QLabel(format_jpy_price(price))
+        price_label.setObjectName("StudioNewPrice")
+        sales_label = QLabel(f"销量 {sales:,}")
+        sales_label.setObjectName("StudioNewMuted")
+        metrics.addWidget(price_label)
+        metrics.addStretch()
+        metrics.addWidget(sales_label)
+        layout.addLayout(metrics)
+
+    def mousePressEvent(self, event) -> None:
+        if self.on_click:
+            self.on_click(self.item)
+        super().mousePressEvent(event)
+
+
 class StudioSelectionPage(Page):
     """方案三：将搜索、推荐和分析报告放在同一工作台内。"""
 
@@ -1890,6 +1930,15 @@ class StudioSelectionPage(Page):
         report_title = QLabel("选品分析报告")
         report_title.setObjectName("StudioPanelTitle")
         report_layout.addWidget(report_title)
+        report_tabs = QHBoxLayout()
+        report_tabs.setSpacing(4)
+        for tab_name in ("选品分析报告", "人群匹配", "使用场景"):
+            tab = QPushButton(tab_name)
+            tab.setObjectName("StudioReportTab")
+            tab.setCheckable(True)
+            tab.setChecked(tab_name == "选品分析报告")
+            report_tabs.addWidget(tab)
+        report_layout.addLayout(report_tabs)
         self.report_product = QLabel("选择商品查看分析")
         self.report_product.setObjectName("StudioReportTitle")
         self.report_product.setWordWrap(True)
@@ -1898,6 +1947,10 @@ class StudioSelectionPage(Page):
         self.report_image_layout = QVBoxLayout(self.report_image_box)
         self.report_image_layout.setContentsMargins(0, 0, 0, 0)
         report_layout.addWidget(self.report_image_box)
+        self.report_summary = QLabel("选择商品后显示销量和综合参考")
+        self.report_summary.setObjectName("StudioSummaryText")
+        self.report_summary.setWordWrap(True)
+        report_layout.addWidget(self.report_summary)
         self.report_dimensions = QVBoxLayout()
         self.report_dimensions.setSpacing(6)
         report_layout.addLayout(self.report_dimensions)
@@ -2040,9 +2093,7 @@ class StudioSelectionPage(Page):
             if child.widget():
                 child.widget().deleteLater()
         for index, item in enumerate(new_items):
-            card = ProductCard(item, index)
-            card.setCursor(Qt.PointingHandCursor)
-            card.mousePressEvent = lambda event, current=item: self._show_report(current)
+            card = StudioNewProductCard(item, index, self._show_report)
             self.new_product_grid.addWidget(card, index // 6, index % 6)
         self.new_product_grid.setColumnStretch(6, 1)
 
@@ -2057,10 +2108,13 @@ class StudioSelectionPage(Page):
                 child.widget().deleteLater()
         if not item:
             self.report_product.setText("选择商品查看分析")
+            self.report_summary.setText("选择商品后显示销量和综合参考")
             return
         title = str(item.get("title") or item.get("derived_title") or "未命名商品")
         price = item.get("supplier_price") or item.get("price") or item.get("suggested_price_min") or 0
         self.report_product.setText(f"{title[:32]}\n{format_jpy_price(price)}")
+        sales = int(float(item.get("sales_count") or item.get("supplier_sales_count") or 0))
+        self.report_summary.setText(f"销量 {sales:,} · 综合参考")
         image = create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 278, 126)
         self.report_image_layout.addWidget(image)
         for name, level, content in dimension_items_from_report(item):
@@ -2952,6 +3006,23 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #StudioDimensionName { background: transparent; color: $text; font-size: 11px; font-weight: 800; }
         #StudioDimensionGrade { background: transparent; color: $accent; font-size: 11px; font-weight: 800; }
         #StudioDimensionText { background: transparent; color: $muted; font-size: 10px; line-height: 1.25; }
+        #StudioNewCard {
+            background: $panel; border: 1px solid $border; border-radius: 10px;
+        }
+        #StudioNewCard:hover { border: 1px solid $accent; }
+        #StudioNewName { background: transparent; color: $text; font-size: 12px; font-weight: 800; }
+        #StudioNewTag {
+            background: $tag; color: $tag_text; border-radius: 5px; padding: 3px 7px;
+            font-size: 10px; font-weight: 700;
+        }
+        #StudioNewPrice { background: transparent; color: #ef6461; font-size: 17px; font-weight: 900; }
+        #StudioNewMuted { background: transparent; color: $muted; font-size: 10px; }
+        #StudioSummaryText { background: $panel; color: $muted; border-radius: 7px; padding: 7px 9px; font-size: 11px; }
+        #StudioReportTab {
+            background: transparent; color: $muted; border: 0; border-bottom: 2px solid transparent;
+            border-radius: 0; padding: 7px 4px; font-size: 11px; font-weight: 700;
+        }
+        #StudioReportTab:checked { color: $tag_text; border-bottom: 2px solid $tag_text; }
         #PageHeader {
             background: $panel; border: 1px solid $border; border-radius: 14px;
         }
