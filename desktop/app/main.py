@@ -683,7 +683,7 @@ class MainWindow(QMainWindow):
         self.pages.append(page)
 
     def setup_pages(self) -> None:
-        self.add_page("智能选品", StudentSelectionPage(self.gateway), "01_智能选品.ico")
+        self.add_page("智能选品", StudioSelectionPage(self.gateway), "01_智能选品.ico")
         self.add_page("教师看板", TeacherDashboardPage(self.gateway), "02_教师看板.ico")
         self.add_page("任务看板", PipelinePage(self.gateway), "07_第三方API.ico")
         self.add_page("自动上架", AutoPublishPage(self.gateway), "10_TK跨境助手.ico")
@@ -1766,6 +1766,324 @@ class StudentSelectionPage(Page):
         bar.setValue(next_value)
 
 
+class StudioSelectionPage(Page):
+    """方案三：将搜索、推荐和分析报告放在同一工作台内。"""
+
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.loaded = False
+        self.selection_task_id: int | None = None
+        self.selection_timer = QTimer(self)
+        self.selection_timer.setInterval(2500)
+        self.selection_timer.timeout.connect(self.poll_selection_task)
+        self.layout.setContentsMargins(24, 18, 24, 18)
+        self.layout.setSpacing(12)
+
+        header = QFrame()
+        header.setObjectName("StudioHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(4, 0, 4, 0)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(2)
+        title = QLabel("AI智能选品")
+        title.setObjectName("StudioTitle")
+        subtitle = QLabel("与 AI 对话，发现 TikTok Japan 热销商品")
+        subtitle.setObjectName("Muted")
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        header_layout.addLayout(title_box)
+        header_layout.addStretch()
+        refresh = QPushButton()
+        refresh.setObjectName("StudioIconButton")
+        refresh.setFixedSize(38, 38)
+        refresh.setIcon(QIcon(icon_path("06_刷新图标.png")))
+        refresh.setIconSize(QSize(18, 18))
+        refresh.setToolTip("刷新选品数据")
+        refresh.clicked.connect(self.force_refresh)
+        header_layout.addWidget(refresh)
+        self.layout.addWidget(header)
+
+        workspace = QHBoxLayout()
+        workspace.setSpacing(14)
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+
+        chat = QFrame()
+        chat.setObjectName("StudioChat")
+        chat_layout = QVBoxLayout(chat)
+        chat_layout.setContentsMargins(16, 14, 16, 14)
+        chat_layout.setSpacing(10)
+        chat_head = QHBoxLayout()
+        assistant_dot = QLabel("●")
+        assistant_dot.setObjectName("StudioDot")
+        chat_label = QLabel("AI 选品助手")
+        chat_label.setObjectName("StudioPanelTitle")
+        chat_head.addWidget(assistant_dot)
+        chat_head.addWidget(chat_label)
+        chat_head.addStretch()
+        chat_head.addWidget(QLabel("日本站 · 实时分析"))
+        chat_layout.addLayout(chat_head)
+        prompt_row = QHBoxLayout()
+        prompt_row.setSpacing(8)
+        self.chat_input = QLineEdit()
+        self.chat_input.setPlaceholderText("帮我找适合日本学生、轻小件、1000円以内的桌面收纳商品")
+        self.chat_input.returnPressed.connect(self.send_chat)
+        self.send_button = QPushButton("开始选品")
+        self.send_button.setObjectName("StudioPrimary")
+        self.send_button.clicked.connect(self.send_chat)
+        prompt_row.addWidget(self.chat_input, 1)
+        prompt_row.addWidget(self.send_button)
+        chat_layout.addLayout(prompt_row)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        for text in ("日本小众家居好物", "学生党平价好物", "轻小件高利润"):
+            chip = QPushButton(text)
+            chip.setObjectName("StudioChip")
+            chip.clicked.connect(lambda checked=False, value=text: self.chat_input.setText(value))
+            chips.addWidget(chip)
+        chips.addStretch()
+        chat_layout.addLayout(chips)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.hide()
+        self.progress_label = QLabel()
+        self.progress_label.setObjectName("Muted")
+        self.progress_label.hide()
+        chat_layout.addWidget(self.progress_bar)
+        chat_layout.addWidget(self.progress_label)
+        left_layout.addWidget(chat)
+
+        self.search_result_scroll, self.search_result_content, self.search_result_row = self._carousel("本次搜索结果", "暂无搜索结果，输入需求后开始选品。")
+        left_layout.addWidget(self.search_result_scroll)
+        self.derived_scroll, self.derived_content, self.derived_row = self._carousel("衍生品推荐", "暂无衍生品，先在任务看板补齐衍生品。")
+        left_layout.addWidget(self.derived_scroll)
+
+        new_title = QLabel("新品榜单")
+        new_title.setObjectName("StudioSectionTitle")
+        left_layout.addWidget(new_title)
+        new_scroll = QScrollArea()
+        new_scroll.setObjectName("StudioScroll")
+        new_scroll.setWidgetResizable(True)
+        new_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        new_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        new_content = QWidget()
+        new_content.setObjectName("StudioGrid")
+        self.new_product_grid = QGridLayout(new_content)
+        self.new_product_grid.setContentsMargins(4, 4, 4, 18)
+        self.new_product_grid.setHorizontalSpacing(12)
+        self.new_product_grid.setVerticalSpacing(12)
+        new_scroll.setWidget(new_content)
+        left_layout.addWidget(new_scroll, 1)
+        workspace.addWidget(left, 1)
+
+        self.report_panel = QFrame()
+        self.report_panel.setObjectName("StudioReport")
+        self.report_panel.setFixedWidth(314)
+        report_layout = QVBoxLayout(self.report_panel)
+        report_layout.setContentsMargins(16, 16, 16, 16)
+        report_layout.setSpacing(10)
+        report_title = QLabel("选品分析报告")
+        report_title.setObjectName("StudioPanelTitle")
+        report_layout.addWidget(report_title)
+        self.report_product = QLabel("选择商品查看分析")
+        self.report_product.setObjectName("StudioReportTitle")
+        self.report_product.setWordWrap(True)
+        report_layout.addWidget(self.report_product)
+        self.report_image_box = QWidget()
+        self.report_image_layout = QVBoxLayout(self.report_image_box)
+        self.report_image_layout.setContentsMargins(0, 0, 0, 0)
+        report_layout.addWidget(self.report_image_box)
+        self.report_dimensions = QVBoxLayout()
+        self.report_dimensions.setSpacing(6)
+        report_layout.addLayout(self.report_dimensions)
+        report_layout.addStretch()
+        report_hint = QLabel("点击商品卡片查看完整维度报告")
+        report_hint.setObjectName("Muted")
+        report_hint.setWordWrap(True)
+        report_layout.addWidget(report_hint)
+        workspace.addWidget(self.report_panel)
+        self.layout.addLayout(workspace, 1)
+        self._show_report(None)
+
+    def _carousel(self, title: str, empty_text: str):
+        wrapper = QWidget()
+        wrapper_layout = QVBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        wrapper_layout.setSpacing(6)
+        heading = QLabel(title)
+        heading.setObjectName("StudioSectionTitle")
+        wrapper_layout.addWidget(heading)
+        scroll = QScrollArea()
+        scroll.setObjectName("StudioScroll")
+        scroll.setWidgetResizable(False)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFixedHeight(232)
+        content = QWidget()
+        content.setObjectName("StudioCarousel")
+        row = QHBoxLayout(content)
+        row.setContentsMargins(4, 4, 4, 8)
+        row.setSpacing(10)
+        empty = QLabel(empty_text)
+        empty.setObjectName("Muted")
+        row.addWidget(empty)
+        scroll.setWidget(content)
+        wrapper_layout.addWidget(scroll)
+        return wrapper, content, row
+
+    def activate(self) -> None:
+        if not self.loaded:
+            self.refresh()
+            self.loaded = True
+
+    def force_refresh(self) -> None:
+        try:
+            self.refresh()
+            self.loaded = True
+        except Exception as exc:
+            parent = self.window()
+            if self.gateway.is_invalid_token_error(exc) and hasattr(parent, "clear_invalid_session"):
+                parent.clear_invalid_session()
+                return
+            QMessageBox.warning(self, "刷新失败", str(exc))
+
+    def send_chat(self) -> None:
+        text = self.chat_input.text().strip()
+        if not text:
+            return
+        try:
+            result = self.gateway.start_ai_selection(text)
+        except Exception as exc:
+            parent = self.window()
+            if self.gateway.is_invalid_token_error(exc) and hasattr(parent, "clear_invalid_session"):
+                parent.clear_invalid_session()
+                return
+            QMessageBox.warning(self, "启动失败", str(exc))
+            return
+        self.selection_task_id = int(result.get("task_id") or 0)
+        if "credit_balance" in result and self.gateway.user is not None:
+            self.gateway.user["credit_balance"] = result.get("credit_balance")
+            parent = self.window()
+            if hasattr(parent, "user"):
+                parent.user = self.gateway.user
+            if hasattr(parent, "update_login_status"):
+                parent.update_login_status()
+        self.send_button.setEnabled(False)
+        self.chat_input.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.progress_label.setText(str(result.get("message") or "AI 智能选品任务已开始"))
+        self.progress_label.show()
+        self.selection_timer.start()
+        self.poll_selection_task()
+
+    def poll_selection_task(self) -> None:
+        if not self.selection_task_id:
+            return
+        try:
+            status = self.gateway.ai_selection_task(self.selection_task_id)
+        except Exception as exc:
+            self.selection_timer.stop()
+            self.send_button.setEnabled(True)
+            self.chat_input.setEnabled(True)
+            QMessageBox.warning(self, "任务查询失败", str(exc))
+            return
+        self.progress_bar.setValue(max(0, min(100, int(status.get("progress") or 0))))
+        self.progress_label.setText(str(status.get("message") or status.get("stage") or "正在选品"))
+        if status.get("status") == "success":
+            self.selection_timer.stop()
+            self.progress_bar.setValue(100)
+            self.progress_label.setText(f"选品完成，生成 {status.get('success_count') or 0} 个商品")
+            self.send_button.setEnabled(True)
+            self.chat_input.setEnabled(True)
+            self.refresh()
+        elif status.get("status") == "failed":
+            self.selection_timer.stop()
+            self.send_button.setEnabled(True)
+            self.chat_input.setEnabled(True)
+            self.progress_label.setText("选品失败，积分已按后端结果处理")
+
+    @staticmethod
+    def _clear_row(row: QHBoxLayout) -> None:
+        while row.count():
+            child = row.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+    def refresh(self) -> None:
+        search_items = self.gateway.user_search_results()
+        derived_items = self.gateway.recommended_derived_products(10)
+        new_items = self.gateway.daily_recommendations()
+        self._clear_row(self.search_result_row)
+        self._clear_row(self.derived_row)
+        if search_items:
+            for item in search_items[:10]:
+                self.search_result_row.addWidget(CompactProductCard(item, 0, lambda current=item: self._show_report(current)))
+        else:
+            empty = QLabel("暂无搜索结果，输入需求后开始选品。")
+            empty.setObjectName("Muted")
+            self.search_result_row.addWidget(empty)
+        if derived_items:
+            for item in derived_items[:10]:
+                self.derived_row.addWidget(CompactProductCard(item, 0, lambda current=item: self._show_report(current)))
+        else:
+            empty = QLabel("暂无衍生品，先在任务看板补齐衍生品。")
+            empty.setObjectName("Muted")
+            self.derived_row.addWidget(empty)
+        while self.new_product_grid.count():
+            child = self.new_product_grid.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        for index, item in enumerate(new_items):
+            card = ProductCard(item, index)
+            card.setCursor(Qt.PointingHandCursor)
+            card.mousePressEvent = lambda event, current=item: self._show_report(current)
+            self.new_product_grid.addWidget(card, index // 6, index % 6)
+        self.new_product_grid.setColumnStretch(6, 1)
+
+    def _show_report(self, item: dict[str, Any] | None) -> None:
+        while self.report_image_layout.count():
+            child = self.report_image_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        while self.report_dimensions.count():
+            child = self.report_dimensions.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        if not item:
+            self.report_product.setText("选择商品查看分析")
+            return
+        title = str(item.get("title") or item.get("derived_title") or "未命名商品")
+        price = item.get("supplier_price") or item.get("price") or item.get("suggested_price_min") or 0
+        self.report_product.setText(f"{title[:32]}\n{format_jpy_price(price)}")
+        image = create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 278, 126)
+        self.report_image_layout.addWidget(image)
+        for name, level, content in dimension_items_from_report(item):
+            box = QFrame()
+            box.setObjectName("StudioDimension")
+            box_layout = QVBoxLayout(box)
+            box_layout.setContentsMargins(10, 7, 10, 7)
+            box_layout.setSpacing(2)
+            line = QHBoxLayout()
+            label = QLabel(name)
+            label.setObjectName("StudioDimensionName")
+            grade = QLabel(level or "参考")
+            grade.setObjectName("StudioDimensionGrade")
+            line.addWidget(label)
+            line.addStretch()
+            line.addWidget(grade)
+            box_layout.addLayout(line)
+            detail = QLabel(content or "暂无分析内容")
+            detail.setObjectName("StudioDimensionText")
+            detail.setWordWrap(True)
+            box_layout.addWidget(detail)
+            self.report_dimensions.addWidget(box)
+
+
 class TeacherProductCard(QFrame):
     def __init__(self, product: dict[str, Any], on_open) -> None:
         super().__init__()
@@ -2599,6 +2917,40 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         }
         #IconButton:hover { background: $accent; color: #ffffff; }
         #Page { background: $bg; }
+        #StudioHeader { background: transparent; }
+        #StudioTitle { background: transparent; color: $text; font-size: 28px; font-weight: 900; }
+        #StudioChat, #StudioReport {
+            background: $panel; border: 1px solid $border; border-radius: 14px;
+        }
+        #StudioChat { background: $hero; }
+        #StudioPanelTitle { background: transparent; color: $text; font-size: 15px; font-weight: 900; }
+        #StudioDot { background: transparent; color: #16a085; font-size: 16px; }
+        #StudioPrimary {
+            background: #ff6b6b; color: #ffffff; border: 0; border-radius: 8px;
+            min-width: 112px; min-height: 38px; font-weight: 800;
+        }
+        #StudioPrimary:hover { background: #f05252; }
+        #StudioChip {
+            background: $panel; color: $muted; border: 1px solid $border;
+            border-radius: 14px; padding: 5px 12px; font-size: 11px;
+        }
+        #StudioChip:hover { color: $accent; border-color: $accent; }
+        #StudioIconButton {
+            background: $panel; color: $accent; border: 1px solid $border; border-radius: 10px;
+        }
+        #StudioIconButton:hover { background: $accent; }
+        #StudioSectionTitle { background: transparent; color: $text; font-size: 17px; font-weight: 900; }
+        #StudioScroll { background: transparent; border: 0; }
+        #StudioCarousel { background: transparent; }
+        #StudioGrid { background: transparent; }
+        #StudioReport { background: $panel2; }
+        #StudioReportTitle { background: transparent; color: $text; font-size: 15px; font-weight: 900; line-height: 1.3; }
+        #StudioDimension {
+            background: $panel; border: 1px solid $border; border-radius: 8px;
+        }
+        #StudioDimensionName { background: transparent; color: $text; font-size: 11px; font-weight: 800; }
+        #StudioDimensionGrade { background: transparent; color: $accent; font-size: 11px; font-weight: 800; }
+        #StudioDimensionText { background: transparent; color: $muted; font-size: 10px; line-height: 1.25; }
         #PageHeader {
             background: $panel; border: 1px solid $border; border-radius: 14px;
         }
