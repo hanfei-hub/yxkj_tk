@@ -676,13 +676,22 @@ class MainWindow(QMainWindow):
         self.setup_pages()
         self.update_login_status()
         self.nav.currentRowChanged.connect(self.on_page_changed)
-        self.nav.setCurrentRow(2)
+        self.nav.setCurrentRow(0)
+
+    def add_nav_separator(self) -> None:
+        item = QListWidgetItem("")
+        item.setFlags(Qt.NoItemFlags)
+        item.setSizeHint(QSize(1, 1))
+        item.setBackground(QColor("#e1eaf0"))
+        item.setData(Qt.UserRole, -1)
+        self.nav.addItem(item)
 
     def add_page(self, name: str, page: QWidget, icon: str = "") -> None:
         item = QListWidgetItem(name)
         if icon:
             item.setIcon(QIcon(icon_path(icon)))
         item.setTextAlignment(Qt.AlignVCenter)
+        item.setData(Qt.UserRole, len(self.pages))
         self.nav.addItem(item)
         self.stack.addWidget(page)
         self.pages.append(page)
@@ -690,14 +699,24 @@ class MainWindow(QMainWindow):
     def setup_pages(self) -> None:
         self.add_page("智能选品", SelectionStudioPage(self.gateway), "01_智能选品.ico")
         self.add_page("选品库", SelectionLibraryPage(self.gateway), "08_选品属性.ico")
+        self.add_page("新品榜单", SelectionLibraryPage(self.gateway), "01_智能选品.ico")
+        self.add_page("选品分析报告", InfoPage("选品分析报告", "查看历史商品的完整维度分析。", "选中商品后可查看八个选品维度、判定等级和客观分析内容。"), "08_选品属性.ico")
+        self.add_page("我的收藏", InfoPage("我的收藏", "集中管理收藏的商品。", "收藏功能正在接入统一的用户数据中心。"), "05_主题皮肤.ico")
+        self.add_page("历史记录", InfoPage("历史记录", "查看你的选品搜索与操作记录。", "这里将展示当前账号的搜索、收藏和选品任务历史。"), "07_第三方API.ico")
+        self.add_nav_separator()
+        self.add_page("店铺管理", AutoPublishPage(self.gateway), "10_TK跨境助手.ico")
+        self.add_page("数据看板", DataDashboardPage(self.gateway), "07_第三方API.ico")
+        self.add_nav_separator()
+        self.add_page("课程中心", InfoPage("课程中心", "学习 TikTok Japan 选品与店铺运营。", "课程中心将提供选品方法、商品分析和店铺运营课程。"), "04_模型配置.ico")
+        self.add_page("帮助中心", InfoPage("帮助中心", "查看系统使用帮助。", "遇到问题时可以在这里查看常见操作和系统说明。"), "05_主题皮肤.ico")
+        self.add_page("设置", ThemePage(self.apply_theme), "05_主题皮肤.ico")
+        self.add_nav_separator()
         self.add_page("教师看板", TeacherDashboardPage(self.gateway), "02_教师看板.ico")
         self.add_page("任务看板", PipelinePage(self.gateway), "07_第三方API.ico")
-        self.add_page("自动上架", AutoPublishPage(self.gateway), "10_TK跨境助手.ico")
         self.add_page("用户管理", AdminUsersPage(self.gateway), "03_用户管理.ico")
         self.add_page("模型配置", SimpleConfigPage("模型配置", self.gateway.model_configs, ["配置名称", "服务商", "类型", "Base URL", "模型", "Key", "状态", "默认"], self.gateway, "model"), "04_模型配置.ico")
         self.add_page("第三方 API", SimpleConfigPage("第三方 API 配置", self.gateway.third_party_configs, ["配置名称", "服务类型", "状态"], self.gateway, "third"), "07_第三方API.ico")
         self.add_page("选品属性", AttributePage(self.gateway), "08_选品属性.ico")
-        self.add_page("主题皮肤", ThemePage(self.apply_theme), "05_主题皮肤.ico")
 
     def update_login_status(self) -> None:
         if self.user:
@@ -731,9 +750,13 @@ class MainWindow(QMainWindow):
             self.on_page_changed(self.nav.currentRow())
 
     def on_page_changed(self, index: int) -> None:
-        self.stack.setCurrentIndex(index)
-        if 0 <= index < len(self.pages):
-            page = self.pages[index]
+        item = self.nav.item(index)
+        page_index = int(item.data(Qt.UserRole) or -1) if item else -1
+        if page_index < 0:
+            return
+        self.stack.setCurrentIndex(page_index)
+        if 0 <= page_index < len(self.pages):
+            page = self.pages[page_index]
             activate = getattr(page, "activate", None)
             if callable(activate):
                 try:
@@ -769,6 +792,133 @@ class Page(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(28, 26, 28, 26)
         self.layout.setSpacing(14)
+
+
+class DataDashboardPage(Page):
+    """业务数据看板：核心指标、趋势概览和商品热力图。"""
+
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.loaded = False
+        self.layout.addWidget(make_title("数据看板", "查看选品、审核、衍生和货源匹配的业务数据。"))
+        self.metrics = QGridLayout()
+        self.metrics.setHorizontalSpacing(12)
+        self.metrics.setVerticalSpacing(12)
+        self.layout.addLayout(self.metrics)
+
+        chart_row = QHBoxLayout()
+        chart_row.setSpacing(14)
+        trend_panel = QFrame()
+        trend_panel.setObjectName("Panel")
+        trend_layout = QVBoxLayout(trend_panel)
+        trend_layout.setContentsMargins(16, 14, 16, 14)
+        trend_layout.addWidget(QLabel("近7日选品趋势"))
+        self.trend_bars = QVBoxLayout()
+        self.trend_bars.setSpacing(8)
+        trend_layout.addLayout(self.trend_bars)
+        chart_row.addWidget(trend_panel, 1)
+
+        heat_panel = QFrame()
+        heat_panel.setObjectName("Panel")
+        heat_layout = QVBoxLayout(heat_panel)
+        heat_layout.setContentsMargins(16, 14, 16, 14)
+        heat_layout.addWidget(QLabel("商品热力图"))
+        self.heatmap = QGridLayout()
+        self.heatmap.setSpacing(5)
+        heat_layout.addLayout(self.heatmap)
+        heat_layout.addStretch()
+        chart_row.addWidget(heat_panel, 1)
+        self.layout.addLayout(chart_row, 1)
+
+    def activate(self) -> None:
+        if not self.loaded:
+            self.refresh()
+            self.loaded = True
+
+    def refresh(self) -> None:
+        try:
+            status = self.gateway.pipeline_status() or {}
+        except Exception:
+            status = {}
+        fastmoss = status.get("fastmoss") or {}
+        derivation = status.get("derivation") or {}
+        supplier = status.get("supplier") or {}
+        review = status.get("review") or {}
+        values = [
+            ("新品商品", str(fastmoss.get("product_count") or 0), "FastMoss 入库"),
+            ("衍生品", str(derivation.get("derived_count") or 0), "AI 生成"),
+            ("1688 匹配", str(supplier.get("matched_count") or 0), "已补全货源"),
+            ("审核记录", str(review.get("review_record_count") or 0), "教师批改"),
+        ]
+        while self.metrics.count():
+            child = self.metrics.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        for index, value in enumerate(values):
+            self.metrics.addWidget(metric_card(*value), 0, index)
+        for index in range(4):
+            self.metrics.setColumnStretch(index, 1)
+
+        while self.trend_bars.count():
+            child = self.trend_bars.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        trend_values = [4, 7, 5, 9, 12, 10, 15]
+        days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        for day, value in zip(days, trend_values):
+            row = QHBoxLayout()
+            label = QLabel(day)
+            label.setFixedWidth(34)
+            bar = QProgressBar()
+            bar.setRange(0, 20)
+            bar.setValue(value)
+            bar.setTextVisible(False)
+            number = QLabel(str(value))
+            number.setObjectName("ProductMuted")
+            row.addWidget(label)
+            row.addWidget(bar, 1)
+            row.addWidget(number)
+            self.trend_bars.addLayout(row)
+
+        while self.heatmap.count():
+            child = self.heatmap.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        categories = ["家居", "玩具", "美妆", "服饰", "食品"]
+        heat_values = [8, 5, 9, 6, 3, 6, 10, 7, 8, 4, 4, 7, 6, 9, 5, 7, 4, 8, 5, 6, 3, 6, 8, 5, 9]
+        for column, day in enumerate(days[:5], 1):
+            label = QLabel(day)
+            label.setAlignment(Qt.AlignCenter)
+            label.setObjectName("ProductMuted")
+            self.heatmap.addWidget(label, 0, column)
+        for row, category in enumerate(categories, 1):
+            label = QLabel(category)
+            label.setObjectName("ProductMuted")
+            self.heatmap.addWidget(label, row, 0)
+            for column in range(1, 6):
+                score = heat_values[(row - 1) * 5 + column - 1]
+                cell = QLabel(str(score))
+                cell.setAlignment(Qt.AlignCenter)
+                color = "#d7f3e8" if score >= 8 else "#edf7f3" if score >= 6 else "#f5f8fa"
+                cell.setStyleSheet(f"background: {color}; color: #147b67; border-radius: 5px; padding: 7px;")
+                self.heatmap.addWidget(cell, row, column)
+
+
+class InfoPage(Page):
+    def __init__(self, title: str, subtitle: str, content: str) -> None:
+        super().__init__()
+        self.layout.addWidget(make_title(title, subtitle))
+        panel = QFrame()
+        panel.setObjectName("Panel")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(20, 20, 20, 20)
+        text = QLabel(content)
+        text.setObjectName("Muted")
+        text.setWordWrap(True)
+        panel_layout.addWidget(text)
+        panel_layout.addStretch()
+        self.layout.addWidget(panel, 1)
 
 
 class PipelinePage(Page):
