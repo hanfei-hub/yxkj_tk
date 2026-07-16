@@ -1954,14 +1954,6 @@ class SelectionStudioPage(Page):
         new_header.addSpacing(8)
         new_header.addWidget(new_meta)
         new_header.addStretch()
-        refresh = QPushButton()
-        refresh.setObjectName("StudioIconButton")
-        refresh.setFixedSize(34, 34)
-        refresh.setIcon(QIcon(icon_path("06_刷新图标.png")))
-        refresh.setIconSize(QSize(17, 17))
-        refresh.setToolTip("刷新新品榜单")
-        refresh.clicked.connect(self.force_refresh)
-        new_header.addWidget(refresh)
         left_layout.addLayout(new_header)
 
         scroll = QScrollArea()
@@ -2210,6 +2202,28 @@ class SelectionLibraryPage(Page):
         header.addWidget(subtitle)
         self.layout.addLayout(header)
 
+        attribute_box = QFrame()
+        attribute_box.setObjectName("LibraryAttributes")
+        attribute_layout = QVBoxLayout(attribute_box)
+        attribute_layout.setContentsMargins(14, 12, 14, 12)
+        attribute_layout.setSpacing(8)
+        attribute_heading = QHBoxLayout()
+        attribute_title = QLabel("选品属性维度")
+        attribute_title.setObjectName("StudioPanelTitle")
+        attribute_hint = QLabel("用于衍生品分析与老师审核权重")
+        attribute_hint.setObjectName("StudioMarket")
+        attribute_heading.addWidget(attribute_title)
+        attribute_heading.addSpacing(8)
+        attribute_heading.addWidget(attribute_hint)
+        attribute_heading.addStretch()
+        attribute_layout.addLayout(attribute_heading)
+        self.attribute_grid = QGridLayout()
+        self.attribute_grid.setHorizontalSpacing(8)
+        self.attribute_grid.setVerticalSpacing(6)
+        self.attribute_grid.setContentsMargins(0, 0, 0, 0)
+        attribute_layout.addLayout(self.attribute_grid)
+        self.layout.addWidget(attribute_box)
+
         body = QHBoxLayout()
         body.setSpacing(16)
         left = QWidget()
@@ -2221,14 +2235,6 @@ class SelectionLibraryPage(Page):
         list_title.setObjectName("StudioSectionTitle")
         list_header.addWidget(list_title)
         list_header.addStretch()
-        refresh = QPushButton()
-        refresh.setObjectName("StudioIconButton")
-        refresh.setFixedSize(34, 34)
-        refresh.setIcon(QIcon(icon_path("06_刷新图标.png")))
-        refresh.setIconSize(QSize(17, 17))
-        refresh.setToolTip("刷新选品库")
-        refresh.clicked.connect(self.force_refresh)
-        list_header.addWidget(refresh)
         left_layout.addLayout(list_header)
         scroll = QScrollArea()
         scroll.setObjectName("StudioScroll")
@@ -2306,6 +2312,7 @@ class SelectionLibraryPage(Page):
 
     def activate(self) -> None:
         if not self.loaded:
+            self.refresh_attributes()
             self.refresh()
             self.loaded = True
 
@@ -2334,6 +2341,37 @@ class SelectionLibraryPage(Page):
         for index, item in enumerate(items):
             self.product_grid.addWidget(StudioNewProductCard(item, index, self._show_report), index // 5, index % 5)
         self.product_grid.setColumnStretch(5, 1)
+
+    def refresh_attributes(self) -> None:
+        while self.attribute_grid.count():
+            child = self.attribute_grid.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        try:
+            attributes = self.gateway.attributes()
+        except Exception:
+            attributes = []
+        by_code = {str(item.get("attribute_code") or ""): item for item in attributes}
+        for index, (code, default_name) in enumerate(DIMENSION_LABELS):
+            item = by_code.get(code, {})
+            name = str(item.get("attribute_name") or default_name)
+            weight = item.get("current_weight") or item.get("default_weight")
+            description = str(item.get("description") or "用于衍生品分析和审核反馈")
+            card = QFrame()
+            card.setObjectName("LibraryAttributeCard")
+            card.setToolTip(description)
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(9, 6, 9, 6)
+            card_layout.setSpacing(5)
+            name_label = QLabel(name)
+            name_label.setObjectName("LibraryAttributeName")
+            value_label = QLabel(f"{float(weight) * 100:.0f}%" if weight is not None else "默认")
+            value_label.setObjectName("LibraryAttributeValue")
+            card_layout.addWidget(name_label)
+            card_layout.addStretch()
+            card_layout.addWidget(value_label)
+            self.attribute_grid.addWidget(card, index // 4, index % 4)
+        self.attribute_grid.setColumnStretch(4, 1)
 
     def _show_report(self, item: dict[str, Any] | None) -> None:
         self.report_item = item
@@ -3625,6 +3663,15 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             background: $panel; border: 1px solid $border; border-radius: 14px;
         }
         #StudioChat { background: $hero; }
+        #LibraryAttributes {
+            background: $panel; border: 1px solid $border; border-radius: 12px;
+        }
+        #LibraryAttributeCard {
+            background: $panel2; border: 1px solid $border; border-radius: 7px;
+        }
+        #LibraryAttributeCard:hover { border-color: $accent; background: $tag; }
+        #LibraryAttributeName { background: transparent; color: $text; font-size: 11px; font-weight: 700; }
+        #LibraryAttributeValue { background: transparent; color: $accent; font-size: 11px; font-weight: 900; }
         #StudioTutorial {
             background: $panel; color: $muted; border: 1px solid $border;
             border-radius: 8px; padding: 8px 12px; font-size: 11px; font-weight: 700;
