@@ -3776,7 +3776,10 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             background: $sidebar; color: $muted; border: 0; padding: 14px;
             outline: 0; font-family: "Microsoft YaHei UI"; font-size: 14px; font-weight: 500;
         }
-        #SideNav::item { height: 44px; border-radius: 9px; margin: 4px 8px; padding-left: 12px; }
+        #SideNav::item {
+            height: 44px; border-radius: 9px; margin: 4px 8px; padding-left: 12px;
+            font-family: "Microsoft YaHei UI"; font-size: 14px; font-weight: 500;
+        }
         #SideNav::item:hover { background: $panel2; color: $text; }
         #SideNav::item:selected { background: $tag; color: $tag_text; }
         #UserBox {
