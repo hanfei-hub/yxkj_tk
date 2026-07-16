@@ -684,7 +684,7 @@ class MainWindow(QMainWindow):
         self.pages.append(page)
 
     def setup_pages(self) -> None:
-        self.add_page("智能选品", StudioSelectionPage(self.gateway), "01_智能选品.ico")
+        self.add_page("智能选品", SelectionStudioPage(self.gateway), "01_智能选品.ico")
         self.add_page("教师看板", TeacherDashboardPage(self.gateway), "02_教师看板.ico")
         self.add_page("任务看板", PipelinePage(self.gateway), "07_第三方API.ico")
         self.add_page("自动上架", AutoPublishPage(self.gateway), "10_TK跨境助手.ico")
@@ -1841,6 +1841,227 @@ class StudioCompactCard(QFrame):
         if self.on_click:
             self.on_click(self.item)
         super().mousePressEvent(event)
+
+
+class SelectionStudioPage(Page):
+    """智能选品首屏：AI 对话 + 新品榜单。"""
+
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.loaded = False
+        self.selection_task_id: int | None = None
+        self.selection_timer = QTimer(self)
+        self.selection_timer.setInterval(2500)
+        self.selection_timer.timeout.connect(self.poll_selection_task)
+        self.layout.setContentsMargins(28, 22, 28, 22)
+        self.layout.setSpacing(14)
+
+        heading = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title_box.setSpacing(2)
+        title = QLabel("AI智能选品")
+        title.setObjectName("StudioTitle")
+        subtitle = QLabel("与AI对话，发现 TikTok Japan 热销商品")
+        subtitle.setObjectName("Muted")
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        heading.addLayout(title_box)
+        heading.addStretch()
+        tutorial = QPushButton("◉  使用教程")
+        tutorial.setObjectName("StudioTutorial")
+        tutorial.clicked.connect(self.show_tutorial)
+        heading.addWidget(tutorial)
+        self.layout.addLayout(heading)
+
+        chat = QFrame()
+        chat.setObjectName("StudioChat")
+        chat_layout = QVBoxLayout(chat)
+        chat_layout.setContentsMargins(18, 15, 18, 15)
+        chat_layout.setSpacing(9)
+        chat_header = QHBoxLayout()
+        dot = QLabel("●")
+        dot.setObjectName("StudioDot")
+        assistant_label = QLabel("AI 选品助手")
+        assistant_label.setObjectName("StudioPanelTitle")
+        market_label = QLabel("日本站 · 实时分析")
+        market_label.setObjectName("StudioMarket")
+        chat_header.addWidget(dot)
+        chat_header.addWidget(assistant_label)
+        chat_header.addStretch()
+        chat_header.addWidget(market_label)
+        chat_layout.addLayout(chat_header)
+        self.chat_history = QVBoxLayout()
+        self.chat_history.setSpacing(7)
+        self.chat_history.addWidget(self._bubble("你好，我可以根据你的需求推荐适合 TikTok Japan 的商品。", False))
+        chat_layout.addLayout(self.chat_history)
+        prompt_row = QHBoxLayout()
+        prompt_row.setSpacing(8)
+        self.chat_input = QLineEdit()
+        self.chat_input.setPlaceholderText("帮我找适合日本学生、轻小件、1000円以内的桌面收纳商品")
+        self.chat_input.returnPressed.connect(self.send_chat)
+        self.send_button = QPushButton("开始选品")
+        self.send_button.setObjectName("StudioPrimary")
+        self.send_button.clicked.connect(self.send_chat)
+        prompt_row.addWidget(self.chat_input, 1)
+        prompt_row.addWidget(self.send_button)
+        chat_layout.addLayout(prompt_row)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        for text in ("日本小众家居好物", "学生党平价好物", "轻小件高利润"):
+            chip = QPushButton(text)
+            chip.setObjectName("StudioChip")
+            chip.clicked.connect(lambda checked=False, value=text: self.chat_input.setText(value))
+            chips.addWidget(chip)
+        chips.addStretch()
+        chat_layout.addLayout(chips)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.hide()
+        self.progress_label = QLabel()
+        self.progress_label.setObjectName("Muted")
+        self.progress_label.hide()
+        chat_layout.addWidget(self.progress_bar)
+        chat_layout.addWidget(self.progress_label)
+        self.layout.addWidget(chat)
+
+        new_header = QHBoxLayout()
+        new_title = QLabel("新品榜单")
+        new_title.setObjectName("StudioSectionTitle")
+        new_meta = QLabel("FastMoss · 日本站最新商品")
+        new_meta.setObjectName("StudioMarket")
+        new_header.addWidget(new_title)
+        new_header.addSpacing(8)
+        new_header.addWidget(new_meta)
+        new_header.addStretch()
+        refresh = QPushButton()
+        refresh.setObjectName("StudioIconButton")
+        refresh.setFixedSize(34, 34)
+        refresh.setIcon(QIcon(icon_path("06_刷新图标.png")))
+        refresh.setIconSize(QSize(17, 17))
+        refresh.setToolTip("刷新新品榜单")
+        refresh.clicked.connect(self.force_refresh)
+        new_header.addWidget(refresh)
+        self.layout.addLayout(new_header)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("StudioScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        content = QWidget()
+        content.setObjectName("StudioGrid")
+        self.new_product_grid = QGridLayout(content)
+        self.new_product_grid.setContentsMargins(4, 4, 4, 18)
+        self.new_product_grid.setHorizontalSpacing(12)
+        self.new_product_grid.setVerticalSpacing(12)
+        self.new_product_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        scroll.setWidget(content)
+        self.layout.addWidget(scroll, 1)
+
+    @staticmethod
+    def _bubble(text: str, user: bool) -> QFrame:
+        bubble = QFrame()
+        bubble.setObjectName("StudioBubbleUser" if user else "StudioBubbleAi")
+        bubble_layout = QHBoxLayout(bubble)
+        bubble_layout.setContentsMargins(12, 8, 12, 8)
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setObjectName("StudioBubbleText")
+        bubble_layout.addWidget(label)
+        bubble_layout.setAlignment(Qt.AlignRight if user else Qt.AlignLeft)
+        return bubble
+
+    def show_tutorial(self) -> None:
+        QMessageBox.information(
+            self,
+            "使用教程",
+            "1. 描述你想找的商品、人群、预算或使用场景。\n"
+            "2. 点击“开始选品”，AI 会生成本次推荐结果。\n"
+            "3. 下方新品榜单展示日本站最新商品。\n"
+            "4. 商品图片和销量以后台最新数据为准。",
+        )
+
+    def activate(self) -> None:
+        if not self.loaded:
+            self.refresh()
+            self.loaded = True
+
+    def force_refresh(self) -> None:
+        try:
+            self.refresh()
+            self.loaded = True
+        except Exception as exc:
+            parent = self.window()
+            if self.gateway.is_invalid_token_error(exc) and hasattr(parent, "clear_invalid_session"):
+                parent.clear_invalid_session()
+                return
+            QMessageBox.warning(self, "刷新失败", str(exc))
+
+    def send_chat(self) -> None:
+        text = self.chat_input.text().strip()
+        if not text:
+            return
+        self.chat_history.addWidget(self._bubble(text, True))
+        try:
+            result = self.gateway.start_ai_selection(text)
+        except Exception as exc:
+            QMessageBox.warning(self, "启动失败", str(exc))
+            return
+        self.selection_task_id = int(result.get("task_id") or 0)
+        if "credit_balance" in result and self.gateway.user is not None:
+            self.gateway.user["credit_balance"] = result.get("credit_balance")
+            parent = self.window()
+            if hasattr(parent, "user"):
+                parent.user = self.gateway.user
+            if hasattr(parent, "update_login_status"):
+                parent.update_login_status()
+        self.chat_history.addWidget(self._bubble("好的，我正在根据你的需求分析日本市场商品，请稍候。", False))
+        self.send_button.setEnabled(False)
+        self.chat_input.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.progress_label.setText(str(result.get("message") or "AI 智能选品任务已开始"))
+        self.progress_label.show()
+        self.selection_timer.start()
+        self.poll_selection_task()
+
+    def poll_selection_task(self) -> None:
+        if not self.selection_task_id:
+            return
+        try:
+            status = self.gateway.ai_selection_task(self.selection_task_id)
+        except Exception as exc:
+            self.selection_timer.stop()
+            self.send_button.setEnabled(True)
+            self.chat_input.setEnabled(True)
+            QMessageBox.warning(self, "任务查询失败", str(exc))
+            return
+        self.progress_bar.setValue(max(0, min(100, int(status.get("progress") or 0))))
+        self.progress_label.setText(str(status.get("message") or status.get("stage") or "正在选品"))
+        if status.get("status") == "success":
+            self.selection_timer.stop()
+            self.progress_bar.setValue(100)
+            self.progress_label.setText(f"选品完成，生成 {status.get('success_count') or 0} 个商品")
+            self.chat_input.setEnabled(True)
+            self.send_button.setEnabled(True)
+            self.chat_history.addWidget(self._bubble("已完成本次选品，推荐结果已保存到你的账号。", False))
+        elif status.get("status") == "failed":
+            self.selection_timer.stop()
+            self.chat_input.setEnabled(True)
+            self.send_button.setEnabled(True)
+            self.progress_label.setText("选品失败，积分已按后端结果处理")
+
+    def refresh(self) -> None:
+        items = self.gateway.daily_recommendations()
+        while self.new_product_grid.count():
+            child = self.new_product_grid.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        for index, item in enumerate(items):
+            self.new_product_grid.addWidget(StudioNewProductCard(item, index), index // 6, index % 6)
+        self.new_product_grid.setColumnStretch(6, 1)
 
 
 class StudioSelectionPage(Page):
@@ -3054,6 +3275,18 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             background: $panel; border: 1px solid $border; border-radius: 14px;
         }
         #StudioChat { background: $hero; }
+        #StudioTutorial {
+            background: $panel; color: $muted; border: 1px solid $border;
+            border-radius: 8px; padding: 8px 12px; font-size: 11px; font-weight: 700;
+        }
+        #StudioTutorial:hover { color: $accent; border-color: $accent; }
+        #StudioMarket { background: transparent; color: $muted; font-size: 11px; }
+        #StudioBubbleUser, #StudioBubbleAi {
+            border-radius: 8px; border: 1px solid $border;
+        }
+        #StudioBubbleUser { background: $tag; }
+        #StudioBubbleAi { background: $panel; }
+        #StudioBubbleText { background: transparent; color: $text; font-size: 12px; }
         #StudioPanelTitle { background: transparent; color: $text; font-size: 15px; font-weight: 900; }
         #StudioDot { background: transparent; color: #16a085; font-size: 16px; }
         #StudioPrimary {
