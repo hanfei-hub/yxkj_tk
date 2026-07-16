@@ -139,6 +139,10 @@ class DataGateway:
                     break
         return items
 
+    def selection_library_products(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Load the latest derived products for the personal selection library."""
+        return self.recommended_derived_products(limit)
+
     def generate_derived_products(self, product_id: int) -> dict[str, Any]:
         if not self.user:
             return {"ok": False, "message": "请先登录后端账号"}
@@ -685,6 +689,7 @@ class MainWindow(QMainWindow):
 
     def setup_pages(self) -> None:
         self.add_page("智能选品", SelectionStudioPage(self.gateway), "01_智能选品.ico")
+        self.add_page("选品库", SelectionLibraryPage(self.gateway), "08_选品属性.ico")
         self.add_page("教师看板", TeacherDashboardPage(self.gateway), "02_教师看板.ico")
         self.add_page("任务看板", PipelinePage(self.gateway), "07_第三方API.ico")
         self.add_page("自动上架", AutoPublishPage(self.gateway), "10_TK跨境助手.ico")
@@ -2183,6 +2188,232 @@ class SelectionStudioPage(Page):
         self.new_product_grid.setColumnStretch(6, 1)
 
 
+class SelectionLibraryPage(Page):
+    """衍生品选品库：商品浏览与分析报告。"""
+
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.loaded = False
+        self.report_item: dict[str, Any] | None = None
+        self.report_tab = "选品分析报告"
+        self.favorite_ids: set[int] = set()
+        self.layout.setContentsMargins(28, 22, 28, 22)
+        self.layout.setSpacing(14)
+
+        header = QVBoxLayout()
+        title = QLabel("选品库")
+        title.setObjectName("StudioTitle")
+        subtitle = QLabel("浏览 AI 生成的衍生品，并查看完整选品分析报告")
+        subtitle.setObjectName("Muted")
+        header.addWidget(title)
+        header.addWidget(subtitle)
+        self.layout.addLayout(header)
+
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+        list_header = QHBoxLayout()
+        list_title = QLabel("衍生品商品")
+        list_title.setObjectName("StudioSectionTitle")
+        list_header.addWidget(list_title)
+        list_header.addStretch()
+        refresh = QPushButton()
+        refresh.setObjectName("StudioIconButton")
+        refresh.setFixedSize(34, 34)
+        refresh.setIcon(QIcon(icon_path("06_刷新图标.png")))
+        refresh.setIconSize(QSize(17, 17))
+        refresh.setToolTip("刷新选品库")
+        refresh.clicked.connect(self.force_refresh)
+        list_header.addWidget(refresh)
+        left_layout.addLayout(list_header)
+        scroll = QScrollArea()
+        scroll.setObjectName("StudioScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        content.setObjectName("StudioGrid")
+        self.product_grid = QGridLayout(content)
+        self.product_grid.setContentsMargins(4, 4, 4, 18)
+        self.product_grid.setHorizontalSpacing(12)
+        self.product_grid.setVerticalSpacing(12)
+        self.product_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        scroll.setWidget(content)
+        left_layout.addWidget(scroll, 1)
+        body.addWidget(left, 1)
+
+        self.report_panel = QFrame()
+        self.report_panel.setObjectName("StudioReport")
+        self.report_panel.setFixedWidth(320)
+        report_layout = QVBoxLayout(self.report_panel)
+        report_layout.setContentsMargins(16, 16, 16, 16)
+        report_layout.setSpacing(10)
+        report_title = QLabel("选品分析报告")
+        report_title.setObjectName("StudioPanelTitle")
+        report_layout.addWidget(report_title)
+        self.report_product = QLabel("选择商品查看分析")
+        self.report_product.setObjectName("StudioReportTitle")
+        self.report_product.setWordWrap(True)
+        report_layout.addWidget(self.report_product)
+        self.report_image_box = QWidget()
+        self.report_image_layout = QVBoxLayout(self.report_image_box)
+        self.report_image_layout.setContentsMargins(0, 0, 0, 0)
+        report_layout.addWidget(self.report_image_box)
+        self.report_summary = QLabel("选择商品后显示销量和综合参考")
+        self.report_summary.setObjectName("StudioSummaryText")
+        self.report_summary.setWordWrap(True)
+        report_layout.addWidget(self.report_summary)
+        tabs = QHBoxLayout()
+        tabs.setSpacing(4)
+        self.report_tab_buttons: list[QPushButton] = []
+        for tab_name in ("选品分析报告", "人群匹配", "使用场景"):
+            tab = QPushButton(tab_name)
+            tab.setObjectName("StudioReportTab")
+            tab.setCheckable(True)
+            tab.setChecked(tab_name == self.report_tab)
+            tab.clicked.connect(lambda checked=False, name=tab_name, button=tab: self._select_report_tab(name, button))
+            self.report_tab_buttons.append(tab)
+            tabs.addWidget(tab)
+        report_layout.addLayout(tabs)
+        dimensions_scroll = QScrollArea()
+        dimensions_scroll.setObjectName("StudioScroll")
+        dimensions_scroll.setWidgetResizable(True)
+        dimensions_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        dimensions_content = QWidget()
+        self.report_dimensions = QVBoxLayout(dimensions_content)
+        self.report_dimensions.setContentsMargins(0, 0, 2, 0)
+        self.report_dimensions.setSpacing(6)
+        self.report_dimensions.setAlignment(Qt.AlignTop)
+        dimensions_scroll.setWidget(dimensions_content)
+        report_layout.addWidget(dimensions_scroll, 1)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.favorite_button = QPushButton("☆  加入收藏")
+        self.favorite_button.setObjectName("StudioSecondaryAction")
+        self.favorite_button.clicked.connect(self.toggle_favorite)
+        self.start_button = QPushButton("✦  开始选品")
+        self.start_button.setObjectName("StudioPrimary")
+        self.start_button.clicked.connect(self.start_selection)
+        actions.addWidget(self.favorite_button, 1)
+        actions.addWidget(self.start_button, 1)
+        report_layout.addLayout(actions)
+        body.addWidget(self.report_panel)
+        self.layout.addLayout(body, 1)
+        self._show_report(None)
+
+    def activate(self) -> None:
+        if not self.loaded:
+            self.refresh()
+            self.loaded = True
+
+    def force_refresh(self) -> None:
+        try:
+            self.refresh()
+            self.loaded = True
+        except Exception as exc:
+            parent = self.window()
+            if self.gateway.is_invalid_token_error(exc) and hasattr(parent, "clear_invalid_session"):
+                parent.clear_invalid_session()
+                return
+            QMessageBox.warning(self, "刷新失败", str(exc))
+
+    def refresh(self) -> None:
+        while self.product_grid.count():
+            child = self.product_grid.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        items = self.gateway.selection_library_products(100)
+        if not items:
+            empty = QLabel("暂无衍生品，请先完成 AI 选品或等待任务生成。")
+            empty.setObjectName("Muted")
+            self.product_grid.addWidget(empty, 0, 0)
+            return
+        for index, item in enumerate(items):
+            self.product_grid.addWidget(StudioNewProductCard(item, index, self._show_report), index // 5, index % 5)
+        self.product_grid.setColumnStretch(5, 1)
+
+    def _show_report(self, item: dict[str, Any] | None) -> None:
+        self.report_item = item
+        while self.report_image_layout.count():
+            child = self.report_image_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        while self.report_dimensions.count():
+            child = self.report_dimensions.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.favorite_button.setEnabled(bool(item))
+        self.start_button.setEnabled(bool(item))
+        if not item:
+            self.report_product.setText("选择商品查看分析")
+            self.report_summary.setText("选择商品后显示销量和综合参考")
+            self.favorite_button.setText("☆  加入收藏")
+            return
+        title = str(item.get("title") or item.get("derived_title") or "未命名商品")
+        price = item.get("supplier_price") or item.get("price") or item.get("suggested_price_min") or 0
+        self.report_product.setText(f"{title[:32]}\n{format_jpy_price(price)}")
+        sales = int(float(item.get("sales_count") or item.get("supplier_sales_count") or 0))
+        score = item.get("weighted_score") or item.get("ai_score") or item.get("supplier_match_score") or 0
+        self.report_summary.setText(f"销量 {sales:,} · AI 参考 {float(score):.0f} 分")
+        self.report_image_layout.addWidget(create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 278, 126))
+        item_id = int(item.get("id") or item.get("derived_id") or 0)
+        self.favorite_button.setText("★  已收藏" if item_id in self.favorite_ids else "☆  加入收藏")
+        dimensions = dimension_items_from_report(item)
+        if self.report_tab == "人群匹配":
+            dimensions = [row for row in dimensions if row[0] in {"目标群体", "日本偏好", "竞品属性"}]
+        elif self.report_tab == "使用场景":
+            dimensions = [row for row in dimensions if row[0] in {"使用场景", "商品周期性", "复购属性"}]
+        for name, level, detail_text in dimensions:
+            box = QFrame()
+            box.setObjectName("StudioDimension")
+            box_layout = QVBoxLayout(box)
+            box_layout.setContentsMargins(10, 7, 10, 7)
+            box_layout.setSpacing(2)
+            line = QHBoxLayout()
+            label = QLabel(name)
+            label.setObjectName("StudioDimensionName")
+            grade = QLabel(level or "参考")
+            grade.setObjectName("StudioDimensionGrade")
+            line.addWidget(label)
+            line.addStretch()
+            line.addWidget(grade)
+            box_layout.addLayout(line)
+            detail = QLabel(detail_text or "暂无分析内容")
+            detail.setObjectName("StudioDimensionText")
+            detail.setWordWrap(True)
+            box_layout.addWidget(detail)
+            self.report_dimensions.addWidget(box)
+
+    def _select_report_tab(self, name: str, button: QPushButton) -> None:
+        self.report_tab = name
+        for tab in self.report_tab_buttons:
+            tab.setChecked(tab is button)
+        self._show_report(self.report_item)
+
+    def toggle_favorite(self) -> None:
+        if not self.report_item:
+            return
+        item_id = int(self.report_item.get("id") or self.report_item.get("derived_id") or 0)
+        if item_id in self.favorite_ids:
+            self.favorite_ids.remove(item_id)
+        else:
+            self.favorite_ids.add(item_id)
+        self._show_report(self.report_item)
+
+    def start_selection(self) -> None:
+        if not self.report_item:
+            return
+        title = str(self.report_item.get("title") or self.report_item.get("derived_title") or "")
+        try:
+            self.gateway.start_ai_selection(f"请围绕这个衍生品继续选品：{title}")
+            QMessageBox.information(self, "已开始选品", "已提交 AI 选品任务，请稍后在智能选品页面查看结果。")
+        except Exception as exc:
+            QMessageBox.warning(self, "启动失败", str(exc))
+
+
 class StudioSelectionPage(Page):
     """方案三：将搜索、推荐和分析报告放在同一工作台内。"""
 
@@ -3420,6 +3651,12 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             min-width: 112px; min-height: 38px; font-weight: 800;
         }
         #StudioPrimary:hover { background: #f05252; }
+        #StudioSecondaryAction {
+            background: $panel; color: $text; border: 1px solid $border;
+            border-radius: 8px; min-height: 38px; font-weight: 800;
+        }
+        #StudioSecondaryAction:hover { color: $accent; border-color: $accent; }
+        #StudioSecondaryAction:disabled, #StudioPrimary:disabled { color: $muted; background: $metric; }
         #StudioChip {
             background: $panel; color: $muted; border: 1px solid $border;
             border-radius: 14px; padding: 5px 12px; font-size: 11px;
