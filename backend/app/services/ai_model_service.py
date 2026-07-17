@@ -153,6 +153,7 @@ def chat_completion(
 
 def extract_json_object(text: str) -> Any:
     text = text.strip()
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
         text = re.sub(r"```$", "", text).strip()
@@ -161,10 +162,11 @@ def extract_json_object(text: str) -> Any:
     except json.JSONDecodeError:
         pass
 
-    match = re.search(r"(\{.*\}|\[.*\])", text, flags=re.DOTALL)
+    match = re.search(r"[\[{]", text)
     if not match:
         raise ModelCallError("大模型未返回可解析的 JSON。")
     try:
-        return json.loads(match.group(1))
+        value, _ = json.JSONDecoder().raw_decode(text[match.start():])
+        return value
     except json.JSONDecodeError as exc:
         raise ModelCallError("大模型 JSON 解析失败。") from exc

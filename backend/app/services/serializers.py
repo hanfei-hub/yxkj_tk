@@ -43,6 +43,7 @@ def model_config_to_dict(item: ModelConfig) -> dict[str, Any]:
         "model_type": item.model_type,
         "base_url": item.base_url,
         "has_api_key": bool(item.api_key_encrypted),
+        "api_key_encrypted": item.api_key_encrypted,
         "model_name": item.model_name,
         "temperature": item.temperature,
         "max_tokens": item.max_tokens,
