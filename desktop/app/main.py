@@ -2,14 +2,15 @@
 
 import sys
 import json
+import math
 from io import BytesIO
 from pathlib import Path
 from string import Template
 from typing import Any
 
 import requests
-from PySide6.QtCore import QObject, QRunnable, QSettings, QSize, Qt, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QIcon, QPixmap
+from PySide6.QtCore import QObject, QPointF, QRunnable, QRectF, QSettings, QSize, Qt, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap, QPolygonF
 from PIL import Image, ImageOps
 from PySide6.QtWidgets import (
     QApplication,
@@ -731,13 +732,13 @@ class MainWindow(QMainWindow):
         self.add_page("智能选品", SelectionStudioPage(self.gateway), "01_智能选品.ico")
         self.add_page("选品库", SelectionLibraryPage(self.gateway), "08_选品属性.ico")
         self.add_page("新品榜单", NewProductsPage(self.gateway), "01_智能选品.ico")
-        self.add_page("我的收藏", InfoPage("我的收藏", "集中管理收藏的商品。", "收藏功能正在接入统一的用户数据中心。"), "05_主题皮肤.ico")
+        self.add_page("我的收藏", FavoritesPage(self.gateway), "05_主题皮肤.ico")
         self.add_nav_separator()
         self.add_page("店铺管理", AutoPublishPage(self.gateway), "10_TK跨境助手.ico")
         self.add_page("数据看板", DataDashboardPage(self.gateway), "07_第三方API.ico")
         self.add_nav_separator()
         self.add_page("课程中心", InfoPage("课程中心", "学习 TikTok Japan 选品与店铺运营。", "课程中心将提供选品方法、商品分析和店铺运营课程。"), "04_模型配置.ico")
-        self.add_page("设置", ThemePage(self.apply_theme), "05_主题皮肤.ico")
+        self.add_page("设置", ThemePage(self.apply_theme, self.apply_font), "05_主题皮肤.ico")
         self.add_nav_separator()
         self.add_page("教师看板", TeacherDashboardPage(self.gateway), "02_教师看板.ico")
         self.add_page("任务看板", PipelinePage(self.gateway), "07_第三方API.ico")
@@ -813,6 +814,16 @@ class MainWindow(QMainWindow):
         if app:
             apply_style(app, theme_name)
 
+    def apply_font(self, family: str, size: int) -> None:
+        app = QApplication.instance()
+        if not app:
+            return
+        app.setFont(QFont(family, int(size)))
+        for item_index in range(self.nav.count()):
+            item = self.nav.item(item_index)
+            if item and item.data(Qt.UserRole) != -1:
+                item.setFont(QFont(family, int(size), 500))
+
 
 class Page(QWidget):
     def __init__(self) -> None:
@@ -823,8 +834,111 @@ class Page(QWidget):
         self.layout.setSpacing(14)
 
 
+class PieChart(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.data: list[tuple[str, int, str]] = []
+        self.setMinimumHeight(190)
+
+    def set_data(self, data: list[tuple[str, int, str]]) -> None:
+        self.data = data
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        total = sum(max(0, value) for _, value, _ in self.data)
+        if total <= 0:
+            painter.setPen(QColor("#94a3b8"))
+            painter.drawText(self.rect(), Qt.AlignCenter, "暂无业务数据")
+            painter.end()
+            return
+        colors = ["#4e75f6", "#16a085", "#f59e0b", "#ef6461"]
+        chart_size = min(self.height() - 24, 150)
+        chart_rect = QRectF(12, 12, chart_size, chart_size)
+        start_angle = 0
+        for index, (_, value, _) in enumerate(self.data):
+            span_angle = round(max(0, value) / total * 360 * 16)
+            painter.setBrush(QColor(colors[index % len(colors)]))
+            painter.setPen(Qt.NoPen)
+            painter.drawPie(chart_rect, start_angle, span_angle)
+            start_angle += span_angle
+        legend_x = int(chart_size + 30)
+        for index, (label, value, color) in enumerate(self.data):
+            y = 28 + index * 32
+            painter.setBrush(QColor(color))
+            painter.drawRoundedRect(legend_x, y - 9, 10, 10, 3, 3)
+            painter.setPen(QColor("#334155"))
+            percent = value / total * 100 if total else 0
+            painter.drawText(legend_x + 18, y, f"{label}  {value} ({percent:.0f}%)")
+        painter.end()
+
+
+class ProductRadarChart(QWidget):
+    """八维商品雷达图，带旋转扫描线。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.labels = [name for _, name in DIMENSION_LABELS]
+        self.values = [7.0] * len(self.labels)
+        self.scan_angle = 0.0
+        self.timer = QTimer(self)
+        self.timer.setInterval(45)
+        self.timer.timeout.connect(self.advance_scan)
+        self.timer.start()
+        self.setMinimumHeight(250)
+
+    def set_values(self, values: list[float]) -> None:
+        self.values = [max(0.0, min(10.0, float(value))) for value in values[:8]]
+        self.values.extend([7.0] * (8 - len(self.values)))
+        self.update()
+
+    def advance_scan(self) -> None:
+        self.scan_angle = (self.scan_angle + 2.5) % 360
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        center = QPointF(self.width() * 0.47, self.height() * 0.52)
+        radius = max(45.0, min(self.width() * 0.31, self.height() * 0.38))
+        sides = len(self.labels)
+
+        painter.setPen(QColor("#d8e2ec"))
+        for ring in range(1, 6):
+            points = []
+            ring_radius = radius * ring / 5
+            for index in range(sides):
+                angle = -90 + index * 360 / sides
+                points.append(QPointF(center.x() + ring_radius * math.cos(math.radians(angle)), center.y() + ring_radius * math.sin(math.radians(angle))))
+            painter.drawPolygon(QPolygonF(points))
+        for index in range(sides):
+            angle = math.radians(-90 + index * 360 / sides)
+            end = QPointF(center.x() + radius * math.cos(angle), center.y() + radius * math.sin(angle))
+            painter.drawLine(center, end)
+
+        data_points = []
+        for index, value in enumerate(self.values):
+            angle = math.radians(-90 + index * 360 / sides)
+            data_points.append(QPointF(center.x() + radius * value / 10 * math.cos(angle), center.y() + radius * value / 10 * math.sin(angle)))
+        painter.setBrush(QColor(78, 117, 246, 60))
+        painter.setPen(QColor("#4e75f6"))
+        painter.drawPolygon(QPolygonF(data_points))
+
+        scan_radians = math.radians(self.scan_angle - 90)
+        scan_end = QPointF(center.x() + radius * math.cos(scan_radians), center.y() + radius * math.sin(scan_radians))
+        painter.setPen(QColor(22, 160, 133, 180))
+        painter.drawLine(center, scan_end)
+        painter.setPen(QColor("#334155"))
+        for index, label in enumerate(self.labels):
+            angle = math.radians(-90 + index * 360 / sides)
+            point = QPointF(center.x() + (radius + 16) * math.cos(angle), center.y() + (radius + 16) * math.sin(angle))
+            painter.drawText(QRectF(point.x() - 35, point.y() - 9, 70, 18), Qt.AlignCenter, label)
+        painter.end()
+
+
 class DataDashboardPage(Page):
-    """业务数据看板：核心指标、趋势概览和商品热力图。"""
+    """业务数据看板：核心指标、业务分布和商品雷达。"""
 
     def __init__(self, gateway: DataGateway) -> None:
         super().__init__()
@@ -838,26 +952,22 @@ class DataDashboardPage(Page):
 
         chart_row = QHBoxLayout()
         chart_row.setSpacing(14)
-        trend_panel = QFrame()
-        trend_panel.setObjectName("Panel")
-        trend_layout = QVBoxLayout(trend_panel)
-        trend_layout.setContentsMargins(16, 14, 16, 14)
-        trend_layout.addWidget(QLabel("近7日选品趋势"))
-        self.trend_bars = QVBoxLayout()
-        self.trend_bars.setSpacing(8)
-        trend_layout.addLayout(self.trend_bars)
-        chart_row.addWidget(trend_panel, 1)
-
-        heat_panel = QFrame()
-        heat_panel.setObjectName("Panel")
-        heat_layout = QVBoxLayout(heat_panel)
-        heat_layout.setContentsMargins(16, 14, 16, 14)
-        heat_layout.addWidget(QLabel("商品热力图"))
-        self.heatmap = QGridLayout()
-        self.heatmap.setSpacing(5)
-        heat_layout.addLayout(self.heatmap)
-        heat_layout.addStretch()
-        chart_row.addWidget(heat_panel, 1)
+        pie_panel = QFrame()
+        pie_panel.setObjectName("Panel")
+        pie_layout = QVBoxLayout(pie_panel)
+        pie_layout.setContentsMargins(16, 14, 16, 14)
+        pie_layout.addWidget(QLabel("业务环节分布"))
+        self.pie_chart = PieChart()
+        pie_layout.addWidget(self.pie_chart, 1)
+        chart_row.addWidget(pie_panel, 1)
+        radar_panel = QFrame()
+        radar_panel.setObjectName("Panel")
+        radar_layout = QVBoxLayout(radar_panel)
+        radar_layout.setContentsMargins(16, 14, 16, 14)
+        radar_layout.addWidget(QLabel("商品雷达"))
+        self.radar_chart = ProductRadarChart()
+        radar_layout.addWidget(self.radar_chart, 1)
+        chart_row.addWidget(radar_panel, 1)
         self.layout.addLayout(chart_row, 1)
 
     def activate(self) -> None:
@@ -888,50 +998,25 @@ class DataDashboardPage(Page):
             self.metrics.addWidget(metric_card(*value), 0, index)
         for index in range(4):
             self.metrics.setColumnStretch(index, 1)
+        self.pie_chart.set_data([
+            ("新品商品", int(fastmoss.get("product_count") or 0), "#4e75f6"),
+            ("衍生品", int(derivation.get("derived_count") or 0), "#16a085"),
+            ("1688 匹配", int(supplier.get("matched_count") or 0), "#f59e0b"),
+            ("审核记录", int(review.get("review_record_count") or 0), "#ef6461"),
+        ])
+        radar_values = [7.0] * 8
+        try:
+            derived_items = self.gateway.recommended_derived_products(1)
+            if derived_items:
+                level_map = {"极高": 9.5, "高": 8.0, "中": 6.0, "低": 4.0, "极低": 2.0}
+                radar_values = []
+                for _, level, _ in dimension_items_from_report(derived_items[0]):
+                    stars = level.count("★") + level.count("⭐")
+                    radar_values.append(float(stars * 2) if stars else next((value for key, value in level_map.items() if key in level), 6.0))
+        except Exception:
+            pass
+        self.radar_chart.set_values(radar_values)
 
-        while self.trend_bars.count():
-            child = self.trend_bars.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-        trend_values = [4, 7, 5, 9, 12, 10, 15]
-        days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-        for day, value in zip(days, trend_values):
-            row = QHBoxLayout()
-            label = QLabel(day)
-            label.setFixedWidth(34)
-            bar = QProgressBar()
-            bar.setRange(0, 20)
-            bar.setValue(value)
-            bar.setTextVisible(False)
-            number = QLabel(str(value))
-            number.setObjectName("ProductMuted")
-            row.addWidget(label)
-            row.addWidget(bar, 1)
-            row.addWidget(number)
-            self.trend_bars.addLayout(row)
-
-        while self.heatmap.count():
-            child = self.heatmap.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-        categories = ["家居", "玩具", "美妆", "服饰", "食品"]
-        heat_values = [8, 5, 9, 6, 3, 6, 10, 7, 8, 4, 4, 7, 6, 9, 5, 7, 4, 8, 5, 6, 3, 6, 8, 5, 9]
-        for column, day in enumerate(days[:5], 1):
-            label = QLabel(day)
-            label.setAlignment(Qt.AlignCenter)
-            label.setObjectName("ProductMuted")
-            self.heatmap.addWidget(label, 0, column)
-        for row, category in enumerate(categories, 1):
-            label = QLabel(category)
-            label.setObjectName("ProductMuted")
-            self.heatmap.addWidget(label, row, 0)
-            for column in range(1, 6):
-                score = heat_values[(row - 1) * 5 + column - 1]
-                cell = QLabel(str(score))
-                cell.setAlignment(Qt.AlignCenter)
-                color = "#d7f3e8" if score >= 8 else "#edf7f3" if score >= 6 else "#f5f8fa"
-                cell.setStyleSheet(f"background: {color}; color: #147b67; border-radius: 5px; padding: 7px;")
-                self.heatmap.addWidget(cell, row, column)
 
 
 class InfoPage(Page):
@@ -1455,9 +1540,10 @@ class AttributePage(Page):
 
 
 class ThemePage(Page):
-    def __init__(self, on_theme_change) -> None:
+    def __init__(self, on_theme_change, on_font_change=None) -> None:
         super().__init__()
         self.on_theme_change = on_theme_change
+        self.on_font_change = on_font_change
         self.layout.addWidget(make_title("主题皮肤", "开发阶段可快速切换软件背景色和主要界面配色。"))
 
         panel = QFrame()
@@ -1479,10 +1565,44 @@ class ThemePage(Page):
         panel_layout.addWidget(self.theme_select)
         panel_layout.addWidget(hint)
         self.layout.addWidget(panel)
+
+        font_panel = QFrame()
+        font_panel.setObjectName("Card")
+        font_layout = QGridLayout(font_panel)
+        font_layout.setContentsMargins(18, 18, 18, 18)
+        font_layout.setHorizontalSpacing(12)
+        font_layout.setVerticalSpacing(10)
+        font_title = QLabel("字体与字号")
+        font_title.setObjectName("CardTitle")
+        self.font_select = QComboBox()
+        for family in ("Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", "SimSun"):
+            self.font_select.addItem(family, family)
+        self.font_select.setCurrentText("Microsoft YaHei UI")
+        self.font_select.currentIndexChanged.connect(self.change_font)
+        font_size_label = QLabel("字号")
+        self.font_size = QComboBox()
+        for size in ("12", "13", "14", "15", "16", "18"):
+            self.font_size.addItem(f"{size}px", int(size))
+        self.font_size.setCurrentText("14px")
+        self.font_size.currentIndexChanged.connect(self.change_font)
+        font_hint = QLabel("修改后立即应用到当前软件窗口，左侧菜单会同步更新。")
+        font_hint.setObjectName("Muted")
+        font_hint.setWordWrap(True)
+        font_layout.addWidget(font_title, 0, 0, 1, 2)
+        font_layout.addWidget(QLabel("字体"), 1, 0)
+        font_layout.addWidget(self.font_select, 1, 1)
+        font_layout.addWidget(font_size_label, 2, 0)
+        font_layout.addWidget(self.font_size, 2, 1)
+        font_layout.addWidget(font_hint, 3, 0, 1, 2)
+        self.layout.addWidget(font_panel)
         self.layout.addStretch()
 
     def change_theme(self) -> None:
         self.on_theme_change(str(self.theme_select.currentData()))
+
+    def change_font(self) -> None:
+        if self.on_font_change:
+            self.on_font_change(str(self.font_select.currentData()), int(self.font_size.currentData()))
 
 
 def format_jpy_price(value: Any) -> str:
@@ -1805,8 +1925,6 @@ class StudentSelectionPage(Page):
                 parent.clear_invalid_session()
                 return
             QMessageBox.warning(self, "刷新失败", str(exc))
-        finally:
-            self.refresh_button.setEnabled(True)
 
     def load_card_items(self) -> list[dict[str, Any]]:
         items = self.gateway.recommended_derived_products(10)
@@ -2125,9 +2243,9 @@ class SelectionStudioPage(Page):
         left_layout = left_stack
 
         new_header = QHBoxLayout()
-        new_title = QLabel("新品榜单")
+        new_title = QLabel("今日选品推荐")
         new_title.setObjectName("StudioSectionTitle")
-        new_meta = QLabel("FastMoss · 日本站最新商品")
+        new_meta = QLabel("AI 衍生品 · 日本站推荐")
         new_meta.setObjectName("StudioMarket")
         new_header.addWidget(new_title)
         new_header.addSpacing(8)
@@ -2153,7 +2271,7 @@ class SelectionStudioPage(Page):
 
         self.report_panel = QFrame()
         self.report_panel.setObjectName("StudioReport")
-        self.report_panel.setFixedWidth(360)
+        self.report_panel.setFixedWidth(380)
         report_layout = QVBoxLayout(self.report_panel)
         report_layout.setContentsMargins(16, 16, 16, 16)
         report_layout.setSpacing(10)
@@ -2163,15 +2281,22 @@ class SelectionStudioPage(Page):
         self.report_product = QLabel("选择商品查看分析")
         self.report_product.setObjectName("StudioReportTitle")
         self.report_product.setWordWrap(True)
-        report_layout.addWidget(self.report_product)
         self.report_image_box = QWidget()
         self.report_image_layout = QVBoxLayout(self.report_image_box)
         self.report_image_layout.setContentsMargins(0, 0, 0, 0)
-        report_layout.addWidget(self.report_image_box)
         self.report_summary = QLabel("选择商品后显示销量和综合参考")
         self.report_summary.setObjectName("StudioSummaryText")
         self.report_summary.setWordWrap(True)
-        report_layout.addWidget(self.report_summary)
+        report_product_info = QHBoxLayout()
+        report_product_info.setSpacing(12)
+        report_product_info.addWidget(self.report_image_box, 0)
+        report_product_text = QVBoxLayout()
+        report_product_text.setSpacing(6)
+        report_product_text.addWidget(self.report_product)
+        report_product_text.addWidget(self.report_summary)
+        report_product_text.addStretch()
+        report_product_info.addLayout(report_product_text, 1)
+        report_layout.addLayout(report_product_info)
         report_tabs = QHBoxLayout()
         report_tabs.setSpacing(4)
         self.report_tab_buttons: list[QPushButton] = []
@@ -2187,6 +2312,17 @@ class SelectionStudioPage(Page):
         self.report_dimensions = QVBoxLayout()
         self.report_dimensions.setSpacing(6)
         report_layout.addLayout(self.report_dimensions)
+        report_actions = QHBoxLayout()
+        report_actions.setSpacing(8)
+        self.favorite_button = QPushButton("☆  加入收藏")
+        self.favorite_button.setObjectName("StudioSecondaryAction")
+        self.favorite_button.clicked.connect(self.toggle_favorite)
+        self.start_button = QPushButton("✦  开始选品")
+        self.start_button.setObjectName("StudioPrimary")
+        self.start_button.clicked.connect(self.start_selection)
+        report_actions.addWidget(self.favorite_button, 1)
+        report_actions.addWidget(self.start_button, 1)
+        report_layout.addLayout(report_actions)
         report_layout.addStretch()
         report_hint = QLabel("点击新品卡片查看完整维度报告")
         report_hint.setObjectName("Muted")
@@ -2196,6 +2332,7 @@ class SelectionStudioPage(Page):
         self.layout.addLayout(workspace, 1)
         self.report_item: dict[str, Any] | None = None
         self.report_tab = "选品分析报告"
+        self.favorite_items: list[dict[str, Any]] = []
         self._show_report(None)
 
     @staticmethod
@@ -2217,7 +2354,7 @@ class SelectionStudioPage(Page):
             "使用教程",
             "1. 描述你想找的商品、人群、预算或使用场景。\n"
             "2. 点击“开始选品”，AI 会生成本次推荐结果。\n"
-            "3. 下方新品榜单展示日本站最新商品。\n"
+            "3. 下方今日选品推荐展示 AI 衍生品。\n"
             "4. 商品图片和销量以后台最新数据为准。",
         )
 
@@ -2294,6 +2431,15 @@ class SelectionStudioPage(Page):
     def _update_prompt_count(self, text: str) -> None:
         self.prompt_count.setText(f"{len(text)}/200")
 
+    def load_favorites(self) -> None:
+        try:
+            self.favorite_items = self.gateway.favorites()
+        except Exception as exc:
+            self.favorite_items = []
+            parent = self.window()
+            if self.gateway.is_invalid_token_error(exc) and hasattr(parent, "clear_invalid_session"):
+                parent.clear_invalid_session()
+
     def _show_report(self, item: dict[str, Any] | None) -> None:
         self.report_item = item
         while self.report_image_layout.count():
@@ -2304,9 +2450,12 @@ class SelectionStudioPage(Page):
             child = self.report_dimensions.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
+        self.favorite_button.setEnabled(bool(item))
+        self.start_button.setEnabled(bool(item))
         if not item:
             self.report_product.setText("选择商品查看分析")
             self.report_summary.setText("选择商品后显示销量和综合参考")
+            self.favorite_button.setText("☆  加入收藏")
             return
         title = str(item.get("title") or item.get("derived_title") or "未命名商品")
         price = item.get("supplier_price") or item.get("price") or item.get("suggested_price_min") or 0
@@ -2314,8 +2463,12 @@ class SelectionStudioPage(Page):
         sales = int(float(item.get("sales_count") or item.get("supplier_sales_count") or 0))
         score = item.get("weighted_score") or item.get("ai_score") or item.get("supplier_match_score") or 0
         self.report_summary.setText(f"销量 {sales:,} · AI 参考 {float(score):.0f} 分")
-        image = create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 278, 126)
+        image = create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 170, 140)
         self.report_image_layout.addWidget(image)
+        title_key = str(item.get("title") or item.get("derived_title") or "")
+        image_key = str(item.get("image_url") or item.get("supplier_image_url") or "")
+        saved = next((favorite for favorite in self.favorite_items if favorite.get("title") == title_key and favorite.get("image_url") == image_key), None)
+        self.favorite_button.setText("★  已收藏" if saved else "☆  加入收藏")
         dimensions = dimension_items_from_report(item)
         if self.report_tab == "人群匹配":
             dimensions = [row for row in dimensions if row[0] in {"目标群体", "日本偏好", "竞品属性"}]
@@ -2342,6 +2495,33 @@ class SelectionStudioPage(Page):
             box_layout.addWidget(detail)
             self.report_dimensions.addWidget(box)
 
+    def toggle_favorite(self) -> None:
+        if not self.report_item:
+            return
+        title_key = str(self.report_item.get("title") or self.report_item.get("derived_title") or "")
+        image_key = str(self.report_item.get("image_url") or self.report_item.get("supplier_image_url") or "")
+        saved = next((favorite for favorite in self.favorite_items if favorite.get("title") == title_key and favorite.get("image_url") == image_key), None)
+        try:
+            if saved:
+                self.gateway.delete_favorite(int(saved["id"]))
+                self.favorite_items = [favorite for favorite in self.favorite_items if int(favorite.get("id") or 0) != int(saved["id"])]
+            else:
+                saved = self.gateway.create_favorite(self.report_item)
+                self.favorite_items.insert(0, saved)
+            self._show_report(self.report_item)
+        except Exception as exc:
+            QMessageBox.warning(self, "收藏失败", str(exc))
+
+    def start_selection(self) -> None:
+        if not self.report_item:
+            return
+        title = str(self.report_item.get("title") or self.report_item.get("derived_title") or "")
+        try:
+            self.gateway.start_ai_selection(f"请围绕这个商品继续选品：{title}")
+            QMessageBox.information(self, "已开始选品", "已提交 AI 选品任务，请稍后查看结果。")
+        except Exception as exc:
+            QMessageBox.warning(self, "启动失败", str(exc))
+
     def _select_report_tab(self, name: str, button: QPushButton) -> None:
         self.report_tab = name
         for tab in self.report_tab_buttons:
@@ -2349,7 +2529,8 @@ class SelectionStudioPage(Page):
         self._show_report(self.report_item)
 
     def refresh(self) -> None:
-        items = self.gateway.daily_recommendations()
+        self.load_favorites()
+        items = self.gateway.recommended_derived_products(10)
         while self.new_product_grid.count():
             child = self.new_product_grid.takeAt(0)
             if child.widget():
@@ -2379,7 +2560,6 @@ class SelectionLibraryPage(Page):
         subtitle.setObjectName("Muted")
         header.addWidget(title)
         header.addWidget(subtitle)
-        self.layout.addLayout(header)
 
         attribute_box = QFrame()
         attribute_box.setObjectName("LibraryAttributes")
@@ -2402,7 +2582,6 @@ class SelectionLibraryPage(Page):
         self.attribute_grid.setContentsMargins(0, 0, 0, 0)
         attribute_layout.addLayout(self.attribute_grid)
         self.attribute_box = attribute_box
-        self.layout.addWidget(self.attribute_box)
 
         body = QHBoxLayout()
         body.setSpacing(16)
@@ -2410,6 +2589,8 @@ class SelectionLibraryPage(Page):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(8)
+        left_layout.addLayout(header)
+        left_layout.addWidget(self.attribute_box)
         list_header = QHBoxLayout()
         list_title = QLabel("衍生品商品")
         list_title.setObjectName("StudioSectionTitle")
@@ -2433,7 +2614,7 @@ class SelectionLibraryPage(Page):
 
         self.report_panel = QFrame()
         self.report_panel.setObjectName("StudioReport")
-        self.report_panel.setFixedWidth(360)
+        self.report_panel.setFixedWidth(380)
         report_layout = QVBoxLayout(self.report_panel)
         report_layout.setContentsMargins(16, 16, 16, 16)
         report_layout.setSpacing(10)
@@ -2443,15 +2624,22 @@ class SelectionLibraryPage(Page):
         self.report_product = QLabel("选择商品查看分析")
         self.report_product.setObjectName("StudioReportTitle")
         self.report_product.setWordWrap(True)
-        report_layout.addWidget(self.report_product)
         self.report_image_box = QWidget()
         self.report_image_layout = QVBoxLayout(self.report_image_box)
         self.report_image_layout.setContentsMargins(0, 0, 0, 0)
-        report_layout.addWidget(self.report_image_box)
         self.report_summary = QLabel("选择商品后显示销量和综合参考")
         self.report_summary.setObjectName("StudioSummaryText")
         self.report_summary.setWordWrap(True)
-        report_layout.addWidget(self.report_summary)
+        report_product_info = QHBoxLayout()
+        report_product_info.setSpacing(12)
+        report_product_info.addWidget(self.report_image_box, 0)
+        report_product_text = QVBoxLayout()
+        report_product_text.setSpacing(6)
+        report_product_text.addWidget(self.report_product)
+        report_product_text.addWidget(self.report_summary)
+        report_product_text.addStretch()
+        report_product_info.addLayout(report_product_text, 1)
+        report_layout.addLayout(report_product_info)
         tabs = QHBoxLayout()
         tabs.setSpacing(4)
         self.report_tab_buttons: list[QPushButton] = []
@@ -2507,6 +2695,15 @@ class SelectionLibraryPage(Page):
                 parent.clear_invalid_session()
                 return
             QMessageBox.warning(self, "刷新失败", str(exc))
+
+    def load_favorites(self) -> None:
+        try:
+            self.favorite_items = self.gateway.favorites()
+        except Exception as exc:
+            self.favorite_items = []
+            parent = self.window()
+            if self.gateway.is_invalid_token_error(exc) and hasattr(parent, "clear_invalid_session"):
+                parent.clear_invalid_session()
 
     def refresh(self) -> None:
         while self.product_grid.count():
@@ -2577,7 +2774,7 @@ class SelectionLibraryPage(Page):
         sales = int(float(item.get("sales_count") or item.get("supplier_sales_count") or 0))
         score = item.get("weighted_score") or item.get("ai_score") or item.get("supplier_match_score") or 0
         self.report_summary.setText(f"销量 {sales:,} · AI 参考 {float(score):.0f} 分")
-        self.report_image_layout.addWidget(create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 278, 126))
+        self.report_image_layout.addWidget(create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 170, 140))
         title_key = str(item.get("title") or item.get("derived_title") or "")
         image_key = str(item.get("image_url") or item.get("supplier_image_url") or "")
         saved = next((favorite for favorite in self.favorite_items if favorite.get("title") == title_key and favorite.get("image_url") == image_key), None)
@@ -2648,6 +2845,7 @@ class NewProductsPage(SelectionLibraryPage):
     def __init__(self, gateway: DataGateway) -> None:
         super().__init__(gateway)
         self.attribute_box.hide()
+        self.report_panel.hide()
         for label in self.findChildren(QLabel):
             if label.text() == "选品库":
                 label.setText("新品榜单")
@@ -2661,6 +2859,7 @@ class NewProductsPage(SelectionLibraryPage):
             child = self.product_grid.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
+        self.load_favorites()
         items = self.gateway.daily_recommendations()
         if not items:
             empty = QLabel("暂无新品榜单数据，请先同步 FastMoss。")
@@ -2668,14 +2867,43 @@ class NewProductsPage(SelectionLibraryPage):
             self.product_grid.addWidget(empty, 0, 0)
             return
         for index, item in enumerate(items):
+            self.product_grid.addWidget(StudioNewProductCard(item, index), index // 8, index % 8)
+        self.product_grid.setColumnStretch(8, 1)
+
+
+
+class FavoritesPage(SelectionLibraryPage):
+    """当前登录用户的商品快照收藏。"""
+
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__(gateway)
+        for label in self.findChildren(QLabel):
+            if label.text() == "选品库":
+                label.setText("我的收藏")
+            elif label.text() == "浏览 AI 生成的衍生品，并查看完整选品分析报告":
+                label.setText("查看当前账号收藏的商品快照")
+            elif label.text() == "衍生品商品":
+                label.setText("收藏商品")
+
+    def activate(self) -> None:
+        self.load_favorites()
+        self.refresh()
+        self.loaded = True
+
+    def refresh(self) -> None:
+        while self.product_grid.count():
+            child = self.product_grid.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        items = self.favorite_items
+        if not items:
+            empty = QLabel("暂无收藏商品，请在商品报告面板点击加入收藏。")
+            empty.setObjectName("Muted")
+            self.product_grid.addWidget(empty, 0, 0)
+            return
+        for index, item in enumerate(items):
             self.product_grid.addWidget(StudioNewProductCard(item, index, self._show_report), index // 6, index % 6)
         self.product_grid.setColumnStretch(6, 1)
-
-    def load_favorites(self) -> None:
-        try:
-            self.favorite_items = self.gateway.favorites()
-        except Exception:
-            self.favorite_items = []
 
 
 class StudioSelectionPage(Page):
@@ -2794,7 +3022,7 @@ class StudioSelectionPage(Page):
 
         self.report_panel = QFrame()
         self.report_panel.setObjectName("StudioReport")
-        self.report_panel.setFixedWidth(314)
+        self.report_panel.setFixedWidth(380)
         report_layout = QVBoxLayout(self.report_panel)
         report_layout.setContentsMargins(16, 16, 16, 16)
         report_layout.setSpacing(10)
@@ -2902,6 +3130,15 @@ class StudioSelectionPage(Page):
                 parent.clear_invalid_session()
                 return
             QMessageBox.warning(self, "刷新失败", str(exc))
+
+    def load_favorites(self) -> None:
+        try:
+            self.favorite_items = self.gateway.favorites()
+        except Exception as exc:
+            self.favorite_items = []
+            parent = self.window()
+            if self.gateway.is_invalid_token_error(exc) and hasattr(parent, "clear_invalid_session"):
+                parent.clear_invalid_session()
 
     def send_chat(self) -> None:
         text = self.chat_input.text().strip()
@@ -3015,7 +3252,7 @@ class StudioSelectionPage(Page):
         sales = int(float(item.get("sales_count") or item.get("supplier_sales_count") or 0))
         score = item.get("weighted_score") or item.get("ai_score") or item.get("supplier_match_score") or 0
         self.report_summary.setText(f"销量 {sales:,} · AI 参考 {float(score):.0f} 分")
-        image = create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 278, 126)
+        image = create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 170, 140)
         self.report_image_layout.addWidget(image)
         dimensions = dimension_items_from_report(item)
         if self.report_tab == "人群匹配":
@@ -3947,13 +4184,13 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #StudioCarousel { background: transparent; }
         #StudioGrid { background: transparent; }
         #StudioReport { background: $panel2; }
-        #StudioReportTitle { background: transparent; color: $text; font-size: 15px; font-weight: 900; line-height: 1.3; }
+        #StudioReportTitle { background: transparent; color: $text; font-size: 17px; font-weight: 900; line-height: 1.3; }
         #StudioDimension {
             background: $panel; border: 1px solid $border; border-radius: 8px;
         }
-        #StudioDimensionName { background: transparent; color: $text; font-size: 11px; font-weight: 800; }
-        #StudioDimensionGrade { background: transparent; color: $accent; font-size: 11px; font-weight: 800; }
-        #StudioDimensionText { background: transparent; color: $muted; font-size: 10px; line-height: 1.25; }
+        #StudioDimensionName { background: transparent; color: $text; font-size: 13px; font-weight: 800; }
+        #StudioDimensionGrade { background: transparent; color: $accent; font-size: 13px; font-weight: 800; }
+        #StudioDimensionText { background: transparent; color: $muted; font-size: 13px; line-height: 1.25; }
         #StudioCarouselArrow {
             background: $panel; color: $accent; border: 1px solid $border; border-radius: 8px;
             font-size: 25px; font-weight: 700; padding: 0;
@@ -3977,10 +4214,10 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         }
         #StudioNewPrice { background: transparent; color: #ef6461; font-size: 17px; font-weight: 900; }
         #StudioNewMuted { background: transparent; color: $muted; font-size: 10px; }
-        #StudioSummaryText { background: $panel; color: $muted; border-radius: 7px; padding: 7px 9px; font-size: 11px; }
+        #StudioSummaryText { background: $panel; color: $muted; border-radius: 7px; padding: 7px 9px; font-size: 13px; }
         #StudioReportTab {
             background: transparent; color: $muted; border: 0; border-bottom: 2px solid transparent;
-            border-radius: 0; padding: 7px 4px; font-size: 11px; font-weight: 700;
+            border-radius: 0; padding: 7px 4px; font-size: 13px; font-weight: 700;
         }
         #StudioReportTab:checked { color: $tag_text; border-bottom: 2px solid $tag_text; }
         #PageHeader {
