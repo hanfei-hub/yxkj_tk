@@ -111,6 +111,32 @@ class DataGateway:
             return []
         return self.client.get("/api/daily-recommendations")
 
+    def favorites(self) -> list[dict[str, Any]]:
+        if not self.user:
+            return []
+        return self.client.get("/api/favorites")
+
+    def create_favorite(self, item: dict[str, Any]) -> dict[str, Any]:
+        snapshot = {key: value for key, value in item.items() if key not in {"id", "source_product_id", "derived_id", "recommendation_id", "product_id"}}
+        return self.client.post(
+            "/api/favorites",
+            {
+                "source_type": "new_product" if item.get("source_type") == "new_product" else "derived",
+                "title": item.get("title") or item.get("derived_title") or "",
+                "image_url": item.get("image_url") or item.get("supplier_image_url") or "",
+                "price": item.get("price") or item.get("supplier_price") or item.get("suggested_price_min") or 0,
+                "currency": item.get("currency") or "JPY",
+                "sales_count": int(float(item.get("sales_count") or item.get("supplier_sales_count") or 0)),
+                "category": item.get("category") or "",
+                "recommendation_reason": item.get("recommendation_reason") or item.get("reason_summary") or "",
+                "analysis_report": item.get("analysis_report") or {},
+                "product_snapshot": snapshot,
+            },
+        )
+
+    def delete_favorite(self, favorite_id: int) -> dict[str, Any]:
+        return self.client.delete(f"/api/favorites/{favorite_id}")
+
     def derived_products(self, product_id: int) -> list[dict[str, Any]]:
         if not self.user:
             return []
@@ -2342,7 +2368,7 @@ class SelectionLibraryPage(Page):
         self.loaded = False
         self.report_item: dict[str, Any] | None = None
         self.report_tab = "选品分析报告"
-        self.favorite_ids: set[int] = set()
+        self.favorite_items: list[dict[str, Any]] = []
         self.layout.setContentsMargins(28, 22, 28, 22)
         self.layout.setSpacing(14)
 
@@ -2375,7 +2401,8 @@ class SelectionLibraryPage(Page):
         self.attribute_grid.setVerticalSpacing(6)
         self.attribute_grid.setContentsMargins(0, 0, 0, 0)
         attribute_layout.addLayout(self.attribute_grid)
-        self.layout.addWidget(attribute_box)
+        self.attribute_box = attribute_box
+        self.layout.addWidget(self.attribute_box)
 
         body = QHBoxLayout()
         body.setSpacing(16)
@@ -2466,6 +2493,7 @@ class SelectionLibraryPage(Page):
     def activate(self) -> None:
         if not self.loaded:
             self.refresh_attributes()
+            self.load_favorites()
             self.refresh()
             self.loaded = True
 
@@ -2550,8 +2578,10 @@ class SelectionLibraryPage(Page):
         score = item.get("weighted_score") or item.get("ai_score") or item.get("supplier_match_score") or 0
         self.report_summary.setText(f"销量 {sales:,} · AI 参考 {float(score):.0f} 分")
         self.report_image_layout.addWidget(create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 278, 126))
-        item_id = int(item.get("id") or item.get("derived_id") or 0)
-        self.favorite_button.setText("★  已收藏" if item_id in self.favorite_ids else "☆  加入收藏")
+        title_key = str(item.get("title") or item.get("derived_title") or "")
+        image_key = str(item.get("image_url") or item.get("supplier_image_url") or "")
+        saved = next((favorite for favorite in self.favorite_items if favorite.get("title") == title_key and favorite.get("image_url") == image_key), None)
+        self.favorite_button.setText("★  已收藏" if saved else "☆  加入收藏")
         dimensions = dimension_items_from_report(item)
         if self.report_tab == "人群匹配":
             dimensions = [row for row in dimensions if row[0] in {"目标群体", "日本偏好", "竞品属性"}]
@@ -2587,12 +2617,19 @@ class SelectionLibraryPage(Page):
     def toggle_favorite(self) -> None:
         if not self.report_item:
             return
-        item_id = int(self.report_item.get("id") or self.report_item.get("derived_id") or 0)
-        if item_id in self.favorite_ids:
-            self.favorite_ids.remove(item_id)
-        else:
-            self.favorite_ids.add(item_id)
-        self._show_report(self.report_item)
+        title_key = str(self.report_item.get("title") or self.report_item.get("derived_title") or "")
+        image_key = str(self.report_item.get("image_url") or self.report_item.get("supplier_image_url") or "")
+        saved = next((favorite for favorite in self.favorite_items if favorite.get("title") == title_key and favorite.get("image_url") == image_key), None)
+        try:
+            if saved:
+                self.gateway.delete_favorite(int(saved["id"]))
+                self.favorite_items = [favorite for favorite in self.favorite_items if int(favorite.get("id") or 0) != int(saved["id"])]
+            else:
+                saved = self.gateway.create_favorite(self.report_item)
+                self.favorite_items.insert(0, saved)
+            self._show_report(self.report_item)
+        except Exception as exc:
+            QMessageBox.warning(self, "收藏失败", str(exc))
 
     def start_selection(self) -> None:
         if not self.report_item:
@@ -2610,6 +2647,7 @@ class NewProductsPage(SelectionLibraryPage):
 
     def __init__(self, gateway: DataGateway) -> None:
         super().__init__(gateway)
+        self.attribute_box.hide()
         for label in self.findChildren(QLabel):
             if label.text() == "选品库":
                 label.setText("新品榜单")
@@ -2632,6 +2670,12 @@ class NewProductsPage(SelectionLibraryPage):
         for index, item in enumerate(items):
             self.product_grid.addWidget(StudioNewProductCard(item, index, self._show_report), index // 6, index % 6)
         self.product_grid.setColumnStretch(6, 1)
+
+    def load_favorites(self) -> None:
+        try:
+            self.favorite_items = self.gateway.favorites()
+        except Exception:
+            self.favorite_items = []
 
 
 class StudioSelectionPage(Page):

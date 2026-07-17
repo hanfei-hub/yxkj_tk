@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
 from app.models.entities import (
     DailyRecommendation,
+    FavoriteProduct,
     DerivedProductAttributeScore,
     DerivedProductRecommendation,
     FastMossSyncLog,
@@ -165,6 +167,37 @@ def daily_to_dict(item: DailyRecommendation) -> dict[str, Any]:
         "sales_count": item.sales_count,
         "reason_summary": item.reason_summary,
         "sort_order": item.sort_order,
+    }
+
+
+def favorite_to_dict(item: FavoriteProduct) -> dict[str, Any]:
+    try:
+        snapshot = json.loads(item.product_snapshot or "{}")
+    except (TypeError, ValueError):
+        snapshot = {}
+    snapshot.update(
+        {
+            "title": item.title,
+            "image_url": item.image_url,
+            "price": item.price,
+            "currency": item.currency,
+            "sales_count": item.sales_count,
+            "category": item.category,
+        }
+    )
+    return {
+        "id": item.id,
+        "source_type": item.source_type,
+        "title": item.title,
+        "image_url": item.image_url,
+        "price": item.price,
+        "currency": item.currency,
+        "sales_count": item.sales_count,
+        "category": item.category,
+        "recommendation_reason": item.recommendation_reason,
+        "analysis_report": item.analysis_report,
+        "product_snapshot": snapshot,
+        "created_at": fmt_dt(item.created_at),
     }
 
 

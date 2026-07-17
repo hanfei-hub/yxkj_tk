@@ -281,6 +281,23 @@ class DailyRecommendation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class FavoriteProduct(Base, TimestampMixin):
+    __tablename__ = "favorite_products"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    source_type: Mapped[str] = mapped_column(String(32), default="derived")
+    title: Mapped[str] = mapped_column(String(512), default="")
+    image_url: Mapped[str] = mapped_column(Text, default="")
+    price: Mapped[float] = mapped_column(Float, default=0)
+    currency: Mapped[str] = mapped_column(String(16), default="JPY")
+    sales_count: Mapped[int] = mapped_column(Integer, default=0)
+    category: Mapped[str] = mapped_column(String(255), default="")
+    recommendation_reason: Mapped[str] = mapped_column(Text, default="")
+    analysis_report: Mapped[str] = mapped_column(Text, default="{}")
+    product_snapshot: Mapped[str] = mapped_column(Text, default="{}")
+
+
 class UserSearchRecommendation(Base):
     __tablename__ = "user_search_recommendations"
 
