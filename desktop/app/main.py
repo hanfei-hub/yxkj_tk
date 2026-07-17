@@ -704,7 +704,7 @@ class MainWindow(QMainWindow):
     def setup_pages(self) -> None:
         self.add_page("智能选品", SelectionStudioPage(self.gateway), "01_智能选品.ico")
         self.add_page("选品库", SelectionLibraryPage(self.gateway), "08_选品属性.ico")
-        self.add_page("新品榜单", SelectionLibraryPage(self.gateway), "01_智能选品.ico")
+        self.add_page("新品榜单", NewProductsPage(self.gateway), "01_智能选品.ico")
         self.add_page("我的收藏", InfoPage("我的收藏", "集中管理收藏的商品。", "收藏功能正在接入统一的用户数据中心。"), "05_主题皮肤.ico")
         self.add_nav_separator()
         self.add_page("店铺管理", AutoPublishPage(self.gateway), "10_TK跨境助手.ico")
@@ -753,7 +753,8 @@ class MainWindow(QMainWindow):
 
     def on_page_changed(self, index: int) -> None:
         item = self.nav.item(index)
-        page_index = int(item.data(Qt.UserRole) or -1) if item else -1
+        page_data = item.data(Qt.UserRole) if item else None
+        page_index = int(page_data) if page_data is not None else -1
         if page_index < 0:
             return
         self.stack.setCurrentIndex(page_index)
@@ -2491,8 +2492,8 @@ class SelectionLibraryPage(Page):
             self.product_grid.addWidget(empty, 0, 0)
             return
         for index, item in enumerate(items):
-            self.product_grid.addWidget(StudioNewProductCard(item, index, self._show_report), index // 5, index % 5)
-        self.product_grid.setColumnStretch(5, 1)
+            self.product_grid.addWidget(StudioNewProductCard(item, index, self._show_report), index // 6, index % 6)
+        self.product_grid.setColumnStretch(6, 1)
 
     def refresh_attributes(self) -> None:
         while self.attribute_grid.count():
@@ -2602,6 +2603,35 @@ class SelectionLibraryPage(Page):
             QMessageBox.information(self, "已开始选品", "已提交 AI 选品任务，请稍后在智能选品页面查看结果。")
         except Exception as exc:
             QMessageBox.warning(self, "启动失败", str(exc))
+
+
+class NewProductsPage(SelectionLibraryPage):
+    """新品榜单页面，使用 FastMoss 最新入库商品。"""
+
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__(gateway)
+        for label in self.findChildren(QLabel):
+            if label.text() == "选品库":
+                label.setText("新品榜单")
+            elif label.text() == "浏览 AI 生成的衍生品，并查看完整选品分析报告":
+                label.setText("查看 FastMoss 日本站最新入库商品")
+            elif label.text() == "衍生品商品":
+                label.setText("新品商品")
+
+    def refresh(self) -> None:
+        while self.product_grid.count():
+            child = self.product_grid.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        items = self.gateway.daily_recommendations()
+        if not items:
+            empty = QLabel("暂无新品榜单数据，请先同步 FastMoss。")
+            empty.setObjectName("Muted")
+            self.product_grid.addWidget(empty, 0, 0)
+            return
+        for index, item in enumerate(items):
+            self.product_grid.addWidget(StudioNewProductCard(item, index, self._show_report), index // 6, index % 6)
+        self.product_grid.setColumnStretch(6, 1)
 
 
 class StudioSelectionPage(Page):
