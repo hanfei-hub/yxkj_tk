@@ -625,10 +625,10 @@ class MainWindow(QMainWindow):
         brand_layout.addLayout(brand_row)
         brand_layout.addWidget(brand_sub)
 
-        sidebar.setFixedWidth(230)
+        sidebar.setFixedWidth(260)
         self.nav = QListWidget()
         self.nav.setObjectName("SideNav")
-        self.nav.setFixedWidth(230)
+        self.nav.setFixedWidth(260)
         self.nav.setIconSize(QSize(20, 20))
         self.stack = QStackedWidget()
 
@@ -2127,7 +2127,7 @@ class SelectionStudioPage(Page):
 
         self.report_panel = QFrame()
         self.report_panel.setObjectName("StudioReport")
-        self.report_panel.setFixedWidth(320)
+        self.report_panel.setFixedWidth(360)
         report_layout = QVBoxLayout(self.report_panel)
         report_layout.setContentsMargins(16, 16, 16, 16)
         report_layout.setSpacing(10)
@@ -2406,7 +2406,7 @@ class SelectionLibraryPage(Page):
 
         self.report_panel = QFrame()
         self.report_panel.setObjectName("StudioReport")
-        self.report_panel.setFixedWidth(320)
+        self.report_panel.setFixedWidth(360)
         report_layout = QVBoxLayout(self.report_panel)
         report_layout.setContentsMargins(16, 16, 16, 16)
         report_layout.setSpacing(10)
