@@ -1,11 +1,13 @@
 from collections.abc import Generator
 import os
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+BASE_DIR = Path(__file__).resolve().parents[2]
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is required. Configure the server MySQL connection before starting backend.")
 
