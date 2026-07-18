@@ -55,37 +55,26 @@ def ensure_runtime_schema() -> None:
     }
     with engine.begin() as conn:
         dialect = engine.dialect.name
-        if dialect == "mysql":
-            for column, definition in derived_columns.items():
-                exists = conn.execute(
-                    text("SHOW COLUMNS FROM derived_product_recommendations LIKE :column"),
-                    {"column": column},
-                ).first()
-                if not exists:
-                    conn.execute(text(f"ALTER TABLE derived_product_recommendations ADD COLUMN {column} {definition}"))
-            for column, definition in fm_columns.items():
-                exists = conn.execute(
-                    text("SHOW COLUMNS FROM fm_products LIKE :column"),
-                    {"column": column},
-                ).first()
-                if not exists:
-                    conn.execute(text(f"ALTER TABLE fm_products ADD COLUMN {column} {definition}"))
-            for column, definition in model_columns.items():
-                exists = conn.execute(
-                    text("SHOW COLUMNS FROM model_configs LIKE :column"),
-                    {"column": column},
-                ).first()
-                if not exists:
-                    conn.execute(text(f"ALTER TABLE model_configs ADD COLUMN {column} {definition}"))
-            for column, definition in user_columns.items():
-                exists = conn.execute(
-                    text("SHOW COLUMNS FROM users LIKE :column"),
-                    {"column": column},
-                ).first()
-                if not exists:
-                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {column} {definition}"))
-        else:
+        if dialect not in {"mysql", "sqlite"}:
             raise RuntimeError(f"Unsupported database dialect: {dialect}")
+        ensure_columns(conn, dialect, "derived_product_recommendations", derived_columns)
+        ensure_columns(conn, dialect, "fm_products", fm_columns)
+        ensure_columns(conn, dialect, "model_configs", model_columns)
+        ensure_columns(conn, dialect, "users", user_columns)
+
+
+def ensure_columns(conn, dialect: str, table_name: str, columns: dict[str, str]) -> None:
+    for column, definition in columns.items():
+        if dialect == "mysql":
+            exists = conn.execute(
+                text(f"SHOW COLUMNS FROM {table_name} LIKE :column"),
+                {"column": column},
+            ).first()
+        else:
+            exists = conn.execute(text(f"PRAGMA table_info({table_name})")).mappings().all()
+            exists = any(row["name"] == column for row in exists)
+        if not exists:
+            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}"))
 
 
 def ensure_dimension_attributes(db: Session) -> None:

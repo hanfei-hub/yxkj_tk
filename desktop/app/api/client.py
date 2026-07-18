@@ -11,9 +11,27 @@ class ApiError(RuntimeError):
     pass
 
 
+def format_error_detail(detail: Any) -> str:
+    if isinstance(detail, str):
+        return detail or "Request failed"
+    if isinstance(detail, list):
+        messages: list[str] = []
+        for item in detail:
+            if isinstance(item, dict):
+                loc = ".".join(str(part) for part in item.get("loc", []) if part != "body")
+                msg = item.get("msg") or item.get("message") or item.get("detail") or item
+                messages.append(f"{loc}: {msg}" if loc else str(msg))
+            else:
+                messages.append(str(item))
+        return "\n".join(messages) or "Request parameter error"
+    if isinstance(detail, dict):
+        return str(detail.get("message") or detail.get("error") or detail.get("detail") or detail)
+    return str(detail or "Request failed")
+
+
 @dataclass
 class ApiClient:
-    base_url: str = os.getenv("TK_SELECTION_API_BASE_URL", "http://120.26.207.89:8000")
+    base_url: str = os.getenv("TK_SELECTION_API_BASE_URL", "http://127.0.0.1:8000")
     token: str | None = None
     timeout: int = 180
 
@@ -33,16 +51,18 @@ class ApiClient:
                 timeout=timeout or self.timeout,
             )
         except requests.RequestException as exc:
-            raise ApiError(str(exc)) from exc
+            raise ApiError(f"Network request failed: {exc}") from exc
 
         if response.status_code >= 400:
             try:
-                detail = response.json().get("detail", response.text)
+                body = response.json()
+                detail = body.get("detail", body)
             except ValueError:
                 detail = response.text
             if response.status_code == 401:
-                detail = "请重新登录"
-            raise ApiError(str(detail))
+                detail = "Please log in again"
+            message = format_error_detail(detail)
+            raise ApiError(f"HTTP {response.status_code}: {message}")
         if not response.text:
             return None
         return response.json()

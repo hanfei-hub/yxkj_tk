@@ -2,6 +2,8 @@
 
 import sys
 import json
+import re
+import time
 from io import BytesIO
 from pathlib import Path
 from string import Template
@@ -78,6 +80,8 @@ class DataGateway:
             except ApiError as exc:
                 if self.is_invalid_token_error(exc):
                     self.clear_session()
+                else:
+                    self.clear_session()
                 return
 
     def save_session(self) -> None:
@@ -93,7 +97,14 @@ class DataGateway:
 
     def is_invalid_token_error(self, exc: Exception) -> bool:
         text = str(exc).lower()
-        return "请重新登录" in str(exc) or "invalid token" in text or "not authenticated" in text or "could not validate credentials" in text
+        return (
+            "请重新登录" in str(exc)
+            or "please log in again" in text
+            or "http 401" in text
+            or "invalid token" in text
+            or "not authenticated" in text
+            or "could not validate credentials" in text
+        )
 
     def login(self, username: str, password: str) -> dict[str, Any]:
         data = self.client.login(username, password)
@@ -225,8 +236,14 @@ class DataGateway:
     def create_1688_auto_publish_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.post("/api/auto-publish/1688/tasks", payload, timeout=60)
 
+    def create_1688_batch_auto_publish_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.post("/api/auto-publish/1688/batch-tasks", payload, timeout=60)
+
     def run_auto_publish_task(self, task_id: str) -> dict[str, Any]:
         return self.client.post(f"/api/auto-publish/tasks/{task_id}/run", timeout=1800)
+
+    def start_auto_publish_task_async(self, task_id: str) -> dict[str, Any]:
+        return self.client.post(f"/api/auto-publish/tasks/{task_id}/run-async", timeout=30)
 
     def get_auto_publish_task(self, task_id: str) -> dict[str, Any]:
         return self.client.get(f"/api/auto-publish/tasks/{task_id}", timeout=20)
@@ -682,15 +699,27 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(page)
         self.pages.append(page)
 
+    def build_page_safely(self, factory) -> QWidget:
+        try:
+            return factory()
+        except ApiError as exc:
+            page = Page()
+            page.layout.addWidget(make_title("请重新登录", f"服务器拒绝当前登录态：{exc}"))
+            button = QPushButton("登录服务器账号")
+            button.clicked.connect(self.open_login_dialog)
+            page.layout.addWidget(button)
+            page.layout.addStretch(1)
+            return page
+
     def setup_pages(self) -> None:
-        self.add_page("智能选品", StudentSelectionPage(self.gateway), "01_智能选品.ico")
-        self.add_page("教师看板", TeacherDashboardPage(self.gateway), "02_教师看板.ico")
-        self.add_page("任务看板", PipelinePage(self.gateway), "07_第三方API.ico")
-        self.add_page("自动上架", AutoPublishPage(self.gateway), "10_TK跨境助手.ico")
-        self.add_page("用户管理", AdminUsersPage(self.gateway), "03_用户管理.ico")
-        self.add_page("模型配置", SimpleConfigPage("模型配置", self.gateway.model_configs, ["配置名称", "服务商", "类型", "Base URL", "模型", "Key", "状态", "默认"], self.gateway, "model"), "04_模型配置.ico")
-        self.add_page("第三方 API", SimpleConfigPage("第三方 API 配置", self.gateway.third_party_configs, ["配置名称", "服务类型", "状态"], self.gateway, "third"), "07_第三方API.ico")
-        self.add_page("选品属性", AttributePage(self.gateway), "08_选品属性.ico")
+        self.add_page("智能选品", self.build_page_safely(lambda: StudentSelectionPage(self.gateway)), "01_智能选品.ico")
+        self.add_page("教师看板", self.build_page_safely(lambda: TeacherDashboardPage(self.gateway)), "02_教师看板.ico")
+        self.add_page("任务看板", self.build_page_safely(lambda: PipelinePage(self.gateway)), "07_第三方API.ico")
+        self.add_page("自动上架", self.build_page_safely(lambda: AutoPublishPage(self.gateway)), "10_TK跨境助手.ico")
+        self.add_page("用户管理", self.build_page_safely(lambda: AdminUsersPage(self.gateway)), "03_用户管理.ico")
+        self.add_page("模型配置", self.build_page_safely(lambda: SimpleConfigPage("模型配置", self.gateway.model_configs, ["配置名称", "服务商", "类型", "Base URL", "模型", "Key", "状态", "默认"], self.gateway, "model")), "04_模型配置.ico")
+        self.add_page("第三方 API", self.build_page_safely(lambda: SimpleConfigPage("第三方 API 配置", self.gateway.third_party_configs, ["配置名称", "服务类型", "状态"], self.gateway, "third")), "07_第三方API.ico")
+        self.add_page("选品属性", self.build_page_safely(lambda: AttributePage(self.gateway)), "08_选品属性.ico")
         self.add_page("主题皮肤", ThemePage(self.apply_theme), "05_主题皮肤.ico")
 
     def update_login_status(self) -> None:
@@ -1229,7 +1258,13 @@ class AttributePage(Page):
         self.refresh()
 
     def refresh(self) -> None:
-        self.items = self.gateway.attributes()
+        try:
+            self.items = self.gateway.attributes()
+        except ApiError as exc:
+            parent = self.window()
+            if self.gateway.is_invalid_token_error(exc) and hasattr(parent, "clear_invalid_session"):
+                parent.clear_invalid_session()
+            self.items = []
         fill_table(self.attr_table, [[a.get("id"), a.get("attribute_name"), a.get("attribute_type"), a.get("current_weight")] for a in self.items])
 
     def selected_item(self) -> dict[str, Any] | None:
@@ -1831,6 +1866,46 @@ class AutoPublishSignals(QObject):
     failed = Signal(str)
 
 
+def wait_for_auto_publish_result(gateway: DataGateway, task_id: str, poll_seconds: float = 1.5) -> dict[str, Any]:
+    latest: dict[str, Any] = {}
+    for _ in range(20):
+        try:
+            latest = gateway.start_auto_publish_task_async(task_id)
+            break
+        except ApiError as exc:
+            if "task not found" not in str(exc).lower() and "任务不存在" not in str(exc):
+                raise
+            time.sleep(poll_seconds)
+    if not latest:
+        raise ApiError("任务状态暂时同步失败：后台可能仍在运行，请先等待或点击刷新，不要重复提交。")
+    terminal_statuses = {
+        "imported",
+        "import_failed",
+        "image_failed",
+        "failed",
+        "batch_failed",
+        "batch_partial_failed",
+    }
+    while True:
+        progress = latest.get("progress") if isinstance(latest.get("progress"), dict) else {}
+        status = str(latest.get("status") or "")
+        if status in terminal_statuses or str(progress.get("stage") or "") == "done":
+            return latest
+        time.sleep(poll_seconds)
+        try:
+            latest = gateway.get_auto_publish_task(task_id)
+        except ApiError as exc:
+            if "task not found" not in str(exc).lower() and "任务不存在" not in str(exc):
+                raise
+            try:
+                fallback = gateway.latest_auto_publish_result()
+                if fallback.get("task_id") == task_id:
+                    latest = fallback
+            except ApiError:
+                pass
+            continue
+
+
 class AutoPublishTask(QRunnable):
     def __init__(self, gateway: DataGateway, payload: dict[str, Any], signals: AutoPublishSignals) -> None:
         super().__init__()
@@ -1843,7 +1918,37 @@ class AutoPublishTask(QRunnable):
         try:
             task = self.gateway.create_1688_auto_publish_task(self.payload)
             self.signals.created.emit(task)
-            result = self.gateway.run_auto_publish_task(str(task["task_id"]))
+            result = wait_for_auto_publish_result(self.gateway, str(task["task_id"]))
+            self.signals.finished.emit(result)
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
+class AutoPublishBatchTask(QRunnable):
+    def __init__(self, gateway: DataGateway, payloads: list[dict[str, Any]], signals: AutoPublishSignals) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.payloads = payloads
+        self.signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            first_payload = self.payloads[0]
+            task = self.gateway.create_1688_batch_auto_publish_task(
+                {
+                    "offer_urls": [str(payload.get("offer_url") or "") for payload in self.payloads],
+                    "publish_count": len(self.payloads),
+                    "target_channel": first_payload.get("target_channel") or "TikTok Shop Japan",
+                    "target_language": first_payload.get("target_language") or "ja",
+                    "erp_url": first_payload.get("erp_url") or "https://erp.91miaoshou.com/?ac=1og270",
+                    "dry_run": bool(first_payload.get("dry_run")),
+                    "miaoshou_username": first_payload.get("miaoshou_username") or "",
+                    "miaoshou_password": first_payload.get("miaoshou_password") or "",
+                }
+            )
+            self.signals.created.emit(task)
+            result = wait_for_auto_publish_result(self.gateway, str(task["task_id"]))
             self.signals.finished.emit(result)
         except Exception as exc:
             self.signals.failed.emit(str(exc))
@@ -1870,14 +1975,22 @@ class AutoPublishPage(Page):
         controls_layout.setHorizontalSpacing(12)
         controls_layout.setVerticalSpacing(10)
 
-        self.offer_url_input = QLineEdit()
-        self.offer_url_input.setPlaceholderText("粘贴 1688 商品链接，例如 https://detail.1688.com/offer/xxxx.html")
+        self.offer_url_input = QTextEdit()
+        self.offer_url_input.setPlaceholderText(
+            "支持输入 1688 商品链接，多个链接请换行；\n"
+            "例如：https://detail.1688.com/offer/123.html?goods_id=123\n"
+            "也可以整行粘贴带标题的文本，系统会自动提取其中的 1688 链接。"
+        )
+        self.offer_url_input.setMinimumHeight(120)
         self.erp_input = QLineEdit("https://erp.91miaoshou.com/?ac=1og270")
         self.miaoshou_user_input = QLineEdit()
-        self.miaoshou_user_input.setPlaceholderText("妙手手机号 / 子账号 / 邮箱")
+        self.miaoshou_user_input.setPlaceholderText("必填：妙手手机号 / 子账号 / 邮箱")
         self.miaoshou_password_input = QLineEdit()
-        self.miaoshou_password_input.setPlaceholderText("妙手密码")
+        self.miaoshou_password_input.setPlaceholderText("必填：妙手密码，验证码在妙手窗口手动输入")
         self.miaoshou_password_input.setEchoMode(QLineEdit.Password)
+        self.language_select = QComboBox()
+        self.language_select.addItem("日语", "ja")
+        self.language_select.addItem("英语", "en")
         self.dry_run = QCheckBox("仅生成模板")
         self.dry_run.setChecked(False)
         self.create_button = QPushButton("上架该产品")
@@ -1893,7 +2006,9 @@ class AutoPublishPage(Page):
         controls_layout.addWidget(self.miaoshou_user_input, 2, 1, 1, 2)
         controls_layout.addWidget(QLabel("妙手密码"), 2, 3)
         controls_layout.addWidget(self.miaoshou_password_input, 2, 4, 1, 2)
-        controls_layout.addWidget(self.dry_run, 3, 0, 1, 2)
+        controls_layout.addWidget(QLabel("目标语言"), 3, 0)
+        controls_layout.addWidget(self.language_select, 3, 1)
+        controls_layout.addWidget(self.dry_run, 3, 2, 1, 2)
         controls_layout.addWidget(self.refresh_button, 3, 4)
         controls_layout.addWidget(self.create_button, 3, 5)
         self.layout.addWidget(controls)
@@ -1910,17 +2025,23 @@ class AutoPublishPage(Page):
         progress_layout.addWidget(self.progress_bar)
         self.layout.addWidget(progress_card)
 
-        self.flow_table = table(["步骤", "状态"])
-        fill_table(
-            self.flow_table,
-            [
-                ["1. 调 Oxylabs 抓 1688 数据", "待执行"],
-                ["2. AI 优化标题 / SKU / 描述", "待执行"],
-                ["3. 生成妙手导入模板", "待执行"],
-                ["4. 自动导入妙手公用采集箱", "待执行"],
-            ],
-        )
-        self.layout.addWidget(self.flow_table, 1)
+        usage_card = QFrame()
+        usage_card.setObjectName("Card")
+        usage_layout = QVBoxLayout(usage_card)
+        usage_layout.setContentsMargins(16, 12, 16, 12)
+        usage_layout.setSpacing(6)
+        usage_title = QLabel("API 用量统计")
+        usage_title.setObjectName("CardTitle")
+        self.api_usage_summary = QLabel("等待任务完成后显示调用次数、图片数量和 Token 用量。")
+        self.api_usage_summary.setObjectName("Muted")
+        self.api_usage_summary.setWordWrap(True)
+        self.api_usage_detail = QLabel("暂无数据")
+        self.api_usage_detail.setObjectName("ProductMuted")
+        self.api_usage_detail.setWordWrap(True)
+        usage_layout.addWidget(usage_title)
+        usage_layout.addWidget(self.api_usage_summary)
+        usage_layout.addWidget(self.api_usage_detail)
+        self.layout.addWidget(usage_card)
 
         self.result = QTextEdit()
         self.result.setReadOnly(True)
@@ -1934,6 +2055,8 @@ class AutoPublishPage(Page):
             self.loaded = True
 
     def refresh(self) -> None:
+        self.current_task = None
+        self.progress_timer.stop()
         self.reset_flow()
         self.result.clear()
 
@@ -1956,20 +2079,51 @@ class AutoPublishPage(Page):
             QMessageBox.warning(self, "创建失败", str(exc))
 
     def create_1688_task(self) -> None:
-        offer_url = self.offer_url_input.text().strip()
-        if not offer_url:
+        offer_urls = self.extract_offer_urls(self.offer_url_input.toPlainText())
+        if not offer_urls:
             QMessageBox.information(self, "请输入链接", "请先粘贴 1688 商品链接。")
             return
-        payload = {
-            "offer_url": offer_url,
-            "publish_count": 1,
-            "target_channel": "TikTok Shop Japan",
-            "erp_url": self.erp_input.text().strip() or "https://erp.91miaoshou.com/?ac=1og270",
-            "dry_run": self.dry_run.isChecked(),
-            "miaoshou_username": self.miaoshou_user_input.text().strip(),
-            "miaoshou_password": self.miaoshou_password_input.text().strip(),
-        }
-        self.start_background_task(payload)
+        miaoshou_username = self.miaoshou_user_input.text().strip()
+        miaoshou_password = self.miaoshou_password_input.text().strip()
+        if not miaoshou_username or not miaoshou_password:
+            QMessageBox.information(self, "请填写妙手账号", "请填写本次使用的妙手账号和密码；验证码会在妙手窗口手动完成。")
+            return
+        payloads = [
+            {
+                "offer_url": offer_url,
+                "publish_count": 1,
+                "target_channel": "TikTok Shop Japan",
+                "target_language": self.language_select.currentData() or "ja",
+                "erp_url": self.erp_input.text().strip() or "https://erp.91miaoshou.com/?ac=1og270",
+                "dry_run": self.dry_run.isChecked(),
+                "miaoshou_username": miaoshou_username,
+                "miaoshou_password": miaoshou_password,
+            }
+            for offer_url in offer_urls
+        ]
+        if len(payloads) == 1:
+            self.start_background_task(payloads[0])
+        else:
+            self.start_batch_background_task(payloads)
+
+    def extract_offer_urls(self, text: str) -> list[str]:
+        urls: list[str] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            matches = re.findall(r"https?://detail\.1688\.com/offer/\d+\.html(?:\?[^\s|$，,；;]*)?", line, flags=re.IGNORECASE)
+            if matches:
+                urls.extend(matches)
+            elif re.fullmatch(r"\d{8,}", line):
+                urls.append(f"https://detail.1688.com/offer/{line}.html")
+        result: list[str] = []
+        seen: set[str] = set()
+        for url in urls:
+            if url not in seen:
+                seen.add(url)
+                result.append(url)
+        return result
 
     def start_background_task(self, payload: dict[str, Any]) -> None:
         self.create_button.setEnabled(False)
@@ -1977,25 +2131,35 @@ class AutoPublishPage(Page):
         self.progress_timer.stop()
         self.progress_bar.setValue(0)
         self.progress_label.setText("正在创建任务")
+        self.reset_api_usage_panel("任务已开始，正在等待 API 用量回传。")
         self.result.setPlainText(
             "任务已开始，正在后台执行。\n\n"
-            "这一步会调用 Oxylabs、百度图片翻译、必要时豆包补图、模板生成和妙手导入。\n"
+            "这一步会调用 Oxylabs、豆包文案模型、AI MediaKit 图片清理/翻译、模板生成和妙手导入。\n"
             "如果弹出妙手浏览器，请在 10 分钟内手动输入验证码并登录。"
-        )
-        fill_table(
-            self.flow_table,
-            [
-                ["1. 调 Oxylabs 抓 1688 数据", "处理中"],
-                ["2. AI 优化标题 / SKU / 描述", "等待"],
-                ["3. 生成妙手导入模板", "等待"],
-                ["4. 自动导入妙手公用采集箱", "等待"],
-            ],
         )
         self.task_signals = AutoPublishSignals()
         self.task_signals.created.connect(self.on_task_created)
         self.task_signals.finished.connect(self.on_task_finished)
         self.task_signals.failed.connect(self.on_task_failed)
         IMAGE_THREAD_POOL.start(AutoPublishTask(self.gateway, payload, self.task_signals))
+
+    def start_batch_background_task(self, payloads: list[dict[str, Any]]) -> None:
+        self.create_button.setEnabled(False)
+        self.create_button.setText("批量处理中...")
+        self.progress_timer.stop()
+        self.current_task = None
+        self.progress_bar.setValue(0)
+        self.progress_label.setText(f"批量任务已开始：{len(payloads)} 个链接")
+        self.reset_api_usage_panel(f"批量任务已开始：{len(payloads)} 个链接，正在等待 API 用量回传。")
+        self.result.setPlainText(
+            f"批量任务已开始，共 {len(payloads)} 个链接。\n\n"
+            "多个商品会写入同一个妙手模板，通过产品主编号区分；妙手图片上传和模板导入会自动排队串行执行。"
+        )
+        self.task_signals = AutoPublishSignals()
+        self.task_signals.created.connect(self.on_task_created)
+        self.task_signals.finished.connect(self.on_task_finished)
+        self.task_signals.failed.connect(self.on_task_failed)
+        IMAGE_THREAD_POOL.start(AutoPublishBatchTask(self.gateway, payloads, self.task_signals))
 
     def on_task_created(self, task: dict[str, Any]) -> None:
         self.current_task = task
@@ -2010,7 +2174,13 @@ class AutoPublishPage(Page):
             return
         try:
             latest = self.gateway.get_auto_publish_task(task_id)
-        except ApiError:
+        except ApiError as exc:
+            if self.gateway.is_invalid_token_error(exc):
+                parent = self.window()
+                if hasattr(parent, "clear_invalid_session"):
+                    parent.clear_invalid_session()
+                self.progress_timer.stop()
+                self.progress_label.setText("登录已失效，请重新登录")
             return
         self.current_task = latest
         self.apply_progress(latest)
@@ -2025,20 +2195,7 @@ class AutoPublishPage(Page):
         if current is not None and total is not None and str(progress.get("stage") or "") == "images":
             message = f"{message}"
         self.progress_label.setText(message)
-        stage = str(progress.get("stage") or "")
-        if stage == "fetch":
-            rows = [["1. 抓取 1688 数据", "处理中"], ["2. 优化标题 / SKU / 描述", "等待"], ["3. 生成图片 / 模板", "等待"], ["4. 导入妙手公用采集箱", "等待"]]
-        elif stage == "copy":
-            rows = [["1. 抓取 1688 数据", "完成"], ["2. 优化标题 / SKU / 描述", "处理中"], ["3. 生成图片 / 模板", "等待"], ["4. 导入妙手公用采集箱", "等待"]]
-        elif stage in {"images", "template"}:
-            rows = [["1. 抓取 1688 数据", "完成"], ["2. 优化标题 / SKU / 描述", "完成"], ["3. 生成图片 / 模板", "处理中"], ["4. 导入妙手公用采集箱", "等待"]]
-        elif stage == "miaoshou":
-            rows = [["1. 抓取 1688 数据", "完成"], ["2. 优化标题 / SKU / 描述", "完成"], ["3. 生成图片 / 模板", "完成"], ["4. 导入妙手公用采集箱", "处理中"]]
-        elif stage == "done":
-            rows = [["1. 抓取 1688 数据", "完成"], ["2. 优化标题 / SKU / 描述", "完成"], ["3. 生成图片 / 模板", "完成"], ["4. 导入妙手公用采集箱", "完成"]]
-        else:
-            rows = [["1. 抓取 1688 数据", "等待"], ["2. 优化标题 / SKU / 描述", "等待"], ["3. 生成图片 / 模板", "等待"], ["4. 导入妙手公用采集箱", "等待"]]
-        fill_table(self.flow_table, rows)
+        self.update_api_usage_panel(result)
 
     def on_task_finished(self, result: dict[str, Any]) -> None:
         self.progress_timer.stop()
@@ -2054,21 +2211,19 @@ class AutoPublishPage(Page):
         self.progress_label.setText("任务失败")
         self.create_button.setEnabled(True)
         self.create_button.setText("上架该产品")
+        if self.gateway.is_invalid_token_error(ApiError(message)):
+            parent = self.window()
+            if hasattr(parent, "clear_invalid_session"):
+                parent.clear_invalid_session()
+            QMessageBox.warning(self, "登录已失效", "登录已失效，请重新登录后再上架。")
+            return
         QMessageBox.warning(self, "上架失败", message)
 
     def reset_flow(self) -> None:
         self.progress_timer.stop()
         self.progress_bar.setValue(0)
         self.progress_label.setText("待开始")
-        fill_table(
-            self.flow_table,
-            [
-                ["1. 调 Oxylabs 抓 1688 数据", "待执行"],
-                ["2. AI 优化标题 / SKU / 描述", "待执行"],
-                ["3. 生成妙手导入模板", "待执行"],
-                ["4. 自动导入妙手公用采集箱", "待执行"],
-            ],
-        )
+        self.reset_api_usage_panel()
 
     def run_task(self) -> None:
         if not self.current_task:
@@ -2083,13 +2238,10 @@ class AutoPublishPage(Page):
             QMessageBox.warning(self, "执行失败", str(exc))
 
     def render_result(self, result: dict[str, Any]) -> None:
-        flow_rows = [
-            ["1. 调 Oxylabs 抓 1688 数据", "完成" if any("Oxylabs" in step or "1688" in step for step in result.get("steps", [])) else "待执行"],
-            ["2. AI 优化标题 / SKU / 描述", "完成" if any("优化" in step for step in result.get("steps", [])) else "待执行"],
-            ["3. 生成妙手导入模板", "完成" if result.get("template_path") else "待执行"],
-            ["4. 自动导入妙手公用采集箱", "完成" if result.get("status") == "imported" else ("失败" if result.get("status") == "import_failed" else "待执行")],
-        ]
-        fill_table(self.flow_table, flow_rows)
+        if isinstance(result.get("batch_results"), list):
+            self.render_batch_result(result)
+            return
+        self.update_api_usage_panel(result)
         lines = [
             f"状态：{result.get('status', '-')}",
             f"消息：{result.get('message', '-')}",
@@ -2102,9 +2254,19 @@ class AutoPublishPage(Page):
             lines.append("")
             lines.append("错误：")
             lines.extend([f"- {error}" for error in errors])
+        product_infos = result.get("product_infos") or []
+        if len(product_infos) > 1:
+            lines.append("")
+            lines.append("商品：")
+            for index, product in enumerate(product_infos, start=1):
+                title = str(product.get("optimized_title") or product.get("title") or product.get("offer_url") or "-")
+                offer_id = str(product.get("offer_id") or "-")
+                sku_count = len(product.get("optimized_skus") or product.get("skus") or [])
+                lines.append(f"- {index}. {title}（货源ID：{offer_id}，SKU：{sku_count} 个）")
         if result.get("template_path"):
             lines.append("")
             lines.append(f"模板文件：{result.get('template_path')}")
+        self.append_api_usage_lines(lines, result)
         import_result = result.get("import_result") or {}
         screenshots = import_result.get("screenshots") or []
         if screenshots:
@@ -2112,6 +2274,152 @@ class AutoPublishPage(Page):
             lines.append("失败截图：")
             lines.extend([f"- {path}" for path in screenshots])
         self.result.setPlainText("\n".join(lines))
+
+    def render_batch_result(self, result: dict[str, Any]) -> None:
+        batch_results = [item for item in result.get("batch_results", []) if isinstance(item, dict)]
+        ok_count = sum(1 for item in batch_results if item.get("ok"))
+        failed_count = len(batch_results) - ok_count
+        self.update_api_usage_panel(result)
+        lines = [
+            f"状态：{result.get('status', '-')}",
+            f"消息：{result.get('message', '-')}",
+            "",
+            f"汇总：成功 {ok_count} 个，失败 {failed_count} 个。",
+            "",
+            "明细：",
+        ]
+        for index, item in enumerate(batch_results, start=1):
+            product = (item.get("product_infos") or [{}])[0] if isinstance(item.get("product_infos"), list) else {}
+            title = product.get("optimized_title") or product.get("title") or item.get("offer_url") or "-"
+            lines.append(f"{index}. {title}")
+            lines.append(f"   状态：{item.get('status', '-')}")
+            lines.append(f"   消息：{item.get('message', '-')}")
+            if item.get("template_path"):
+                lines.append(f"   模板：{item.get('template_path')}")
+            errors = item.get("errors") or []
+            if errors:
+                lines.append("   错误：")
+                lines.extend([f"   - {error}" for error in errors[:8]])
+            lines.append("")
+        self.append_api_usage_lines(lines, result)
+        self.result.setPlainText("\n".join(lines).strip())
+
+    def reset_api_usage_panel(self, message: str | None = None) -> None:
+        self.api_usage_summary.setText(message or "等待任务完成后显示调用次数、图片数量、Token 用量和预估费用。")
+        self.api_usage_detail.setText("暂无数据")
+
+    @staticmethod
+    def format_cost_cny(value: Any) -> str:
+        cost = float(value or 0)
+        if cost <= 0:
+            return "¥0"
+        if cost < 0.01:
+            return f"¥{cost:.4f}"
+        return f"¥{cost:.2f}"
+
+    def update_api_usage_panel(self, result: dict[str, Any]) -> None:
+        usage = result.get("api_usage") if isinstance(result.get("api_usage"), dict) else {}
+        totals = usage.get("totals") if isinstance(usage.get("totals"), dict) else {}
+        if not totals:
+            return
+        request_count = int(totals.get("request_count") or 0)
+        image_count = int(totals.get("image_count") or 0)
+        total_tokens = int(totals.get("total_tokens") or 0)
+        prompt_tokens = int(totals.get("prompt_tokens") or 0)
+        completion_tokens = int(totals.get("completion_tokens") or 0)
+        success_count = int(totals.get("success_count") or 0)
+        failure_count = int(totals.get("failure_count") or 0)
+        estimated_cost = self.format_cost_cny(totals.get("estimated_cost_cny"))
+        self.api_usage_summary.setText(
+            f"总计：请求 {request_count} 次，图片 {image_count} 张，Token {total_tokens} "
+            f"（输入 {prompt_tokens}，输出 {completion_tokens}），预估费用 {estimated_cost}，"
+            f"成功 {success_count}，失败 {failure_count}"
+        )
+        by_key = usage.get("by_key") if isinstance(usage.get("by_key"), dict) else {}
+        by_provider = usage.get("by_provider") if isinstance(usage.get("by_provider"), dict) else {}
+        detail_lines: list[str] = []
+        detail_source = by_key if by_key else by_provider
+        for name, bucket in sorted(detail_source.items()):
+            if not isinstance(bucket, dict):
+                continue
+            if name == "unknown":
+                continue
+            detail_lines.append(
+                f"{name}：请求 {int(bucket.get('request_count') or 0)} 次，"
+                f"图片 {int(bucket.get('image_count') or 0)} 张，"
+                f"Token {int(bucket.get('total_tokens') or 0)}，"
+                f"费用 {self.format_cost_cny(bucket.get('estimated_cost_cny'))}，"
+                f"成功 {int(bucket.get('success_count') or 0)}，失败 {int(bucket.get('failure_count') or 0)}"
+            )
+        self.api_usage_detail.setText("；".join(detail_lines) if detail_lines else "暂无分 Key 统计")
+
+    def append_api_usage_lines(self, lines: list[str], result: dict[str, Any]) -> None:
+        usage = result.get("api_usage") if isinstance(result.get("api_usage"), dict) else {}
+        totals = usage.get("totals") if isinstance(usage.get("totals"), dict) else {}
+        if not totals:
+            return
+        lines.append("")
+        lines.append("API 用量：")
+        lines.append(
+            "总计："
+            f"请求 {int(totals.get('request_count') or 0)} 次，"
+            f"图片 {int(totals.get('image_count') or 0)} 张，"
+            f"Token {int(totals.get('total_tokens') or 0)} "
+            f"（输入 {int(totals.get('prompt_tokens') or 0)}，输出 {int(totals.get('completion_tokens') or 0)}），"
+            f"预估费用 {self.format_cost_cny(totals.get('estimated_cost_cny'))}"
+        )
+        by_provider = usage.get("by_provider") if isinstance(usage.get("by_provider"), dict) else {}
+        if by_provider:
+            lines.append("按服务：")
+            for name, bucket in sorted(by_provider.items()):
+                if not isinstance(bucket, dict):
+                    continue
+                lines.append(
+                    f"- {name}：请求 {int(bucket.get('request_count') or 0)} 次，"
+                    f"图片 {int(bucket.get('image_count') or 0)} 张，"
+                    f"Token {int(bucket.get('total_tokens') or 0)}，"
+                    f"费用 {self.format_cost_cny(bucket.get('estimated_cost_cny'))}，"
+                    f"成功 {int(bucket.get('success_count') or 0)}，失败 {int(bucket.get('failure_count') or 0)}"
+                )
+        by_key = usage.get("by_key") if isinstance(usage.get("by_key"), dict) else {}
+        if by_key:
+            lines.append("按 Key：")
+            for name, bucket in sorted(by_key.items()):
+                if not isinstance(bucket, dict) or name == "unknown":
+                    continue
+                lines.append(
+                    f"- {name}：请求 {int(bucket.get('request_count') or 0)} 次，"
+                    f"图片 {int(bucket.get('image_count') or 0)} 张，"
+                    f"Token {int(bucket.get('total_tokens') or 0)}，"
+                    f"费用 {self.format_cost_cny(bucket.get('estimated_cost_cny'))}，"
+                    f"成功 {int(bucket.get('success_count') or 0)}，失败 {int(bucket.get('failure_count') or 0)}"
+                )
+        by_purpose = usage.get("by_purpose") if isinstance(usage.get("by_purpose"), dict) else {}
+        if by_purpose:
+            lines.append("按用途：")
+            for name, bucket in sorted(by_purpose.items()):
+                if not isinstance(bucket, dict):
+                    continue
+                lines.append(
+                    f"- {name}：请求 {int(bucket.get('request_count') or 0)} 次，"
+                    f"图片 {int(bucket.get('image_count') or 0)} 张，"
+                    f"Token {int(bucket.get('total_tokens') or 0)}，"
+                    f"费用 {self.format_cost_cny(bucket.get('estimated_cost_cny'))}，"
+                    f"成功 {int(bucket.get('success_count') or 0)}，失败 {int(bucket.get('failure_count') or 0)}"
+                )
+        by_model = usage.get("by_model") if isinstance(usage.get("by_model"), dict) else {}
+        if by_model:
+            lines.append("按模型/API：")
+            for name, bucket in sorted(by_model.items()):
+                if not isinstance(bucket, dict):
+                    continue
+                lines.append(
+                    f"- {name}：请求 {int(bucket.get('request_count') or 0)} 次，"
+                    f"图片 {int(bucket.get('image_count') or 0)} 张，"
+                    f"Token {int(bucket.get('total_tokens') or 0)}，"
+                    f"费用 {self.format_cost_cny(bucket.get('estimated_cost_cny'))}，"
+                    f"成功 {int(bucket.get('success_count') or 0)}，失败 {int(bucket.get('failure_count') or 0)}"
+                )
 
 
 class TeacherDashboardPage(Page):
