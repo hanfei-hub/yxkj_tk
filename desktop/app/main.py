@@ -1535,7 +1535,7 @@ class StudentSelectionPage(Page):
         chat_layout.setSpacing(12)
         row = QHBoxLayout()
         self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("我想找适合东南亚市场的电子产品，预算在 $10-30 之间，重量轻、利润率高的商品。")
+        self.chat_input.setPlaceholderText("帮我找适合日本市场的电动工具")
         self.selection_task_id: int | None = None
         self.selection_timer = QTimer(self)
         self.selection_timer.setInterval(2500)

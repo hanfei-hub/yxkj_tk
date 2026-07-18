@@ -15,7 +15,7 @@ from app.models.entities import (
     TaskExecution,
 )
 from app.services.ai_model_service import (
-    MODEL_TYPE_PRODUCT_VISION,
+    MODEL_TYPE_GENERAL,
     ModelCallError,
     chat_completion,
     extract_json_object,
@@ -171,7 +171,7 @@ def generate_derivatives_for_products(db: Session, products: list[FmProduct], ta
     if not products:
         return {"model_used": False, "generated_count": 0, "error": ""}
     prompt_template = ensure_selection_prompt(db)
-    model_config = get_model_config(db, MODEL_TYPE_PRODUCT_VISION)
+    model_config = get_model_config(db, MODEL_TYPE_GENERAL)
     if not model_config:
         return {"model_used": False, "generated_count": 0, "error": "no_model_config"}
 
@@ -185,7 +185,7 @@ def generate_derivatives_for_products(db: Session, products: list[FmProduct], ta
                 },
                 {"role": "user", "content": build_derivation_prompt(db, products, prompt_template)},
             ],
-            model_type=MODEL_TYPE_PRODUCT_VISION,
+            model_type=MODEL_TYPE_GENERAL,
             task_id=task_id,
             temperature=0.2,
             max_tokens=12000,
