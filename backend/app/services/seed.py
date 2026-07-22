@@ -8,6 +8,7 @@ from app.core.security import hash_password
 from app.models.entities import ModelConfig, SelectionAttribute, ThirdPartyConfig, User
 from app.services.product_family_service import DIMENSIONS, INITIAL_WEIGHT
 from app.services.selection_derivation_service import ensure_selection_prompt
+from app.services.system_settings_service import ensure_system_settings
 
 
 def init_db() -> None:
@@ -18,6 +19,7 @@ def init_db() -> None:
     db = SessionLocal()
     try:
         ensure_dimension_attributes(db)
+        ensure_system_settings(db)
         seed_all(db)
         ensure_ark_third_party_config(db)
         ensure_selection_prompt(db)
@@ -43,6 +45,8 @@ def ensure_runtime_schema() -> None:
         "supplier_source_url": "TEXT",
         "supplier_match_score": "FLOAT",
         "supplier_match_report": "TEXT",
+        "supplier_next_page": "INTEGER DEFAULT 1",
+        "supplier_searched_count": "INTEGER DEFAULT 0",
         "supplier_raw_data": "TEXT",
     }
     fm_columns = {
@@ -53,6 +57,20 @@ def ensure_runtime_schema() -> None:
     }
     user_columns = {
         "credit_balance": "INTEGER DEFAULT 0",
+    }
+    search_result_columns = {
+        "supplier_search_status": "VARCHAR(32) DEFAULT 'not_searched'",
+        "supplier_next_page": "INTEGER DEFAULT 1",
+        "supplier_searched_count": "INTEGER DEFAULT 0",
+        "supplier_product_id": "VARCHAR(128) DEFAULT ''",
+        "supplier_title": "VARCHAR(512) DEFAULT ''",
+        "supplier_image_url": "TEXT",
+        "supplier_price": "FLOAT NULL",
+        "supplier_sales_count": "INTEGER DEFAULT 0",
+        "supplier_shop_name": "VARCHAR(255) DEFAULT ''",
+        "supplier_source_url": "TEXT",
+        "supplier_match_score": "FLOAT NULL",
+        "supplier_match_report": "TEXT",
     }
     video_project_columns = {
         "result_video_url": "TEXT",
@@ -87,6 +105,7 @@ def ensure_runtime_schema() -> None:
         ensure_columns(conn, dialect, "fm_products", fm_columns)
         ensure_columns(conn, dialect, "model_configs", model_columns)
         ensure_columns(conn, dialect, "users", user_columns)
+        ensure_columns(conn, dialect, "user_search_recommendations", search_result_columns)
         ensure_columns(conn, dialect, "video_projects", video_project_columns)
         ensure_columns(conn, dialect, "video_assets", video_asset_columns)
         ensure_columns(conn, dialect, "video_storyboard_frames", video_frame_columns)

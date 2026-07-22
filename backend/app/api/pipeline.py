@@ -22,15 +22,15 @@ router = APIRouter(
 
 
 class DerivationQueueRequest(BaseModel):
-    limit: int = 20
-    min_derived_count: int = 10
+    limit: int | None = None
+    min_derived_count: int | None = None
 
 
 class SupplierMatchQueueRequest(BaseModel):
-    limit: int = 20
-    threshold: float = 90
-    max_candidates: int = 200
-    page_size: int = 20
+    limit: int | None = None
+    threshold: float | None = None
+    max_candidates: int | None = None
+    page_size: int | None = None
 
 
 @router.get("/status")
@@ -84,10 +84,10 @@ def queue_pending_supplier_matches(
 
 @router.post("/suppliers/1688/run-now")
 def run_supplier_matches_now(
-    limit: int = Query(5, ge=1, le=50),
-    threshold: float = Query(90, ge=0, le=100),
-    max_candidates: int = Query(200, ge=1, le=500),
-    page_size: int = Query(20, ge=1, le=100),
+    limit: int | None = Query(None, ge=1, le=100),
+    threshold: float | None = Query(None, ge=0, le=100),
+    max_candidates: int | None = Query(None, ge=1, le=500),
+    page_size: int | None = Query(None, ge=1, le=100),
 ):
     return run_supplier_match_batch(
         limit=limit,

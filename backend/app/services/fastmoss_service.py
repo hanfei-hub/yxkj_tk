@@ -20,6 +20,7 @@ from app.models.entities import (
 )
 from app.services.ai_model_service import (
     MODEL_TYPE_TEXT_TRANSLATION,
+    MODEL_TYPE_PRODUCT_VISION,
     ModelCallError,
     chat_completion,
     extract_json_object,
@@ -29,7 +30,20 @@ from app.services.product_family_service import get_or_create_product_family
 
 
 FASTMOSS_BASE_URL = "https://openapi.fastmoss.com"
-NEW_LISTED_PATH = "/product/v1/rank/newListed"
+RANK_PATHS = {
+    "new": "/product/v1/rank/newListed",
+    "sales": "/product/v1/rank/topSelling",
+    "hot": "/product/v1/rank/mostPromoted",
+}
+RANK_ORDERBY_FIELDS = {
+    "new": "day3_units_sold",
+    "sales": "gmv",
+    "hot": "affiliate_count",
+}
+REGION_CODES = {
+    code: code
+    for code in ("US", "ID", "GB", "VN", "TH", "MY", "PH", "SG", "ES", "MX", "DE", "FR", "IT", "BR", "JP")
+}
 
 
 class FastMossError(RuntimeError):
@@ -84,10 +98,25 @@ def extract_items(data: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def request_new_listed(config: ThirdPartyConfig, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+def request_rank(
+    config: ThirdPartyConfig,
+    *,
+    region: str = "JP",
+    list_type: str = "new",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
     token = config.access_key_encrypted or config.secret_key_encrypted
     base_url = (config.api_base_url or FASTMOSS_BASE_URL).rstrip("/")
     extra_config = parse_extra_config(config.remark)
+    region = str(region or "JP").upper()
+    list_type = str(list_type or "new").lower()
+    if region not in REGION_CODES:
+        raise FastMossError("不支持的 FastMoss 地区，目前支持 US、JP、SEA。")
+    if list_type not in RANK_PATHS:
+        raise FastMossError("不支持的 FastMoss 榜单类型，目前支持 hot、new、sales。")
+    rank_paths = extra_config.get("rank_paths") if isinstance(extra_config.get("rank_paths"), dict) else {}
+    endpoint_path = str(rank_paths.get(list_type) or RANK_PATHS[list_type])
     configured_date = extra_config.get("date") or extra_config.get("rank_date")
     if configured_date:
         request_dates = [str(configured_date)]
@@ -98,17 +127,17 @@ def request_new_listed(config: ThirdPartyConfig, page: int = 1, page_size: int =
     for request_date in request_dates:
         payload = {
             "filter": {
-                "region": "JP",
+                "region": REGION_CODES[region],
                 "date_info": {"type": "day", "value": request_date},
                 "is_cross_border": 1,
                 "is_fully_managed": 0,
             },
-            "orderby": [{"field": "day3_units_sold", "order": "desc"}],
+            "orderby": [{"field": RANK_ORDERBY_FIELDS[list_type], "order": "desc"}],
             "page": page,
             "pagesize": page_size,
         }
         response = requests.post(
-            f"{base_url}{NEW_LISTED_PATH}",
+            f"{base_url}{endpoint_path}",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json=payload,
             timeout=30,
@@ -124,11 +153,22 @@ def request_new_listed(config: ThirdPartyConfig, page: int = 1, page_size: int =
             raise FastMossError(f"FastMoss business request failed: {detail}")
         if isinstance(data, dict) and isinstance(data.get("data"), str):
             raise FastMossError(f"FastMoss business request failed: {data.get('data')}")
-        raw = {"request": payload, "response": data}
+        raw = {
+            "request": payload,
+            "response": data,
+            "region": region,
+            "list_type": list_type,
+            "endpoint_path": endpoint_path,
+        }
         last_raw = raw
         if configured_date or extract_items(raw):
             return raw
     return last_raw or {"request": {}, "response": {}}
+
+
+def request_new_listed(config: ThirdPartyConfig, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+    """Backward-compatible wrapper for scheduled/legacy callers."""
+    return request_rank(config, region="JP", list_type="new", page=page, page_size=page_size)
 
 
 def clean_text(value: Any) -> str:
@@ -288,10 +328,13 @@ def translate_titles_and_family_infos(
         for item in products
     ]
     prompt = {
-        "task": "FastMoss商品标题翻译和标准化商品分族信息提取",
+        "task": "FastMoss商品标题翻译、图片识别和标准化商品分族信息提取",
         "rules": [
             "先把商品标题翻译成简体中文。",
-            "再根据中文标题和类目，提取标准化商品族信息。",
+            "再结合商品图片和中文标题，提取标准化商品族信息。",
+            "图片是识别商品实际形态、品类、材质和功能的主要依据，标题只作为辅助信息。",
+            "如果标题与图片不一致，以图片中可确认的商品形态为准，并在 match_rule 中说明不确定性。",
+            "只能描述图片中可观察到的内容，不能根据图片之外的信息臆测品牌、材质、功能或规格。",
             "你只负责给出商品族信息，不判断是否新建商品族。",
             "是否新建商品族由后端根据 family_group 查询 product_families 决定。",
             "family_group 表示可长期复用的核心商品方向，不能太粗，也不能按单个造型过细。",
@@ -314,13 +357,36 @@ def translate_titles_and_family_infos(
         ],
     }
     try:
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": (
+                    "请按商品顺序处理下面的标题、类目和对应图片。每个商品必须返回一个结果，"
+                    "返回顺序必须与商品顺序一致。商品数据如下："
+                    + json.dumps(prompt, ensure_ascii=False)
+                ),
+            }
+        ]
+        for index, product in enumerate(products, start=1):
+            image_url = clean_text(product.get("image_url"))
+            content.append(
+                {
+                    "type": "text",
+                    "text": f"商品{index}标题：{product.get('title', '')}\n商品{index}类目：{product.get('category', '')}",
+                }
+            )
+            if image_url:
+                content.append({"type": "image_url", "image_url": {"url": image_url}})
         answer = chat_completion(
             db,
             [
-                {"role": "system", "content": "你是电商商品翻译和商品分族信息提取专家。只输出合法JSON数组。"},
-                {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+                {
+                    "role": "system",
+                    "content": "你是电商商品标题翻译、商品识图和商品分族信息提取专家。只输出合法JSON数组。",
+                },
+                {"role": "user", "content": content},
             ],
-            model_type=MODEL_TYPE_TEXT_TRANSLATION,
+            model_type=MODEL_TYPE_PRODUCT_VISION,
             task_id=task_id,
             temperature=0.1,
             max_tokens=max(1200, len(products) * 260),
@@ -373,12 +439,16 @@ def clear_old_fastmoss_products(db: Session) -> None:
     db.execute(delete(FmProduct))
 
 
-def upsert_new_listed_products(db: Session, raw: dict[str, Any], task_id: int | None = None) -> dict[str, int]:
+def upsert_rank_products(
+    db: Session,
+    raw: dict[str, Any],
+    *,
+    region: str | None = None,
+    list_type: str | None = None,
+) -> dict[str, int]:
     items = extract_items(raw)
     request_date = str(raw.get("request", {}).get("filter", {}).get("date_info", {}).get("value", ""))
     count = 0
-    translation_success_count = 0
-    translation_failed_count = 0
     if not items:
         return {
             "requested_count": 0,
@@ -394,23 +464,22 @@ def upsert_new_listed_products(db: Session, raw: dict[str, Any], task_id: int | 
             "translation_success_count": 0,
             "translation_failed_count": 0,
         }
-    original_titles = [
-        clean_text(pick_value(item, ["title", "product_title", "name", "productName"], ""))
-        for item in items
-    ]
-    categories = [
-        translate_category(parse_category(pick_value(item, ["category", "category_name", "cate_name"], "")))
-        for item in items
-    ]
-    title_family_infos = translate_titles_and_family_infos(
-        db,
-        [
-            {"title": title, "category": category}
-            for title, category in zip(original_titles, categories)
-        ],
-        task_id=task_id,
-    )
-    clear_old_fastmoss_products(db)
+    region = str(region or raw.get("region") or raw.get("request", {}).get("filter", {}).get("region") or "JP").upper()
+    list_type = str(list_type or raw.get("list_type") or "new").lower()
+    if region not in REGION_CODES or list_type not in RANK_PATHS:
+        raise FastMossError("FastMoss 地区或榜单类型无效。")
+    # Replace only this dataset. Other regions/rankings and their derived data remain intact.
+    old_products = list(db.scalars(select(FmProduct).where(FmProduct.region == region, FmProduct.list_type == list_type)).all())
+    old_ids = [item.id for item in old_products]
+    if old_ids:
+        old_derived = list(db.scalars(select(DerivedProductRecommendation.id).where(DerivedProductRecommendation.source_product_id.in_(old_ids))).all())
+        if old_derived:
+            db.execute(delete(DerivedProductDimensionReport).where(DerivedProductDimensionReport.recommendation_id.in_(old_derived)))
+            db.execute(delete(DerivedProductAttributeScore).where(DerivedProductAttributeScore.recommendation_id.in_(old_derived)))
+            db.execute(delete(TeacherReviewRecord).where(TeacherReviewRecord.recommendation_id.in_(old_derived)))
+            db.execute(delete(DerivedProductRecommendation).where(DerivedProductRecommendation.id.in_(old_derived)))
+        db.execute(delete(FmProduct).where(FmProduct.id.in_(old_ids)))
+        db.flush()
     for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
@@ -418,18 +487,13 @@ def upsert_new_listed_products(db: Session, raw: dict[str, Any], task_id: int | 
             pick_value(item, ["product_id", "id", "goods_id", "item_id", "productId"], f"fastmoss_{request_date}_{index}")
         )
         original_title = clean_text(pick_value(item, ["title", "product_title", "name", "productName"], "未命名商品"))
-        product = FmProduct(fm_product_id=external_id)
+        storage_id = f"{region}:{list_type}:{external_id}"
+        product = FmProduct(fm_product_id=storage_id)
         db.add(product)
-        product.region = "JP"
+        product.region = region
         product.platform = "TikTok"
-        product.list_type = "new"
-        title_family_info = title_family_infos[index - 1] if index - 1 < len(title_family_infos) else {}
-        translated_title = clean_text(title_family_info.get("translated_title")) or original_title
-        product.title = translated_title
-        if translated_title and translated_title != original_title:
-            translation_success_count += 1
-        else:
-            translation_failed_count += 1
+        product.list_type = list_type
+        product.title = original_title
         product.image_url = clean_text(pick_value(item, ["image_url", "cover", "img", "image", "product_image"], ""))
         product.price = parse_price(pick_value(item, ["price", "real_price", "sale_price", "product_price"], 0))
         product.currency = "JPY"
@@ -444,25 +508,43 @@ def upsert_new_listed_products(db: Session, raw: dict[str, Any], task_id: int | 
             )
         )
         product.rank_no = int(float(pick_value(item, ["rank_no", "rank", "ranking"], index) or index))
-        product.category = categories[index - 1] if index - 1 < len(categories) else ""
-        family = get_or_create_product_family(
-            db,
-            title=product.title,
-            category=product.category,
-            family_info=title_family_info,
-        )
-        product.family_id = family.id
+        product.category = parse_category(pick_value(item, ["category", "category_name", "cate_name"], ""))
+        product.family_id = None
         product.shop_name = parse_shop_name(pick_value(item, ["shop", "shop_name", "seller_name", "store_name"], ""))
         product.comment_count = int(float(pick_value(item, ["comment_count", "comments", "review_count"], 0) or 0))
         product.source_url = clean_text(pick_value(item, ["source_url", "url", "product_url"], ""))
         product.data_date = request_date
-        product.raw_data = json.dumps({"original_title": original_title, "fastmoss": item}, ensure_ascii=False)
+        product.raw_data = json.dumps({"original_title": original_title, "external_id": external_id, "region": region, "list_type": list_type, "fastmoss": item}, ensure_ascii=False)
         count += 1
     db.commit()
     return {
         "requested_count": len(items),
         "synced_count": count,
-        "translation_success_count": translation_success_count,
-        "translation_failed_count": translation_failed_count,
+        "translation_success_count": 0,
+        "translation_failed_count": 0,
     }
+
+
+def upsert_new_listed_products(db: Session, raw: dict[str, Any], task_id: int | None = None) -> dict[str, int]:
+    """Backward-compatible raw-only new-list sync."""
+    return upsert_rank_products(db, raw, region="JP", list_type="new")
+
+
+def prepare_product_for_derivation(db: Session, product: FmProduct, task_id: int | None = None) -> None:
+    """Translate and assign a family lazily, immediately before derivation."""
+    original_title = clean_text(product.title)
+    info = translate_titles_and_family_infos(
+        db,
+        [{"title": original_title, "category": product.category, "image_url": product.image_url}],
+        task_id=task_id,
+    )[0]
+    translated_title = clean_text(info.get("translated_title")) or original_title
+    product.title = translated_title
+    family = get_or_create_product_family(db, title=translated_title, category=product.category, family_info=info)
+    product.family_id = family.id
+    raw_data = json.loads(product.raw_data or "{}") if product.raw_data else {}
+    raw_data["translation"] = {"original_title": original_title, "translated_title": translated_title}
+    raw_data["family"] = {"family_id": family.id, "family_group": info.get("family_group", ""), "family_variant": info.get("family_variant", "")}
+    product.raw_data = json.dumps(raw_data, ensure_ascii=False)
+    db.commit()
 

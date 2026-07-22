@@ -30,6 +30,24 @@ DIMENSIONS: list[tuple[str, str]] = [
 
 INITIAL_WEIGHT = round(100 / len(DIMENSIONS), 4)
 
+
+def active_dimensions(db: Session) -> list[tuple[str, str]]:
+    """Return enabled dimension attributes from the database."""
+    rows = db.scalars(
+        select(SelectionAttribute)
+        .where(SelectionAttribute.attribute_type == "dimension", SelectionAttribute.status == 1)
+        .order_by(SelectionAttribute.id)
+    ).all()
+    dimensions: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        code = (row.attribute_code or "").strip()
+        name = (row.attribute_name or "").strip()
+        if code and name and code not in seen:
+            dimensions.append((code, name))
+            seen.add(code)
+    return dimensions or list(DIMENSIONS)
+
 STOPWORDS = {
     "日本",
     "跨境",
@@ -252,14 +270,16 @@ def ensure_family_weights(db: Session, family: ProductFamily) -> None:
             select(ProductFamilyDimensionWeight).where(ProductFamilyDimensionWeight.family_id == family.id)
         ).all()
     }
-    for code, name in DIMENSIONS:
+    dimensions = active_dimensions(db)
+    initial_weight = round(100 / len(dimensions), 4)
+    for code, name in dimensions:
         if code not in existing:
             db.add(
                 ProductFamilyDimensionWeight(
                     family_id=family.id,
                     dimension_code=code,
                     dimension_name=name,
-                    weight_percent=INITIAL_WEIGHT,
+                    weight_percent=initial_weight,
                 )
             )
     db.flush()
@@ -267,21 +287,34 @@ def ensure_family_weights(db: Session, family: ProductFamily) -> None:
 
 
 def weights_for_prompt(db: Session, family_id: int | None) -> dict[str, str]:
+    dimensions = active_dimensions(db)
+    initial_weight = round(100 / len(dimensions), 4)
     if not family_id:
-        return {name: f"{INITIAL_WEIGHT:.2f}%" for _, name in DIMENSIONS}
+        return {name: f"{initial_weight:.2f}%" for _, name in dimensions}
+    family = db.get(ProductFamily, family_id)
+    if family:
+        ensure_family_weights(db, family)
     rows = db.scalars(
         select(ProductFamilyDimensionWeight)
         .where(ProductFamilyDimensionWeight.family_id == family_id)
         .order_by(ProductFamilyDimensionWeight.dimension_code)
     ).all()
-    if not rows:
-        return {name: f"{INITIAL_WEIGHT:.2f}%" for _, name in DIMENSIONS}
-    return {row.dimension_name: f"{float(row.weight_percent):.2f}%" for row in rows}
+    active_codes = {code for code, _ in dimensions}
+    weights = {
+        row.dimension_name: f"{float(row.weight_percent):.2f}%"
+        for row in rows
+        if row.dimension_code in active_codes
+    }
+    return weights or {name: f"{initial_weight:.2f}%" for _, name in dimensions}
 
 
 def normalize_family_weights(db: Session, family_id: int) -> None:
+    active_codes = {code for code, _ in active_dimensions(db)}
     rows = db.scalars(
-        select(ProductFamilyDimensionWeight).where(ProductFamilyDimensionWeight.family_id == family_id)
+        select(ProductFamilyDimensionWeight).where(
+            ProductFamilyDimensionWeight.family_id == family_id,
+            ProductFamilyDimensionWeight.dimension_code.in_(active_codes),
+        )
     ).all()
     if not rows:
         return
@@ -303,7 +336,7 @@ def attribute_to_dimension_code(attribute: SelectionAttribute | None) -> str | N
     if not attribute:
         return None
     code = (attribute.attribute_code or "").strip()
-    if code.startswith("dimension_"):
+    if attribute.attribute_type == "dimension" and code:
         return code
     name = (attribute.attribute_name or "").strip()
     for dimension_code, dimension_name in DIMENSIONS:
@@ -362,13 +395,14 @@ def save_dimension_reports(
 ) -> None:
     if not isinstance(analysis_report, dict):
         return
+    dimensions = active_dimensions(db)
     weights = {
         row.dimension_code: float(row.weight_percent or INITIAL_WEIGHT)
         for row in db.scalars(
             select(ProductFamilyDimensionWeight).where(ProductFamilyDimensionWeight.family_id == recommendation.family_id)
         ).all()
     }
-    for code, name in DIMENSIONS:
+    for code, name in dimensions:
         value = analysis_report.get(code) or {}
         if not isinstance(value, dict):
             value = {}

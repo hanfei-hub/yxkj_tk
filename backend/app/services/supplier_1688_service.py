@@ -5,11 +5,12 @@ from typing import Any
 from urllib.parse import urljoin
 
 import requests
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.entities import DerivedProductRecommendation, ThirdPartyConfig
+from app.models.entities import DerivedProductRecommendation, ThirdPartyConfig, UserSearchRecommendation
 from app.services.ai_model_service import MODEL_TYPE_PRODUCT_VISION, ModelCallError, chat_completion, extract_json_object
+from app.services.system_settings_service import get_setting_float, get_setting_int
 
 
 class Supplier1688Error(RuntimeError):
@@ -163,7 +164,8 @@ def raise_for_supplier_error(raw: Any) -> None:
         raise Supplier1688Error(f"1688 API 返回错误：{error}{code_text}")
 
 
-def search_1688_products(db: Session, keyword: str, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+def search_1688_products(db: Session, keyword: str, page: int = 1, page_size: int | None = None) -> dict[str, Any]:
+    page_size = page_size or get_setting_int(db, "1688_page_size")
     keyword = keyword.strip()
     if not keyword:
         raise Supplier1688Error("搜索关键词不能为空。")
@@ -232,7 +234,8 @@ def search_1688_products(db: Session, keyword: str, page: int = 1, page_size: in
     }
 
 
-def build_match_prompt(derived: DerivedProductRecommendation, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_match_prompt(derived: DerivedProductRecommendation | str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    title = derived.derived_title if isinstance(derived, DerivedProductRecommendation) else str(derived)
     image_candidates = [
         {"index": index, "image_url": item.get("image_url") or ""}
         for index, item in enumerate(candidates, start=1)
@@ -250,7 +253,7 @@ def build_match_prompt(derived: DerivedProductRecommendation, candidates: list[d
                         "如果没有明显匹配项，best_index 返回 0。",
                         "只返回纯 JSON，不要输出 markdown 或额外解释。",
                     ],
-                    "derived_product": {"title": derived.derived_title},
+                    "derived_product": {"title": title},
                     "candidates": image_candidates,
                     "output_schema": {
                         "best_index": "候选 index，无法匹配填 0",
@@ -279,7 +282,7 @@ def build_match_prompt(derived: DerivedProductRecommendation, candidates: list[d
 
 def score_supplier_candidates(
     db: Session,
-    derived: DerivedProductRecommendation,
+    derived: DerivedProductRecommendation | str,
     candidates: list[dict[str, Any]],
     task_id: int | None = None,
 ) -> dict[str, Any]:
@@ -335,85 +338,221 @@ def auto_match_1688_for_derived(
     db: Session,
     derived_id: int,
     *,
-    threshold: float = 90,
-    max_candidates: int = 200,
-    page_size: int = 20,
+    threshold: float | None = None,
+    max_candidates: int | None = None,
+    page_size: int | None = None,
     task_id: int | None = None,
 ) -> dict[str, Any]:
     derived = db.get(DerivedProductRecommendation, derived_id)
     if not derived:
         raise Supplier1688Error("衍生品不存在。")
-    keyword = (derived.search_keywords or derived.derived_title or "").strip()
+    keyword = (derived.derived_title or "").strip()
     if not keyword:
         raise Supplier1688Error("衍生品缺少搜索关键词。")
 
+    threshold = get_setting_float(db, "1688_match_threshold") if threshold is None else float(threshold)
+    max_candidates = get_setting_int(db, "1688_max_candidates") if max_candidates is None else int(max_candidates)
+    page_size = get_setting_int(db, "1688_page_size") if page_size is None else int(page_size)
     threshold = max(0.0, min(100.0, float(threshold)))
     page_size = max(1, min(100, int(page_size)))
     max_candidates = max(page_size, int(max_candidates))
-    searched_count = 0
-    best_result: dict[str, Any] = {"match_score": 0, "best_index": 0, "reason": ""}
-    best_candidate: dict[str, Any] | None = None
-    page = 1
+    max_pages = max(1, (max_candidates + page_size - 1) // page_size)
+    page = max(1, int(derived.supplier_next_page or 1))
+    searched_count = max(0, int(derived.supplier_searched_count or 0))
+    if page > max_pages or searched_count >= max_candidates:
+        derived.supplier_search_status = "no_match"
+        db.commit()
+        return {
+            "ok": True,
+            "matched": False,
+            "finished": True,
+            "derived_id": derived.id,
+            "keyword": keyword,
+            "threshold": threshold,
+            "page": page,
+            "searched_count": searched_count,
+            "best_score": float(derived.supplier_match_score or 0),
+            "reason": "已完成全部候选页，未找到达到阈值的商品",
+        }
 
-    while searched_count < max_candidates:
-        result = search_1688_products(db, keyword, page=page, page_size=page_size)
-        candidates = result.get("items") or []
-        if not candidates:
-            break
-        remain = max_candidates - searched_count
-        candidates = candidates[:remain]
-        scored = score_supplier_candidates(db, derived, candidates, task_id=task_id)
-        searched_count += len(candidates)
-        best_index = int(scored.get("best_index") or 0)
-        score = float(scored.get("match_score") or 0)
-        if 1 <= best_index <= len(candidates) and score > float(best_result.get("match_score") or 0):
-            best_result = scored
-            best_candidate = candidates[best_index - 1]
-        if best_candidate and score >= threshold:
-            apply_supplier_match(derived, best_candidate, score, best_result)
-            db.commit()
-            return {
-                "ok": True,
-                "matched": True,
-                "derived_id": derived.id,
-                "keyword": keyword,
-                "threshold": threshold,
-                "searched_count": searched_count,
-                "match_score": score,
-                "item": best_candidate,
-                "report": best_result,
-            }
-        page += 1
+    result = search_1688_products(db, keyword, page=page, page_size=page_size)
+    candidates = (result.get("items") or [])[: max_candidates - searched_count]
+    if not candidates:
+        derived.supplier_next_page = max_pages + 1
+        derived.supplier_search_status = "no_match"
+        derived.supplier_match_report = json.dumps(
+            {"page": page, "searched_count": searched_count, "reason": "当前页没有候选商品"},
+            ensure_ascii=False,
+        )
+        db.commit()
+        return {
+            "ok": True,
+            "matched": False,
+            "finished": True,
+            "derived_id": derived.id,
+            "keyword": keyword,
+            "threshold": threshold,
+            "page": page,
+            "searched_count": searched_count,
+            "best_score": float(derived.supplier_match_score or 0),
+            "reason": "当前页没有候选商品",
+        }
 
+    scored = score_supplier_candidates(db, derived, candidates, task_id=task_id)
+    searched_count += len(candidates)
+    derived.supplier_searched_count = searched_count
+    derived.supplier_next_page = page + 1
+    best_index = int(scored.get("best_index") or 0)
+    score = float(scored.get("match_score") or 0)
+    previous_score = float(derived.supplier_match_score or 0)
+    best_score = max(previous_score, score if 1 <= best_index <= len(candidates) else 0)
+    if 1 <= best_index <= len(candidates) and score >= threshold:
+        candidate = candidates[best_index - 1]
+        apply_supplier_match(derived, candidate, score, scored)
+        db.commit()
+        return {
+            "ok": True,
+            "matched": True,
+            "finished": True,
+            "derived_id": derived.id,
+            "keyword": keyword,
+            "threshold": threshold,
+            "page": page,
+            "searched_count": searched_count,
+            "match_score": score,
+            "item": candidate,
+            "report": scored,
+        }
+
+    finished = derived.supplier_next_page > max_pages or searched_count >= max_candidates
     derived.supplier_search_status = "no_match"
-    derived.supplier_match_score = float(best_result.get("match_score") or 0)
-    derived.supplier_match_report = json.dumps(best_result, ensure_ascii=False)
+    derived.supplier_match_score = best_score
+    derived.supplier_match_report = json.dumps(
+        {
+            "page": page,
+            "next_page": derived.supplier_next_page,
+            "searched_count": searched_count,
+            "best_score": best_score,
+            "page_result": scored,
+            "finished": finished,
+        },
+        ensure_ascii=False,
+    )
     db.commit()
     return {
         "ok": True,
         "matched": False,
+        "finished": finished,
         "derived_id": derived.id,
         "keyword": keyword,
         "threshold": threshold,
+        "page": page,
+        "next_page": derived.supplier_next_page,
         "searched_count": searched_count,
-        "best_score": derived.supplier_match_score,
-        "best_item": best_candidate,
-        "report": best_result,
+        "best_score": best_score,
+        "report": scored,
     }
+
+
+def apply_search_result_supplier_match(
+    recommendation: UserSearchRecommendation,
+    candidate: dict[str, Any],
+    score: float,
+    report: dict[str, Any],
+) -> None:
+    recommendation.supplier_product_id = str(candidate.get("supplier_product_id") or "")
+    recommendation.supplier_title = str(candidate.get("title") or "")[:512]
+    recommendation.supplier_image_url = str(candidate.get("image_url") or "")
+    recommendation.supplier_price = number_value(candidate.get("price"))
+    recommendation.supplier_sales_count = int_value(candidate.get("sales_count"))
+    recommendation.supplier_shop_name = str(candidate.get("shop_name") or "")[:255]
+    recommendation.supplier_source_url = str(candidate.get("source_url") or "")
+    recommendation.supplier_match_score = score
+    recommendation.supplier_match_report = json.dumps(report, ensure_ascii=False)
+    recommendation.supplier_search_status = "matched"
+
+
+def auto_match_1688_for_search_result(
+    db: Session,
+    recommendation: UserSearchRecommendation,
+    *,
+    threshold: float | None = None,
+    max_candidates: int | None = None,
+    page_size: int | None = None,
+    task_id: int | None = None,
+    all_pages: bool = True,
+) -> dict[str, Any]:
+    keyword = (recommendation.title or "").strip()
+    if not keyword:
+        raise Supplier1688Error("用户搜索商品缺少商品名称。")
+    threshold = get_setting_float(db, "1688_match_threshold") if threshold is None else float(threshold)
+    max_candidates = get_setting_int(db, "1688_max_candidates") if max_candidates is None else int(max_candidates)
+    page_size = get_setting_int(db, "1688_page_size") if page_size is None else int(page_size)
+    threshold = max(0.0, min(100.0, float(threshold)))
+    page_size = max(1, min(100, int(page_size)))
+    max_candidates = max(page_size, int(max_candidates))
+    max_pages = max(1, (max_candidates + page_size - 1) // page_size)
+    best_score = float(recommendation.supplier_match_score or 0)
+    pages = 0
+    while True:
+        page = max(1, int(recommendation.supplier_next_page or 1))
+        searched_count = max(0, int(recommendation.supplier_searched_count or 0))
+        if page > max_pages or searched_count >= max_candidates:
+            recommendation.supplier_search_status = "no_match"
+            db.commit()
+            return {"ok": True, "matched": False, "finished": True, "keyword": keyword, "searched_count": searched_count, "best_score": best_score}
+        result = search_1688_products(db, keyword, page=page, page_size=page_size)
+        candidates = (result.get("items") or [])[: max_candidates - searched_count]
+        if not candidates:
+            recommendation.supplier_next_page = max_pages + 1
+            recommendation.supplier_search_status = "no_match"
+            db.commit()
+            return {"ok": True, "matched": False, "finished": True, "keyword": keyword, "searched_count": searched_count, "best_score": best_score}
+        scored = score_supplier_candidates(db, keyword, candidates, task_id=task_id)
+        searched_count += len(candidates)
+        recommendation.supplier_searched_count = searched_count
+        recommendation.supplier_next_page = page + 1
+        best_index = int(scored.get("best_index") or 0)
+        score = float(scored.get("match_score") or 0)
+        best_score = max(best_score, score if 1 <= best_index <= len(candidates) else 0)
+        if 1 <= best_index <= len(candidates) and score >= threshold:
+            apply_search_result_supplier_match(recommendation, candidates[best_index - 1], score, scored)
+            db.commit()
+            return {"ok": True, "matched": True, "finished": True, "keyword": keyword, "searched_count": searched_count, "match_score": score, "item": candidates[best_index - 1]}
+        recommendation.supplier_search_status = "no_match"
+        recommendation.supplier_match_score = best_score
+        recommendation.supplier_match_report = json.dumps({"page": page, "best_score": best_score, "page_result": scored}, ensure_ascii=False)
+        db.commit()
+        pages += 1
+        if not all_pages or pages >= max_pages:
+            return {"ok": True, "matched": False, "finished": recommendation.supplier_next_page > max_pages or searched_count >= max_candidates, "keyword": keyword, "searched_count": searched_count, "best_score": best_score}
 
 
 def auto_match_pending_derived_products(
     db: Session,
     *,
-    limit: int = 20,
-    threshold: float = 90,
-    max_candidates: int = 200,
-    page_size: int = 20,
+    limit: int | None = None,
+    threshold: float | None = None,
+    max_candidates: int | None = None,
+    page_size: int | None = None,
     task_id: int | None = None,
 ) -> dict[str, Any]:
+    limit = get_setting_int(db, "1688_batch_limit") if limit is None else int(limit)
+    threshold = get_setting_float(db, "1688_match_threshold") if threshold is None else float(threshold)
+    max_candidates = get_setting_int(db, "1688_max_candidates") if max_candidates is None else int(max_candidates)
+    page_size = get_setting_int(db, "1688_page_size") if page_size is None else int(page_size)
+    max_pages = max(1, (max_candidates + page_size - 1) // page_size)
     items = db.scalars(
         select(DerivedProductRecommendation)
-        .where(DerivedProductRecommendation.supplier_search_status.in_(["not_searched", "no_match", "failed"]))
+        .where(
+            or_(
+                DerivedProductRecommendation.supplier_search_status.in_(["not_searched", "failed"]),
+                and_(
+                    DerivedProductRecommendation.supplier_search_status == "no_match",
+                    DerivedProductRecommendation.supplier_next_page <= max_pages,
+                ),
+            )
+        )
         .order_by(DerivedProductRecommendation.id.asc())
         .limit(max(1, int(limit)))
     ).all()

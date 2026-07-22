@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from typing import Any
 
@@ -16,6 +16,7 @@ from app.services.ai_model_service import (
     extract_json_object,
 )
 from app.services.execution_log_service import create_task, elapsed_ms, finish_task, start_timer
+from app.services.supplier_1688_service import Supplier1688Error, auto_match_1688_for_search_result
 
 
 PROMPT_CODE = "ai_selection_from_user_v1"
@@ -117,7 +118,18 @@ def normalize_items(raw: Any) -> list[dict[str, Any]]:
         reason = str(raw_item.get("reason_summary") or raw_item.get("recommendation_reason") or "")
         if not reason and isinstance(report, dict):
             reason = json.dumps(report, ensure_ascii=False)[:600]
-        image_url = str(raw_item.get("image_url") or "").strip()
+        image_url = str(
+            raw_item.get("image_url")
+            or raw_item.get("image")
+            or raw_item.get("imageUrl")
+            or raw_item.get("product_image_url")
+            or raw_item.get("product_image")
+            or raw_item.get("pic_url")
+            or raw_item.get("picUrl")
+            or raw_item.get("main_image")
+            or raw_item.get("mainImage")
+            or ""
+        ).strip()
         if "example.com" in image_url.lower():
             image_url = ""
         items.append(
@@ -150,7 +162,8 @@ def save_user_search_recommendations(
     search_query: str,
     items: list[dict[str, Any]],
 ) -> None:
-    db.execute(delete(UserSearchRecommendation).where(UserSearchRecommendation.user_id == user_id))
+    cutoff = datetime.utcnow() - timedelta(days=7)
+    db.execute(delete(UserSearchRecommendation).where(UserSearchRecommendation.created_at < cutoff))
     now = datetime.utcnow()
     for index, item in enumerate(items, start=1):
         db.add(
@@ -213,6 +226,29 @@ def run_ai_selection_task(task_id: int, user_message: str, user_id: int, credit_
                 raise ModelCallError("大模型未返回可入库的商品列表")
             save_user_search_recommendations(db, user_id=user_id, task_id=task.id, search_query=user_message, items=items)
 
+            update_task_progress(db, task, processed_count=3, stage="supplier_matching", message="正在为搜索结果匹配 1688 货源")
+            search_results = db.scalars(
+                select(UserSearchRecommendation)
+                .where(UserSearchRecommendation.task_id == task.id, UserSearchRecommendation.user_id == user_id)
+                .order_by(UserSearchRecommendation.sort_order.asc(), UserSearchRecommendation.id.asc())
+            ).all()
+            supplier_errors: list[str] = []
+            for index, search_result in enumerate(search_results, start=1):
+                try:
+                    auto_match_1688_for_search_result(db, search_result, task_id=task.id, all_pages=True)
+                except Supplier1688Error as exc:
+                    search_result.supplier_search_status = "failed"
+                    search_result.supplier_match_report = json.dumps({"error": str(exc)}, ensure_ascii=False)
+                    db.commit()
+                    supplier_errors.append(f"{search_result.id}: {exc}")
+                update_task_progress(
+                    db,
+                    task,
+                    processed_count=3,
+                    stage="supplier_matching",
+                    message=f"1688 匹配进度 {index}/{len(search_results)}",
+                )
+
             finish_task(
                 db,
                 task,
@@ -221,7 +257,7 @@ def run_ai_selection_task(task_id: int, user_message: str, user_id: int, credit_
                 success_count=len(items),
                 failed_count=0,
                 elapsed_ms_value=elapsed_ms(started),
-                result_snapshot={"stage": "finished", "progress": 100, "generated_count": len(items)},
+                result_snapshot={"stage": "finished", "progress": 100, "generated_count": len(items), "supplier_errors": supplier_errors},
             )
         except Exception as exc:
             if credit_cost > 0:
@@ -258,6 +294,18 @@ def user_search_result_to_dict(item: UserSearchRecommendation) -> dict[str, Any]
         "sales_count": item.sales_count,
         "reason_summary": item.reason_summary,
         "analysis_report": item.analysis_report,
+        "supplier_search_status": item.supplier_search_status,
+        "supplier_next_page": item.supplier_next_page,
+        "supplier_searched_count": item.supplier_searched_count,
+        "supplier_product_id": item.supplier_product_id,
+        "supplier_title": item.supplier_title,
+        "supplier_image_url": item.supplier_image_url,
+        "supplier_price": item.supplier_price,
+        "supplier_sales_count": item.supplier_sales_count,
+        "supplier_shop_name": item.supplier_shop_name,
+        "supplier_source_url": item.supplier_source_url,
+        "supplier_match_score": item.supplier_match_score,
+        "supplier_match_report": item.supplier_match_report,
         "sort_order": item.sort_order,
         "created_at": item.created_at.isoformat() if item.created_at else None,
     }

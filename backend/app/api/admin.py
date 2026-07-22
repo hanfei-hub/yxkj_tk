@@ -1,3 +1,6 @@
+import time
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import delete, select
@@ -7,13 +10,16 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_role
 from app.core.database import get_db
 from app.core.security import hash_password
-from app.models.entities import ModelConfig, SelectionAttribute, TeacherReviewRecord, ThirdPartyConfig, User, UserSearchRecommendation
+from app.models.entities import DerivedProductAttributeScore, ModelConfig, SelectionAttribute, SystemSetting, TeacherReviewRecord, ThirdPartyConfig, User, UserSearchRecommendation
 from app.services.serializers import (
     attribute_to_dict,
     model_config_to_dict,
+    system_setting_to_dict,
     third_party_config_to_dict,
     user_to_dict,
 )
+from app.services.system_settings_service import ensure_system_settings
+from app.services.ai_model_service import ModelCallError, chat_completion
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_role("admin"))])
 
@@ -53,7 +59,6 @@ class ModelConfigPayload(BaseModel):
     model_name: str = ""
     temperature: float = 0.7
     max_tokens: int = 2000
-    is_default: int = 0
     status: int = 1
     remark: str = ""
 
@@ -80,6 +85,61 @@ class AttributeCreate(BaseModel):
     description: str = ""
     default_weight: float = 1.0
     status: int = 1
+
+
+class SystemSettingsPayload(BaseModel):
+    values: dict[str, str]
+
+
+class ModelTestPayload(BaseModel):
+    model_config_id: int
+    text: str = ""
+    image_url: str = ""
+
+
+@router.post("/model-test")
+def test_model(payload: ModelTestPayload, db: Session = Depends(get_db)):
+    config = db.get(ModelConfig, payload.model_config_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="模型配置不存在")
+    if not config.base_url or not config.api_key_encrypted or not config.model_name:
+        raise HTTPException(status_code=400, detail="模型配置缺少 Base URL、API Key 或模型名称")
+    content: list[dict[str, Any]] = []
+    if payload.text.strip():
+        content.append({"type": "text", "text": payload.text.strip()})
+    if payload.image_url.strip():
+        content.append({"type": "image_url", "image_url": {"url": payload.image_url.strip()}})
+    if not content:
+        raise HTTPException(status_code=400, detail="请输入测试文本或图片")
+    started = time.perf_counter()
+    try:
+        answer = chat_completion(
+            db,
+            [{"role": "user", "content": content}],
+            model_type=config.model_type,
+            config_id=config.id,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+        )
+        return {
+            "ok": True,
+            "model_config_id": config.id,
+            "model_name": config.model_name,
+            "provider": config.provider,
+            "model_type": config.model_type,
+            "elapsed_ms": int(round((time.perf_counter() - started) * 1000)),
+            "answer": answer,
+        }
+    except ModelCallError as exc:
+        return {
+            "ok": False,
+            "model_config_id": config.id,
+            "model_name": config.model_name,
+            "provider": config.provider,
+            "model_type": config.model_type,
+            "elapsed_ms": int(round((time.perf_counter() - started) * 1000)),
+            "error": str(exc),
+        }
 
 
 @router.get("/users")
@@ -185,9 +245,6 @@ def list_model_configs(db: Session = Depends(get_db)):
 
 @router.post("/model-configs")
 def create_model_config(payload: ModelConfigPayload, db: Session = Depends(get_db)):
-    if payload.is_default:
-        for item in db.scalars(select(ModelConfig).where(ModelConfig.model_type == payload.model_type)).all():
-            item.is_default = 0
     item = ModelConfig(**payload.model_dump())
     db.add(item)
     db.commit()
@@ -200,11 +257,6 @@ def update_model_config(config_id: int, payload: ModelConfigPayload, db: Session
     item = db.get(ModelConfig, config_id)
     if not item:
         raise HTTPException(status_code=404, detail="模型配置不存在")
-    if payload.is_default:
-        for existing in db.scalars(
-            select(ModelConfig).where(ModelConfig.id != config_id, ModelConfig.model_type == payload.model_type)
-        ).all():
-            existing.is_default = 0
     for key, value in payload.model_dump().items():
         setattr(item, key, value)
     db.commit()
@@ -218,18 +270,6 @@ def update_model_status(config_id: int, payload: StatusRequest, db: Session = De
     if not item:
         raise HTTPException(status_code=404, detail="模型配置不存在")
     item.status = payload.status
-    db.commit()
-    db.refresh(item)
-    return model_config_to_dict(item)
-
-
-@router.post("/model-configs/{config_id}/default")
-def set_default_model(config_id: int, db: Session = Depends(get_db)):
-    item = db.get(ModelConfig, config_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="模型配置不存在")
-    for existing in db.scalars(select(ModelConfig).where(ModelConfig.model_type == item.model_type)).all():
-        existing.is_default = 1 if existing.id == config_id else 0
     db.commit()
     db.refresh(item)
     return model_config_to_dict(item)
@@ -249,6 +289,36 @@ def delete_model_config(config_id: int, db: Session = Depends(get_db)):
 def list_third_party_configs(db: Session = Depends(get_db)):
     items = db.scalars(select(ThirdPartyConfig).order_by(ThirdPartyConfig.id)).all()
     return [third_party_config_to_dict(item) for item in items]
+
+
+@router.get("/system-settings")
+def list_system_settings(db: Session = Depends(get_db)):
+    ensure_system_settings(db)
+    db.commit()
+    items = db.scalars(select(SystemSetting).order_by(SystemSetting.id)).all()
+    return [system_setting_to_dict(item) for item in items]
+
+
+@router.put("/system-settings")
+def update_system_settings(payload: SystemSettingsPayload, db: Session = Depends(get_db)):
+    ensure_system_settings(db)
+    updated = []
+    for key, value in payload.values.items():
+        item = db.scalar(select(SystemSetting).where(SystemSetting.setting_key == key))
+        if not item:
+            raise HTTPException(status_code=400, detail=f"未知系统参数：{key}")
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"参数 {item.setting_name} 必须是数字") from exc
+        if item.min_value is not None and numeric_value < item.min_value:
+            raise HTTPException(status_code=400, detail=f"参数 {item.setting_name} 不能小于 {item.min_value:g}")
+        if item.max_value is not None and numeric_value > item.max_value:
+            raise HTTPException(status_code=400, detail=f"参数 {item.setting_name} 不能大于 {item.max_value:g}")
+        item.setting_value = str(value).strip()
+        updated.append(item)
+    db.commit()
+    return [system_setting_to_dict(item) for item in updated]
 
 
 @router.post("/third-party-configs")
@@ -348,3 +418,16 @@ def update_attribute_status(attribute_id: int, payload: StatusRequest, db: Sessi
     db.commit()
     db.refresh(attribute)
     return attribute_to_dict(attribute)
+
+
+@router.delete("/selection-attributes/{attribute_id}")
+def delete_selection_attribute(attribute_id: int, db: Session = Depends(get_db)):
+    attribute = db.get(SelectionAttribute, attribute_id)
+    if not attribute:
+        raise HTTPException(status_code=404, detail="属性不存在")
+    score_exists = db.scalar(select(DerivedProductAttributeScore.id).where(DerivedProductAttributeScore.attribute_id == attribute_id).limit(1))
+    if score_exists:
+        raise HTTPException(status_code=400, detail="该属性已有历史审核评分，不能直接删除，请先禁用属性。")
+    db.delete(attribute)
+    db.commit()
+    return {"ok": True, "deleted_id": attribute_id}

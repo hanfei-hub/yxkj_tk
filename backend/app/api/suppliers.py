@@ -20,17 +20,17 @@ router = APIRouter(prefix="/api/suppliers", tags=["suppliers"], dependencies=[De
 class SupplierSearchRequest(BaseModel):
     keyword: str
     page: int = 1
-    page_size: int = 20
+    page_size: int | None = None
 
 
 class SupplierAutoMatchRequest(BaseModel):
-    threshold: float = 90
-    max_candidates: int = 200
-    page_size: int = 20
+    threshold: float | None = None
+    max_candidates: int | None = None
+    page_size: int | None = None
 
 
 class SupplierBatchAutoMatchRequest(SupplierAutoMatchRequest):
-    limit: int = 20
+    limit: int | None = None
 
 
 @router.post("/1688/search")
@@ -63,13 +63,13 @@ def auto_match_pending_1688_products(
 def search_1688_for_derived_product(
     derived_id: int,
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int | None = Query(None, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
     derived = db.get(DerivedProductRecommendation, derived_id)
     if not derived:
         raise HTTPException(status_code=404, detail="衍生品不存在。")
-    keyword = (derived.search_keywords or derived.derived_title or "").strip()
+    keyword = (derived.derived_title or "").strip()
     if not keyword:
         raise HTTPException(status_code=400, detail="衍生品缺少搜索关键词。")
     try:
