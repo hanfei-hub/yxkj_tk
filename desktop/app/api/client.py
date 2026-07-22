@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -33,19 +34,37 @@ class ApiClient:
                 timeout=timeout or self.timeout,
             )
         except requests.RequestException as exc:
-            raise ApiError(str(exc)) from exc
+            raise ApiError(f"网络请求失败\n请求：{method} {path}\n异常：{type(exc).__name__}: {exc}") from exc
 
         if response.status_code >= 400:
+            raw_text = (response.text or "").strip()
             try:
-                detail = response.json().get("detail", response.text)
+                body = response.json()
             except ValueError:
-                detail = response.text
+                body = None
+            if isinstance(body, dict):
+                detail = body.get("detail") or body.get("message") or body.get("msg") or body
+            else:
+                detail = raw_text
+            if isinstance(detail, (dict, list)):
+                detail = json.dumps(detail, ensure_ascii=False, indent=2)
+            detail = str(detail).strip() or "服务器没有返回错误正文"
             if response.status_code == 401:
-                detail = "请重新登录"
-            raise ApiError(str(detail))
+                detail = "请重新登录\n" + detail
+            raise ApiError(
+                f"HTTP {response.status_code} {response.reason}\n"
+                f"请求：{method} {path}\n"
+                f"响应：{detail}"
+            )
         if not response.text:
             return None
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ApiError(
+                f"响应解析失败\n请求：{method} {path}\n"
+                f"HTTP {response.status_code}\n响应正文：{response.text[:2000]}"
+            ) from exc
 
     def login(self, username: str, password: str) -> dict[str, Any]:
         data = self.request("POST", "/api/auth/login", {"username": username, "password": password})

@@ -14,7 +14,14 @@ if not DATABASE_URL:
 if DATABASE_URL.startswith("sqlite"):
     raise RuntimeError("SQLite is no longer supported for this project. Use the server MySQL DATABASE_URL.")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=1800)
+engine_options = {
+    "pool_pre_ping": True,
+    "pool_recycle": 1800,
+}
+if DATABASE_URL.startswith(("mysql", "mariadb")):
+    engine_options.update({"pool_size": 20, "max_overflow": 20, "pool_timeout": 60})
+
+engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

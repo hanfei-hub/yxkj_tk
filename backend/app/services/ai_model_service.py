@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from typing import Any
 
@@ -33,42 +34,46 @@ def usable_model_filter():
     )
 
 
+_pool_lock = threading.Lock()
+_pool_cursors: dict[str, int] = {}
+
+
+def get_model_configs(db: Session, model_type: str) -> list[ModelConfig]:
+    """Return the active model pool for one workflow type.
+
+    `is_default` is intentionally not part of this query. The active status is
+    the single switch for pool membership, so multiple APIs can be used at once.
+    """
+    model_type = (model_type or "").strip()
+    if not model_type:
+        return []
+    return list(
+        db.scalars(
+            select(ModelConfig)
+            .where(*usable_model_filter(), ModelConfig.model_type == model_type)
+            .order_by(ModelConfig.id.asc())
+        ).all()
+    )
+
+
 def get_model_config(db: Session, model_type: str | None = None) -> ModelConfig | None:
     model_type = (model_type or "").strip()
     if model_type:
-        typed_config = db.scalar(
-            select(ModelConfig)
-            .where(*usable_model_filter(), ModelConfig.model_type == model_type)
-            .order_by(ModelConfig.is_default.desc(), ModelConfig.id.desc())
-        )
-        if typed_config:
-            return typed_config
+        configs = get_model_configs(db, model_type)
+        if configs:
+            with _pool_lock:
+                cursor = _pool_cursors.get(model_type, 0)
+                config = configs[cursor % len(configs)]
+                _pool_cursors[model_type] = cursor + 1
+            return config
+        # A workflow type must never silently use another type's model.
+        return None
 
-    general_config = db.scalar(
-        select(ModelConfig)
-        .where(*usable_model_filter(), ModelConfig.model_type == MODEL_TYPE_GENERAL, ModelConfig.is_default == 1)
-        .order_by(ModelConfig.id.desc())
-    )
+    general_config = get_model_configs(db, MODEL_TYPE_GENERAL)
     if general_config:
-        return general_config
+        return general_config[0]
 
-    default_config = db.scalar(
-        select(ModelConfig)
-        .where(*usable_model_filter(), ModelConfig.is_default == 1)
-        .order_by(ModelConfig.id.desc())
-    )
-    if default_config:
-        return default_config
-
-    doubao_config = db.scalar(
-        select(ModelConfig)
-        .where(*usable_model_filter(), ModelConfig.provider == "doubao")
-        .order_by(ModelConfig.id.desc())
-    )
-    if doubao_config:
-        return doubao_config
-
-    return db.scalar(select(ModelConfig).where(*usable_model_filter()).order_by(ModelConfig.id.desc()))
+    return db.scalar(select(ModelConfig).where(*usable_model_filter()).order_by(ModelConfig.id.asc()))
 
 
 def get_default_model_config(db: Session) -> ModelConfig | None:
@@ -83,8 +88,9 @@ def chat_completion(
     task_id: int | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    config_id: int | None = None,
 ) -> str:
-    config = get_model_config(db, model_type=model_type)
+    config = db.get(ModelConfig, config_id) if config_id else get_model_config(db, model_type=model_type)
     if not config:
         raise ModelCallError("未配置可用的大模型。")
 
@@ -160,6 +166,16 @@ def extract_json_object(text: str) -> Any:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+
+    decoder = json.JSONDecoder()
+    for start, char in enumerate(text):
+        if char not in "[{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[start:])
+            return value
+        except json.JSONDecodeError:
+            continue
 
     match = re.search(r"(\{.*\}|\[.*\])", text, flags=re.DOTALL)
     if not match:

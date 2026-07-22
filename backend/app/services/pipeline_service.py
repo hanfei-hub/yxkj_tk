@@ -18,6 +18,7 @@ from app.models.entities import (
 from app.services.execution_log_service import create_task, elapsed_ms, finish_task, start_timer
 from app.services.selection_derivation_service import generate_derivatives_for_product_ids
 from app.services.supplier_1688_service import auto_match_pending_derived_products
+from app.services.system_settings_service import get_setting_int
 
 
 def count_by_status(db: Session, column: Any) -> dict[str, int]:
@@ -38,7 +39,7 @@ def pipeline_status(db: Session) -> dict[str, Any]:
     products_without_enough_derivatives = db.scalar(
         select(func.count(FmProduct.id))
         .outerjoin(derived_count_subquery, FmProduct.id == derived_count_subquery.c.source_product_id)
-        .where(func.coalesce(derived_count_subquery.c.derived_count, 0) < 10)
+        .where(func.coalesce(derived_count_subquery.c.derived_count, 0) < get_setting_int(db, "derivatives_per_product"))
     )
     return {
         "fastmoss": {
@@ -120,9 +121,11 @@ def pipeline_status(db: Session) -> dict[str, Any]:
 def pending_derivation_product_ids(
     db: Session,
     *,
-    limit: int = 20,
-    min_derived_count: int = 10,
+    limit: int | None = None,
+    min_derived_count: int | None = None,
 ) -> list[int]:
+    limit = get_setting_int(db, "1688_batch_limit") if limit is None else int(limit)
+    min_derived_count = get_setting_int(db, "derivatives_per_product") if min_derived_count is None else int(min_derived_count)
     derived_count_subquery = (
         select(
             DerivedProductRecommendation.source_product_id.label("source_product_id"),
@@ -143,11 +146,12 @@ def pending_derivation_product_ids(
 
 def run_supplier_match_batch(
     *,
-    limit: int = 20,
-    threshold: float = 90,
-    max_candidates: int = 200,
-    page_size: int = 20,
+    limit: int | None = None,
+    threshold: float | None = None,
+    max_candidates: int | None = None,
+    page_size: int | None = None,
 ) -> dict[str, Any]:
+    limit = get_setting_int(db, "1688_batch_limit") if limit is None else int(limit)
     with SessionLocal() as db:
         task = create_task(
             db,

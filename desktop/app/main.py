@@ -3,14 +3,17 @@
 import sys
 import json
 import math
+import base64
+import mimetypes
 from io import BytesIO
 from pathlib import Path
+from datetime import date, datetime
 from string import Template
 from typing import Any
 
 import requests
-from PySide6.QtCore import QObject, QPointF, QRunnable, QRectF, QSettings, QSize, Qt, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap, QPolygonF
+from PySide6.QtCore import QDate, QEvent, QObject, QPointF, QRunnable, QRectF, QSettings, QSize, Qt, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPixmap, QPolygonF
 from PIL import Image, ImageOps
 from PySide6.QtWidgets import (
     QApplication,
@@ -29,8 +32,16 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QDoubleSpinBox,
+    QDateEdit,
+    QFileDialog,
+    QSpinBox,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -44,10 +55,143 @@ from api.client import ApiClient, ApiError
 
 APP_DIR = Path(__file__).resolve().parent
 ICON_DIR = APP_DIR / "assets" / "icons"
+MENU_ICON_MAP = {
+    "智能选品": "menu_ai.svg",
+    "选品库": "menu_library.svg",
+    "新品榜单": "menu_new.svg",
+    "采集箱": "menu_favorite.svg",
+    "店铺管理": "menu_store.svg",
+    "数据看板": "menu_dashboard.svg",
+    "个人中心": "menu_settings.svg",
+    "设置": "menu_settings.svg",
+    "教师看板": "menu_teacher.svg",
+    "任务看板": "menu_tasks.svg",
+    "用户管理": "menu_users.svg",
+    "模型配置": "menu_model.svg",
+    "第三方 API": "menu_api.svg",
+    "选品属性": "menu_attributes.svg",
+}
+
+MENU_ROLE_ACCESS = {
+    "admin": None,
+    "teacher": {
+        "数据看板", "个人中心", "关于益行", "教师看板", "选品属性", "新品榜单", "智能选品",
+    },
+    "student": {
+        "智能选品", "选品库", "新品榜单", "采集箱", "店铺管理", "关于益行", "个人中心",
+    },
+}
 
 
 def icon_path(filename: str) -> str:
     return str(ICON_DIR / filename)
+
+
+def show_error_details(parent: QWidget, title: str, error: Exception | str) -> None:
+    """Show long runtime errors in a selectable, scrollable window."""
+    if isinstance(error, Exception):
+        message = str(error).strip()
+        if not message:
+            message = f"{type(error).__name__}: {error!r}"
+    else:
+        message = str(error).strip() or "未提供错误详情"
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(title)
+    dialog.resize(760, 420)
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(18, 16, 18, 16)
+    hint = QLabel("错误详情（可滚动查看和复制）")
+    hint.setObjectName("DialogTitle")
+    layout.addWidget(hint)
+    detail = QTextEdit()
+    detail.setReadOnly(True)
+    detail.setPlainText(message)
+    detail.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+    layout.addWidget(detail, 1)
+    close_button = QPushButton("关闭")
+    close_button.clicked.connect(dialog.accept)
+    actions = QHBoxLayout()
+    actions.addStretch()
+    actions.addWidget(close_button)
+    layout.addLayout(actions)
+    dialog.exec()
+
+
+def enable_label_selection(label: QLabel) -> None:
+    label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+
+
+class TextSelectionFilter(QObject):
+    """Make displayed QLabel text selectable without changing button/input behavior."""
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.ChildAdded:
+            child = event.child()
+            if isinstance(child, QLabel):
+                enable_label_selection(child)
+        return super().eventFilter(watched, event)
+
+
+class CenteredNavDelegate(QStyledItemDelegate):
+    """Paint each navigation icon and label as one centered group."""
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        if not index.flags() & Qt.ItemIsEnabled:
+            return
+        painter.save()
+        rect = option.rect.adjusted(2, 1, -2, -1)
+        if option.state & QStyle.State_Selected:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(21, 152, 120, 38))
+            painter.drawRoundedRect(rect, 8, 8)
+        elif option.state & QStyle.State_MouseOver:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(option.palette.alternateBase())
+            painter.drawRoundedRect(rect, 8, 8)
+
+        text = str(index.data(Qt.DisplayRole) or "")
+        icon = index.data(Qt.DecorationRole)
+        font = index.data(Qt.FontRole) or option.font
+        painter.setFont(font)
+        text_width = QFontMetrics(font).horizontalAdvance(text)
+        icon_size = option.decorationSize
+        gap = 8 if text and icon and not icon.isNull() else 0
+        total_width = (icon_size.width() if icon and not icon.isNull() else 0) + gap + text_width
+        start_x = rect.left() + 28
+        if icon and not icon.isNull():
+            icon.paint(painter, QRectF(start_x, rect.center().y() - icon_size.height() / 2, icon_size.width(), icon_size.height()).toRect())
+            start_x += icon_size.width() + gap
+        painter.setPen(QColor("#17846e") if option.state & QStyle.State_Selected else option.palette.text().color())
+        painter.drawText(QRectF(start_x, rect.top(), text_width, rect.height()), Qt.AlignVCenter | Qt.AlignLeft, text)
+        painter.restore()
+
+
+class PromptEditorFrame(QFrame):
+    """Multiline prompt editor with embedded counter and analyze action."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("StudioPromptFrame")
+        self.editor = QTextEdit(self)
+        self.editor.setObjectName("StudioPromptEditor")
+        self.editor.setPlaceholderText(
+            "✦  告诉我您想找什么样的产品?\n例如：最近在日本TikTok上热卖的厨房小工具，价格在1000日元以内"
+        )
+        self.editor.setAcceptRichText(False)
+        self.editor.setFrameStyle(QFrame.NoFrame)
+        self.count_label = QLabel("0/300", self)
+        self.count_label.setObjectName("StudioPromptCount")
+        self.analyze_button = QPushButton("智能选品", self)
+        self.analyze_button.setObjectName("StudioAnalyze")
+        self.analyze_button.setFixedSize(126, 38)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        margin = 10
+        button_width = self.analyze_button.width()
+        self.analyze_button.move(self.width() - button_width - margin, self.height() - self.analyze_button.height() - margin)
+        self.count_label.adjustSize()
+        self.count_label.move(self.analyze_button.x() - self.count_label.width() - 14, self.height() - self.count_label.height() - 21)
 
 
 
@@ -107,10 +251,10 @@ class DataGateway:
             return []
         return self.client.get("/api/products/hot")
 
-    def daily_recommendations(self) -> list[dict[str, Any]]:
+    def daily_recommendations(self, region: str = "JP", list_type: str = "new", category: str = "全部", start_date: str = "", end_date: str = "") -> list[dict[str, Any]]:
         if not self.user:
             return []
-        return self.client.get("/api/daily-recommendations")
+        return self.client.get(f"/api/daily-recommendations?region={region}&list_type={list_type}&category={category}&start_date={start_date}&end_date={end_date}")
 
     def favorites(self) -> list[dict[str, Any]]:
         if not self.user:
@@ -143,28 +287,11 @@ class DataGateway:
             return []
         return self.client.get(f"/api/teacher/products/{product_id}/derived-products")
 
-    def recommended_derived_products(self, limit: int = 10) -> list[dict[str, Any]]:
+    def recommended_derived_products(self, limit: int | None = None) -> list[dict[str, Any]]:
         if not self.user:
             return []
-        products = self.hot_products()
-        items: list[dict[str, Any]] = []
-        for product in products:
-            if len(items) >= limit:
-                break
-            try:
-                derived_items = self.derived_products(int(product["id"]))
-            except ApiError:
-                derived_items = []
-            for derived in derived_items:
-                item = dict(derived)
-                item["title"] = item.get("derived_title") or item.get("title") or "未命名衍生品"
-                item["image_url"] = item.get("supplier_image_url") or item.get("image_url") or product.get("image_url") or ""
-                item["price"] = item.get("supplier_price") or item.get("suggested_price_min") or 0
-                item["sales_count"] = item.get("supplier_sales_count") or 0
-                items.append(item)
-                if len(items) >= limit:
-                    break
-        return items
+        size = int(limit or 12)
+        return self.client.get(f"/api/derived-recommendations?limit={size}")
 
     def selection_library_products(self, limit: int = 100) -> list[dict[str, Any]]:
         """Load the latest derived products for the personal selection library."""
@@ -174,6 +301,14 @@ class DataGateway:
         if not self.user:
             return {"ok": False, "message": "请先登录后端账号"}
         return self.client.post(f"/api/ai/products/{product_id}/generate-derived")
+
+    def start_product_full_pipeline(self, product_id: int) -> dict[str, Any]:
+        if not self.user:
+            return {"ok": False, "message": "请先登录后端账号"}
+        return self.client.post(f"/api/ai/products/{product_id}/generate-full-task")
+
+    def product_full_pipeline_task(self, task_id: int) -> dict[str, Any]:
+        return self.client.get(f"/api/ai/product-full-tasks/{task_id}")
 
     def attributes(self) -> list[dict[str, Any]]:
         if not self.user:
@@ -207,10 +342,16 @@ class DataGateway:
         self.save_session()
         return self.user
 
+    def change_password(self, old_password: str, new_password: str) -> dict[str, Any]:
+        return self.client.post("/api/auth/change-password", {"old_password": old_password, "new_password": new_password})
+
     def model_configs(self) -> list[dict[str, Any]]:
         if not self.user:
             return []
         return self.client.get("/api/admin/model-configs")
+
+    def test_model(self, model_config_id: int, text: str, image_url: str = "") -> dict[str, Any]:
+        return self.client.post("/api/admin/model-test", {"model_config_id": model_config_id, "text": text, "image_url": image_url}, timeout=480)
 
     def save_model_config(self, payload: dict[str, Any], config_id: int | None = None) -> dict[str, Any]:
         if config_id:
@@ -219,9 +360,6 @@ class DataGateway:
 
     def set_model_status(self, config_id: int, status: int) -> dict[str, Any]:
         return self.client.patch(f"/api/admin/model-configs/{config_id}/status", {"status": status})
-
-    def set_default_model(self, config_id: int) -> dict[str, Any]:
-        return self.client.post(f"/api/admin/model-configs/{config_id}/default")
 
     def delete_model_config(self, config_id: int) -> dict[str, Any]:
         return self.client.delete(f"/api/admin/model-configs/{config_id}")
@@ -242,8 +380,8 @@ class DataGateway:
     def delete_third_party_config(self, config_id: int) -> dict[str, Any]:
         return self.client.delete(f"/api/admin/third-party-configs/{config_id}")
 
-    def sync_fastmoss_products(self) -> dict[str, Any]:
-        return self.client.post("/api/fastmoss/sync-products?page=1&pagesize=20")
+    def sync_fastmoss_products(self, region: str = "JP", list_type: str = "new") -> dict[str, Any]:
+        return self.client.post(f"/api/fastmoss/sync-products?page=1&region={region}&list_type={list_type}")
 
     def auto_publish_candidates(self) -> list[dict[str, Any]]:
         if not self.user:
@@ -273,17 +411,26 @@ class DataGateway:
             return {}
         return self.client.get("/api/pipeline/status")
 
-    def queue_pending_derivations(self, limit: int = 5, min_derived_count: int = 10) -> dict[str, Any]:
+    def system_settings(self) -> list[dict[str, Any]]:
+        if not self.user:
+            return []
+        return self.client.get("/api/admin/system-settings")
+
+    def update_system_settings(self, values: dict[str, str]) -> list[dict[str, Any]]:
+        return self.client.put("/api/admin/system-settings", {"values": values})
+
+    def queue_pending_derivations(self, limit: int | None = None, min_derived_count: int | None = None) -> dict[str, Any]:
         if not self.user:
             return {"ok": False, "queued_count": 0, "message": "请先登录后端账号"}
-        return self.client.post("/api/pipeline/derivations/queue", {"limit": limit, "min_derived_count": min_derived_count})
+        payload = {key: value for key, value in {"limit": limit, "min_derived_count": min_derived_count}.items() if value is not None}
+        return self.client.post("/api/pipeline/derivations/queue", payload)
 
-    def queue_supplier_matches(self, limit: int = 5, threshold: float = 90, max_candidates: int = 200, page_size: int = 20) -> dict[str, Any]:
+    def queue_supplier_matches(self, limit: int | None = None, threshold: float | None = None, max_candidates: int | None = None, page_size: int | None = None) -> dict[str, Any]:
         if not self.user:
             return {"ok": False, "queued": False, "message": "请先登录后端账号"}
         return self.client.post(
             "/api/pipeline/suppliers/1688/queue",
-            {"limit": limit, "threshold": threshold, "max_candidates": max_candidates, "page_size": page_size},
+            {key: value for key, value in {"limit": limit, "threshold": threshold, "max_candidates": max_candidates, "page_size": page_size}.items() if value is not None},
         )
 
     def start_ai_selection(self, message: str) -> dict[str, Any]:
@@ -304,6 +451,9 @@ class DataGateway:
 
     def set_attribute_status(self, attribute_id: int, status: int) -> dict[str, Any]:
         return self.client.patch(f"/api/admin/selection-attributes/{attribute_id}/status", {"status": status})
+
+    def delete_attribute(self, attribute_id: int) -> dict[str, Any]:
+        return self.client.delete(f"/api/admin/selection-attributes/{attribute_id}")
 
     def approve(self, derived_id: int) -> None:
         self.client.post(f"/api/teacher/derived-products/{derived_id}/approve")
@@ -502,8 +652,8 @@ class LoginWindow(QWidget):
     def __init__(self, gateway: DataGateway) -> None:
         super().__init__()
         self.gateway = gateway
-        self.setWindowTitle("TK 日本跨境智能选品系统")
-        self.setWindowIcon(QIcon(icon_path("10_TK跨境助手.ico")))
+        self.setWindowTitle("益行跨境AI平台")
+        self.setWindowIcon(QIcon(icon_path("tk_brand.png")))
         self.setMinimumSize(980, 640)
 
         root = QHBoxLayout(self)
@@ -569,7 +719,7 @@ class LoginDialog(QDialog):
         self.gateway = gateway
         self.user: dict[str, Any] | None = None
         self.setWindowTitle("用户登录")
-        self.setWindowIcon(QIcon(icon_path("10_TK跨境助手.ico")))
+        self.setWindowIcon(QIcon(icon_path("tk_brand.png")))
         self.resize(420, 280)
 
         layout = QVBoxLayout(self)
@@ -618,8 +768,8 @@ class MainWindow(QMainWindow):
         if user is None:
             user = self.gateway.user
         self.user = user
-        self.setWindowTitle("TK 日本跨境智能选品系统")
-        self.setWindowIcon(QIcon(icon_path("10_TK跨境助手.ico")))
+        self.setWindowTitle("益行跨境AI平台 - 系统管理员")
+        self.setWindowIcon(QIcon(icon_path("tk_brand.png")))
         self.setMinimumSize(1180, 760)
 
         root = QWidget()
@@ -641,13 +791,13 @@ class MainWindow(QMainWindow):
         brand_row = QHBoxLayout()
         brand_row.setSpacing(10)
         brand_icon = QLabel()
-        brand_icon.setPixmap(QIcon(icon_path("10_TK跨境助手.ico")).pixmap(28, 28))
+        brand_icon.setPixmap(QIcon(icon_path("tk_brand.png")).pixmap(34, 34))
         brand_icon.setFixedSize(30, 30)
-        brand = QLabel("TikTok Japan 跨境选品平台")
+        brand = QLabel("TK跨境助手")
         brand.setObjectName("BrandTitle")
         brand_row.addWidget(brand_icon)
         brand_row.addWidget(brand, 1)
-        brand_sub = QLabel("AI 选品与审核工作台")
+        brand_sub = QLabel("TikTok 日本选品专家")
         brand_sub.setObjectName("BrandSub")
         brand_layout.addLayout(brand_row)
         brand_layout.addWidget(brand_sub)
@@ -657,6 +807,7 @@ class MainWindow(QMainWindow):
         self.nav.setObjectName("SideNav")
         self.nav.setFixedWidth(260)
         self.nav.setIconSize(QSize(20, 20))
+        self.nav.setItemDelegate(CenteredNavDelegate(self.nav))
         self.stack = QStackedWidget()
 
         self.user_avatar = QLabel("未")
@@ -708,7 +859,7 @@ class MainWindow(QMainWindow):
     def add_nav_separator(self) -> None:
         item = QListWidgetItem("")
         item.setFlags(Qt.NoItemFlags)
-        item.setSizeHint(QSize(1, 18))
+        item.setSizeHint(QSize(1, 26))
         item.setData(Qt.UserRole, -1)
         self.nav.addItem(item)
         line = QFrame()
@@ -719,10 +870,11 @@ class MainWindow(QMainWindow):
 
     def add_page(self, name: str, page: QWidget, icon: str = "") -> None:
         item = QListWidgetItem(name)
-        if icon:
-            item.setIcon(QIcon(icon_path(icon)))
-        item.setTextAlignment(Qt.AlignVCenter)
-        item.setFont(QFont("Microsoft YaHei UI", 14, 500))
+        icon_name = MENU_ICON_MAP.get(name) or icon
+        if icon_name:
+            item.setIcon(QIcon(icon_path(icon_name)))
+        item.setTextAlignment(Qt.AlignCenter)
+        item.setFont(QFont("Microsoft YaHei UI", 14, 700))
         item.setData(Qt.UserRole, len(self.pages))
         self.nav.addItem(item)
         self.stack.addWidget(page)
@@ -732,18 +884,19 @@ class MainWindow(QMainWindow):
         self.add_page("智能选品", SelectionStudioPage(self.gateway), "01_智能选品.ico")
         self.add_page("选品库", SelectionLibraryPage(self.gateway), "08_选品属性.ico")
         self.add_page("新品榜单", NewProductsPage(self.gateway), "01_智能选品.ico")
-        self.add_page("我的收藏", FavoritesPage(self.gateway), "05_主题皮肤.ico")
+        self.add_page("采集箱", FavoritesPage(self.gateway), "05_主题皮肤.ico")
         self.add_nav_separator()
         self.add_page("店铺管理", AutoPublishPage(self.gateway), "10_TK跨境助手.ico")
         self.add_page("数据看板", DataDashboardPage(self.gateway), "07_第三方API.ico")
         self.add_nav_separator()
-        self.add_page("课程中心", InfoPage("课程中心", "学习 TikTok Japan 选品与店铺运营。", "课程中心将提供选品方法、商品分析和店铺运营课程。"), "04_模型配置.ico")
-        self.add_page("设置", ThemePage(self.apply_theme, self.apply_font), "05_主题皮肤.ico")
+        self.add_page("个人中心", PersonalCenterPage(self.gateway, self.apply_theme, self.apply_font), "menu_settings.svg")
+        self.add_page("关于益行", InfoPage("关于益行", "益行跨境 AI 平台", "益行跨境 AI 平台专注 TikTok 日本站跨境选品、商品分析、1688 货源匹配和店铺运营。\n\n当前版本：1.0.0\n服务地址：" + self.gateway.client.base_url), "menu_settings.svg")
         self.add_nav_separator()
         self.add_page("教师看板", TeacherDashboardPage(self.gateway), "02_教师看板.ico")
         self.add_page("任务看板", PipelinePage(self.gateway), "07_第三方API.ico")
         self.add_page("用户管理", AdminUsersPage(self.gateway), "03_用户管理.ico")
-        self.add_page("模型配置", SimpleConfigPage("模型配置", self.gateway.model_configs, ["配置名称", "服务商", "类型", "Base URL", "模型", "Key", "状态", "默认"], self.gateway, "model"), "04_模型配置.ico")
+        self.add_page("模型配置", SimpleConfigPage("模型配置", self.gateway.model_configs, ["配置名称", "服务商", "类型", "Base URL", "模型", "Key", "使用中"], self.gateway, "model"), "04_模型配置.ico")
+        self.add_page("模型测试", ModelTestPage(self.gateway), "04_模型配置.ico")
         self.add_page("第三方 API", SimpleConfigPage("第三方 API 配置", self.gateway.third_party_configs, ["配置名称", "服务类型", "状态"], self.gateway, "third"), "07_第三方API.ico")
         self.add_page("选品属性", AttributePage(self.gateway), "08_选品属性.ico")
 
@@ -759,14 +912,52 @@ class MainWindow(QMainWindow):
             self.user_role.setText(role_map.get(role, role or "已登录"))
             self.user_status.setText(f"积分 {credits} · {api_host}")
             self.login_button.setText("切换登录")
-            self.setWindowTitle(f"TK 日本跨境智能选品系统 - {self.user.get('real_name')}")
+            self.setWindowTitle(f"益行跨境AI平台 - {self.user.get('real_name') or '系统管理员'}")
+            self.apply_menu_permissions()
             return
         self.user_avatar.setText("未")
         self.user_name.setText("未登录")
         self.user_role.setText("请登录服务器账号")
         self.user_status.setText("登录后连接后端服务")
         self.login_button.setText("登录")
-        self.setWindowTitle("TK 日本跨境智能选品系统")
+        self.setWindowTitle("益行跨境AI平台")
+        self.apply_menu_permissions()
+
+    def apply_menu_permissions(self) -> None:
+        """Filter navigation entries by role and keep separator groups tidy."""
+        role = str((self.user or {}).get("role") or "student").lower()
+        allowed = MENU_ROLE_ACCESS.get(role, MENU_ROLE_ACCESS["student"])
+        for row in range(self.nav.count()):
+            item = self.nav.item(row)
+            if not item:
+                continue
+            page_data = item.data(Qt.UserRole)
+            if page_data == -1:
+                continue
+            item.setHidden(allowed is not None and item.text() not in allowed)
+
+        for row in range(self.nav.count()):
+            item = self.nav.item(row)
+            if not item or item.data(Qt.UserRole) != -1:
+                continue
+            previous_visible = any(
+                self.nav.item(index) and self.nav.item(index).data(Qt.UserRole) != -1 and not self.nav.item(index).isHidden()
+                for index in range(row - 1, -1, -1)
+            )
+            next_visible = any(
+                self.nav.item(index) and self.nav.item(index).data(Qt.UserRole) != -1 and not self.nav.item(index).isHidden()
+                for index in range(row + 1, self.nav.count())
+            )
+            item.setHidden(not (previous_visible and next_visible))
+
+        current = self.nav.currentItem()
+        if current and not current.isHidden():
+            return
+        for row in range(self.nav.count()):
+            item = self.nav.item(row)
+            if item and item.data(Qt.UserRole) != -1 and not item.isHidden():
+                self.nav.setCurrentRow(row)
+                return
 
     def open_login_dialog(self) -> None:
         dialog = LoginDialog(self.gateway, self)
@@ -801,13 +992,23 @@ class MainWindow(QMainWindow):
                         except Exception:
                             pass
                         return
-                    QMessageBox.warning(self, "加载失败", str(exc))
+                    show_error_details(self, "加载失败", exc)
 
     def clear_invalid_session(self) -> None:
         self.gateway.clear_session()
         self.user = None
         self.update_login_status()
         self.user_status.setText("请重新登录")
+
+    def invalidate_product_pages(self) -> None:
+        """Make product views reread the server after a FastMoss refresh."""
+        for page in self.pages:
+            if hasattr(page, "loaded"):
+                setattr(page, "loaded", False)
+        current = self.stack.currentWidget()
+        activate = getattr(current, "activate", None)
+        if callable(activate):
+            activate()
 
     def apply_theme(self, theme_name: str) -> None:
         app = QApplication.instance()
@@ -1019,6 +1220,191 @@ class DataDashboardPage(Page):
 
 
 
+class PersonalCenterPage(Page):
+    """账号资料、密码修改和积分充值入口。"""
+
+    def __init__(self, gateway: DataGateway, on_theme_change=None, on_font_change=None) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.layout.setSpacing(16)
+        self.layout.addWidget(make_title("个人中心", "管理账号安全、积分余额和充值联系信息。"))
+
+        profile = QFrame()
+        profile.setObjectName("Panel")
+        profile_layout = QGridLayout(profile)
+        profile_layout.setContentsMargins(18, 16, 18, 16)
+        profile_layout.setHorizontalSpacing(24)
+        profile_layout.setVerticalSpacing(8)
+        self.account_label = QLabel()
+        self.role_label = QLabel()
+        self.credit_label = QLabel()
+        for label in (self.account_label, self.role_label, self.credit_label):
+            label.setObjectName("PersonalValue")
+        profile_layout.addWidget(QLabel("登录账号"), 0, 0)
+        profile_layout.addWidget(self.account_label, 0, 1)
+        profile_layout.addWidget(QLabel("账号角色"), 0, 2)
+        profile_layout.addWidget(self.role_label, 0, 3)
+        profile_layout.addWidget(QLabel("剩余积分"), 1, 0)
+        profile_layout.addWidget(self.credit_label, 1, 1)
+        profile_layout.setColumnStretch(1, 1)
+        profile_layout.setColumnStretch(3, 1)
+        self.layout.addWidget(profile)
+
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        password_panel = QFrame()
+        password_panel.setObjectName("Panel")
+        password_layout = QVBoxLayout(password_panel)
+        password_layout.setContentsMargins(18, 16, 18, 18)
+        password_layout.setSpacing(10)
+        password_layout.addWidget(QLabel("修改密码"))
+        self.old_password = QLineEdit()
+        self.old_password.setPlaceholderText("输入当前密码")
+        self.old_password.setEchoMode(QLineEdit.Password)
+        self.new_password = QLineEdit()
+        self.new_password.setPlaceholderText("输入新密码（至少 6 位）")
+        self.new_password.setEchoMode(QLineEdit.Password)
+        self.confirm_password = QLineEdit()
+        self.confirm_password.setPlaceholderText("再次输入新密码")
+        self.confirm_password.setEchoMode(QLineEdit.Password)
+        password_layout.addWidget(self.old_password)
+        password_layout.addWidget(self.new_password)
+        password_layout.addWidget(self.confirm_password)
+        password_button = QPushButton("保存新密码")
+        password_button.clicked.connect(self.save_password)
+        password_layout.addWidget(password_button)
+        password_layout.addWidget(ThemeSettingsPanel(on_theme_change or (lambda _: None), on_font_change))
+        password_layout.addStretch()
+        body.addWidget(password_panel, 1)
+
+        recharge_panel = QFrame()
+        recharge_panel.setObjectName("Panel")
+        recharge_layout = QVBoxLayout(recharge_panel)
+        recharge_layout.setContentsMargins(18, 16, 18, 18)
+        recharge_layout.setSpacing(10)
+        recharge_layout.addWidget(QLabel("积分充值"))
+        recharge_hint = QLabel("扫码添加管理员好友，发送充值金额和账号。充值到账后积分会自动显示在这里。")
+        recharge_hint.setObjectName("Muted")
+        recharge_hint.setWordWrap(True)
+        recharge_layout.addWidget(recharge_hint)
+        recharge_button = QPushButton("扫码联系管理员")
+        recharge_button.clicked.connect(self.show_recharge_qr)
+        recharge_layout.addWidget(recharge_button)
+        recharge_layout.addWidget(QLabel("充值记录"))
+        record_hint = QLabel("充值记录功能已预留，后续接入微信支付或管理员审核后会显示明细。")
+        record_hint.setObjectName("Muted")
+        record_hint.setWordWrap(True)
+        recharge_layout.addWidget(record_hint)
+        recharge_layout.addStretch()
+        body.addWidget(recharge_panel, 1)
+        self.layout.addLayout(body, 1)
+        self.refresh_profile()
+
+    def activate(self) -> None:
+        self.refresh_profile()
+
+    def refresh_profile(self) -> None:
+        user = self.gateway.user or {}
+        self.account_label.setText(str(user.get("username") or "未登录"))
+        role_map = {"admin": "系统管理员", "teacher": "选品老师", "student": "学生账号"}
+        self.role_label.setText(role_map.get(str(user.get("role") or ""), str(user.get("role") or "未登录")))
+        self.credit_label.setText(f"{int(user.get('credit_balance') or 0)} 积分")
+
+    def save_password(self) -> None:
+        old_password = self.old_password.text()
+        new_password = self.new_password.text()
+        if not old_password or not new_password:
+            QMessageBox.information(self, "提示", "请完整填写密码。")
+            return
+        if new_password != self.confirm_password.text():
+            QMessageBox.information(self, "提示", "两次输入的新密码不一致。")
+            return
+        try:
+            result = self.gateway.change_password(old_password, new_password)
+            QMessageBox.information(self, "修改成功", str(result.get("message") or "密码修改成功。"))
+            self.old_password.clear()
+            self.new_password.clear()
+            self.confirm_password.clear()
+        except Exception as exc:
+            show_error_details(self, "修改密码失败", exc)
+
+    def show_recharge_qr(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("积分充值")
+        dialog.resize(360, 460)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 20, 20, 20)
+        title = QLabel("扫码添加管理员好友")
+        title.setObjectName("DialogTitle")
+        layout.addWidget(title)
+        qr = QLabel()
+        qr.setAlignment(Qt.AlignCenter)
+        qr_path = Path(icon_path("recharge_qr.png"))
+        if qr_path.exists():
+            qr.setPixmap(QPixmap(str(qr_path)).scaled(260, 260, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            qr.setText("充值二维码待配置\n\n请将二维码图片放入：\nassets/icons/recharge_qr.png")
+            qr.setObjectName("Muted")
+        layout.addWidget(qr, 1)
+        hint = QLabel("添加好友后发送：登录账号、充值金额和希望获得的积分。")
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button)
+        dialog.exec()
+
+
+class ThemeSettingsPanel(QFrame):
+    def __init__(self, on_theme_change, on_font_change=None) -> None:
+        super().__init__()
+        self.setObjectName("Panel")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 18)
+        layout.setSpacing(10)
+        title = QLabel("界面设置")
+        title.setObjectName("CardTitle")
+        layout.addWidget(title)
+
+        theme_row = QHBoxLayout()
+        theme_row.addWidget(QLabel("主题皮肤"))
+        self.theme_select = QComboBox()
+        self.theme_select.addItem("深夜蓝", "midnight")
+        self.theme_select.addItem("曜石黑", "obsidian")
+        self.theme_select.addItem("浅色工作台", "light")
+        self.theme_select.setCurrentIndex(2)
+        self.theme_select.currentIndexChanged.connect(lambda: on_theme_change(str(self.theme_select.currentData())))
+        theme_row.addWidget(self.theme_select, 1)
+        layout.addLayout(theme_row)
+
+        font_row = QHBoxLayout()
+        font_row.addWidget(QLabel("字体"))
+        self.font_select = QComboBox()
+        for family in ("Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", "SimSun"):
+            self.font_select.addItem(family, family)
+        self.font_select.setCurrentText("Microsoft YaHei UI")
+        font_row.addWidget(self.font_select, 1)
+        font_row.addWidget(QLabel("字号"))
+        self.font_size = QComboBox()
+        for size in ("12", "13", "14", "15", "16", "18"):
+            self.font_size.addItem(f"{size}px", int(size))
+        self.font_size.setCurrentText("14px")
+        font_row.addWidget(self.font_size)
+        layout.addLayout(font_row)
+
+        def apply_font_setting() -> None:
+            if on_font_change:
+                on_font_change(str(self.font_select.currentData()), int(self.font_size.currentData()))
+
+        self.font_select.currentIndexChanged.connect(apply_font_setting)
+        self.font_size.currentIndexChanged.connect(apply_font_setting)
+        hint = QLabel("主题和字体只影响当前软件界面，不影响账号、商品和后端数据。")
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+
 class InfoPage(Page):
     def __init__(self, title: str, subtitle: str, content: str) -> None:
         super().__init__()
@@ -1113,7 +1499,7 @@ class PipelinePage(Page):
         fill_table(self.detail_table, rows)
 
     def queue_derivations(self) -> None:
-        result = self.gateway.queue_pending_derivations(limit=5, min_derived_count=10)
+        result = self.gateway.queue_pending_derivations()
         if not result.get("ok"):
             QMessageBox.information(self, "提示", str(result.get("message") or result))
             return
@@ -1121,7 +1507,7 @@ class PipelinePage(Page):
         self.refresh()
 
     def queue_supplier_matches(self) -> None:
-        result = self.gateway.queue_supplier_matches(limit=5, threshold=90, max_candidates=200, page_size=20)
+        result = self.gateway.queue_supplier_matches()
         if not result.get("ok"):
             QMessageBox.information(self, "提示", str(result.get("message") or result))
             return
@@ -1172,7 +1558,7 @@ class AdminUsersPage(Page):
             if self.gateway.is_invalid_token_error(exc) and hasattr(parent, "clear_invalid_session"):
                 parent.clear_invalid_session()
                 return
-            QMessageBox.warning(self, "加载失败", str(exc))
+            show_error_details(self, "加载失败", exc)
             return
         fill_table(
             self.user_table,
@@ -1264,6 +1650,8 @@ class SimpleConfigPage(Page):
         self.headers = headers
         self.gateway = gateway
         self.config_type = config_type
+        self.full_update_task_id: int | None = None
+        self.full_update_timer: QTimer | None = None
         self.layout.addWidget(make_title(title, "MVP 阶段先展示配置列表，后续补充新增、编辑、测试连接。"))
         action_bar = QFrame()
         action_bar.setObjectName("Toolbar")
@@ -1273,30 +1661,34 @@ class SimpleConfigPage(Page):
         edit = QPushButton("编辑选中")
         toggle = QPushButton("启用/禁用")
         delete_button = QPushButton("删除选中")
-        default = QPushButton("设为默认")
         sync = QPushButton("同步 FastMoss")
+        full_update = QPushButton("更新一批商品")
         add.clicked.connect(self.add_config)
         edit.clicked.connect(self.edit_config)
         toggle.clicked.connect(self.toggle_config)
         delete_button.clicked.connect(self.delete_config)
-        default.clicked.connect(self.set_default)
         sync.clicked.connect(self.sync_fastmoss)
+        full_update.clicked.connect(self.update_batch)
         actions.addWidget(add)
         actions.addWidget(edit)
         actions.addWidget(toggle)
         actions.addWidget(delete_button)
-        if config_type == "model":
-            actions.addWidget(default)
         if config_type == "third":
             actions.addWidget(sync)
+            actions.addWidget(full_update)
         actions.addStretch()
         self.layout.addWidget(action_bar)
         self.config_table = table(headers)
         self.layout.addWidget(self.config_table)
+        if config_type == "third" and gateway:
+            self.threshold_panel = BusinessThresholdPanel(gateway)
+            self.layout.addWidget(self.threshold_panel)
         self.refresh()
 
     def activate(self) -> None:
         self.refresh()
+        if hasattr(self, "threshold_panel"):
+            self.threshold_panel.refresh()
 
     def refresh(self) -> None:
         try:
@@ -1309,7 +1701,7 @@ class SimpleConfigPage(Page):
                 if hasattr(parent, "clear_invalid_session"):
                     parent.clear_invalid_session()
                 return
-            QMessageBox.warning(self, "加载失败", str(exc))
+            show_error_details(self, "加载失败", exc)
             return
         rows = []
         for item in self.items:
@@ -1322,8 +1714,7 @@ class SimpleConfigPage(Page):
                     item.get("base_url"),
                     item.get("model_name"),
                     key_text,
-                    item.get("status"),
-                    item.get("is_default"),
+                    "使用中" if int(item.get("status") or 0) else "已停用",
                 ])
             else:
                 rows.append([item.get("config_name"), item.get("service_type"), item.get("status")])
@@ -1343,8 +1734,7 @@ class SimpleConfigPage(Page):
             ("model_name", "模型名称", "deepseek-chat"),
             ("temperature", "温度", "0.7"),
             ("max_tokens", "最大输出", "12000"),
-            ("is_default", "默认", "1/0"),
-            ("status", "状态", "1/0"),
+            ("status", "是否使用中", "1=使用中，0=停用"),
             ("remark", "备注", ""),
         ]
 
@@ -1373,7 +1763,6 @@ class SimpleConfigPage(Page):
         if self.config_type == "model":
             data["temperature"] = float(data.get("temperature") or 0.7)
             data["max_tokens"] = int(data.get("max_tokens") or 2000)
-            data["is_default"] = int(data.get("is_default") or 0)
         if self.config_type == "third" and data.get("db_port"):
             data["db_port"] = int(data["db_port"])
         data["status"] = int(data.get("status") or 1)
@@ -1448,18 +1837,6 @@ class SimpleConfigPage(Page):
         except Exception as exc:
             QMessageBox.warning(self, "删除失败", str(exc))
 
-    def set_default(self) -> None:
-        item = self.selected_item()
-        if not item or not self.gateway or self.config_type != "model":
-            QMessageBox.information(self, "提示", "请先选择模型配置。")
-            return
-        try:
-            self.gateway.set_default_model(int(item["id"]))
-            self.refresh()
-            QMessageBox.information(self, "设置成功", "默认模型已更新。")
-        except Exception as exc:
-            QMessageBox.warning(self, "设置失败", str(exc))
-
     def sync_fastmoss(self) -> None:
         if not self.gateway or self.config_type != "third":
             return
@@ -1470,8 +1847,248 @@ class SimpleConfigPage(Page):
                 "FastMoss 同步",
                 f"{result.get('message', '同步完成')}\n本次入库：{result.get('synced_count', 0)} 条\n当前商品总数：{result.get('total_count', '-')}",
             )
+            main_window = self.window()
+            if hasattr(main_window, "invalidate_product_pages"):
+                main_window.invalidate_product_pages()
         except Exception as exc:
             QMessageBox.warning(self, "FastMoss 同步失败", str(exc))
+
+    def update_batch(self) -> None:
+        if not self.gateway or self.config_type != "third":
+            return
+        try:
+            result = self.gateway.sync_fastmoss_products()
+            derivation = result.get("derivation_result") or {}
+            task_id = derivation.get("task_id")
+            if not task_id:
+                QMessageBox.information(self, "更新完成", "FastMoss 没有返回可执行的衍生任务。")
+                return
+            self.full_update_task_id = int(task_id)
+            if self.full_update_timer:
+                self.full_update_timer.stop()
+            self.full_update_timer = QTimer(self)
+            self.full_update_timer.setInterval(5000)
+            self.full_update_timer.timeout.connect(self.poll_full_update)
+            self.full_update_timer.start()
+            QMessageBox.information(
+                self,
+                "完整流程已启动",
+                f"FastMoss 已更新 {result.get('synced_count', 0)} 条商品，正在等待 AI 衍生完成，完成后会自动启动 1688 匹配。",
+            )
+            main_window = self.window()
+            if hasattr(main_window, "invalidate_product_pages"):
+                main_window.invalidate_product_pages()
+        except Exception as exc:
+            QMessageBox.warning(self, "更新失败", str(exc))
+
+    def poll_full_update(self) -> None:
+        if not self.gateway or not self.full_update_task_id:
+            return
+        try:
+            status = self.gateway.pipeline_status()
+            latest = (status.get("tasks") or {}).get("latest") or []
+            task = next((item for item in latest if int(item.get("id") or 0) == self.full_update_task_id), None)
+            if not task or task.get("status") not in {"success", "failed"}:
+                return
+            if self.full_update_timer:
+                self.full_update_timer.stop()
+            match_result = self.gateway.queue_supplier_matches()
+            if not match_result.get("queued"):
+                QMessageBox.warning(self, "1688 匹配未启动", str(match_result))
+                return
+            QMessageBox.information(
+                self,
+                "完整流程已进入 1688",
+                f"AI 衍生任务已结束（成功 {task.get('success_count', 0)} 条），1688 匹配已自动加入后台队列。",
+            )
+        except Exception as exc:
+            if self.full_update_timer:
+                self.full_update_timer.stop()
+            QMessageBox.warning(self, "流程状态查询失败", str(exc))
+
+
+class ModelTestPage(Page):
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.items: list[dict[str, Any]] = []
+        self.image_data_url = ""
+        self.image_path = ""
+
+        self.layout.addWidget(make_title("模型测试", "选择已配置模型，分别测试文本、图片和响应耗时。"))
+
+        form = QFrame()
+        form.setObjectName("Toolbar")
+        form_layout = QVBoxLayout(form)
+        form_layout.setContentsMargins(16, 14, 16, 14)
+        form_layout.setSpacing(10)
+
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("测试模型"))
+        self.model_combo = QComboBox()
+        self.model_combo.setMinimumWidth(360)
+        model_row.addWidget(self.model_combo)
+        refresh_button = QPushButton("刷新模型")
+        refresh_button.clicked.connect(self.refresh_models)
+        model_row.addWidget(refresh_button)
+        model_row.addStretch()
+        form_layout.addLayout(model_row)
+
+        text_label = QLabel("测试文本")
+        text_label.setObjectName("FormLabel")
+        form_layout.addWidget(text_label)
+        self.text_edit = QTextEdit()
+        self.text_edit.setAcceptRichText(False)
+        self.text_edit.setPlaceholderText("例如：请用中文简要说明这件商品适不适合日本 TikTok 销售。")
+        self.text_edit.setMinimumHeight(120)
+        form_layout.addWidget(self.text_edit)
+
+        image_row = QHBoxLayout()
+        image_row.addWidget(QLabel("图片"))
+        self.image_url_edit = QLineEdit()
+        self.image_url_edit.setPlaceholderText("可填写图片 URL，也可以选择本地图片")
+        image_row.addWidget(self.image_url_edit, 1)
+        choose_button = QPushButton("选择图片")
+        choose_button.clicked.connect(self.choose_image)
+        image_row.addWidget(choose_button)
+        clear_button = QPushButton("清除图片")
+        clear_button.clicked.connect(self.clear_image)
+        image_row.addWidget(clear_button)
+        form_layout.addLayout(image_row)
+
+        action_row = QHBoxLayout()
+        self.status_label = QLabel("准备测试")
+        self.status_label.setObjectName("Muted")
+        action_row.addWidget(self.status_label)
+        action_row.addStretch()
+        self.test_button = QPushButton("开始测试")
+        self.test_button.setObjectName("PrimaryButton")
+        self.test_button.clicked.connect(self.run_test)
+        action_row.addWidget(self.test_button)
+        form_layout.addLayout(action_row)
+        self.layout.addWidget(form)
+
+        result_header = QHBoxLayout()
+        result_header.addWidget(QLabel("测试结果"))
+        result_header.addStretch()
+        self.meta_label = QLabel("")
+        self.meta_label.setObjectName("Muted")
+        result_header.addWidget(self.meta_label)
+        self.layout.addLayout(result_header)
+
+        self.result_edit = QTextEdit()
+        self.result_edit.setReadOnly(True)
+        self.result_edit.setPlaceholderText("模型返回内容会显示在这里。")
+        # QTextEdit 本身不设置字符上限，结果区域随窗口扩展，长结果通过内部滚动条完整保留。
+        self.result_edit.setAcceptRichText(False)
+        self.result_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.result_edit.setMinimumHeight(420)
+        self.layout.addWidget(self.result_edit, 1)
+        self.refresh_models()
+
+    def activate(self) -> None:
+        self.refresh_models()
+
+    def refresh_models(self) -> None:
+        try:
+            self.items = self.gateway.model_configs()
+        except Exception as exc:
+            self.items = []
+            self.status_label.setText(f"模型读取失败：{exc}")
+            return
+        self.model_combo.clear()
+        for item in self.items:
+            label = f"{item.get('config_name') or item.get('model_name') or '未命名'} · {item.get('provider') or 'custom'} · {item.get('model_type') or 'general'}"
+            self.model_combo.addItem(label, int(item.get("id") or 0))
+        if self.items:
+            self.status_label.setText(f"已加载 {len(self.items)} 个模型配置")
+        else:
+            self.status_label.setText("暂无模型配置，请先在模型配置中新增")
+
+    def choose_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择测试图片",
+            "",
+            "图片文件 (*.png *.jpg *.jpeg *.webp *.gif);;所有文件 (*.*)",
+        )
+        if not path:
+            return
+        try:
+            raw = Path(path).read_bytes()
+            if len(raw) > 8 * 1024 * 1024:
+                QMessageBox.warning(self, "图片过大", "测试图片不能超过 8MB。")
+                return
+            mime = mimetypes.guess_type(path)[0] or "image/png"
+            self.image_data_url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+            self.image_path = path
+            self.image_url_edit.setText(f"已选择：{Path(path).name}")
+            self.image_url_edit.setToolTip(path)
+        except OSError as exc:
+            QMessageBox.warning(self, "读取图片失败", str(exc))
+
+    def clear_image(self) -> None:
+        self.image_data_url = ""
+        self.image_path = ""
+        self.image_url_edit.clear()
+        self.image_url_edit.setToolTip("")
+
+    def run_test(self) -> None:
+        model_id = int(self.model_combo.currentData() or 0)
+        if not model_id:
+            QMessageBox.information(self, "提示", "请先选择一个模型配置。")
+            return
+        text = self.text_edit.toPlainText().strip()
+        image_url = self.image_data_url or self.image_url_edit.text().strip()
+        if not text and not image_url:
+            QMessageBox.information(self, "提示", "请填写测试文本或提供一张图片。")
+            return
+        self.test_button.setEnabled(False)
+        self.status_label.setText("正在调用模型，请稍候……")
+        self.meta_label.setText("")
+        self.result_edit.clear()
+        QApplication.processEvents()
+        try:
+            result = self.gateway.test_model(model_id, text, image_url)
+            elapsed = result.get("elapsed_ms", "-")
+            config = next((item for item in self.items if int(item.get("id") or 0) == model_id), {})
+            model_name = result.get("model_name") or config.get("model_name") or ""
+            model_type = result.get("model_type") or config.get("model_type") or ""
+            if result.get("ok"):
+                self.status_label.setText("测试完成")
+                self.meta_label.setText(f"{model_name} · {model_type} · {elapsed} ms")
+                answer = str(result.get("answer") or "")
+                output_path = self.save_test_result(answer, model_name, model_type, elapsed, True)
+                self.result_edit.setPlainText(f"完整结果已写入文件：\n{output_path}\n\n{answer}")
+            else:
+                self.status_label.setText("模型调用失败")
+                self.meta_label.setText(f"{model_name} · {model_type} · {elapsed} ms")
+                error = str(result.get("error") or "未知错误")
+                output_path = self.save_test_result(error, model_name, model_type, elapsed, False)
+                self.result_edit.setPlainText(f"完整错误信息已写入文件：\n{output_path}\n\n{error}")
+        except Exception as exc:
+            self.status_label.setText("请求失败")
+            self.result_edit.setPlainText(str(exc))
+        finally:
+            self.test_button.setEnabled(True)
+
+    def save_test_result(self, content: str, model_name: str, model_type: str, elapsed: Any, success: bool) -> str:
+        output_dir = APP_DIR / "data" / "model_test_results"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        output_path = output_dir / f"model_test_{timestamp}.txt"
+        header = [
+            "模型测试结果",
+            f"时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"模型：{model_name}",
+            f"类型：{model_type}",
+            f"耗时：{elapsed} ms",
+            f"状态：{'成功' if success else '失败'}",
+            "=" * 60,
+            "",
+        ]
+        output_path.write_text("\n".join(header) + content, encoding="utf-8")
+        return str(output_path)
 
 
 class AttributePage(Page):
@@ -1486,21 +2103,24 @@ class AttributePage(Page):
         add = QPushButton("新增属性")
         edit = QPushButton("编辑选中")
         toggle = QPushButton("启用/禁用")
+        delete_button = QPushButton("删除选中")
         add.clicked.connect(self.add_attribute)
         edit.clicked.connect(self.edit_attribute)
         toggle.clicked.connect(self.toggle_attribute)
+        delete_button.clicked.connect(self.delete_attribute)
         actions.addWidget(add)
         actions.addWidget(edit)
         actions.addWidget(toggle)
+        actions.addWidget(delete_button)
         actions.addStretch()
         self.layout.addWidget(action_bar)
-        self.attr_table = table(["ID", "属性", "类型", "当前权重"])
+        self.attr_table = table(["ID", "属性", "类型", "当前权重", "状态"])
         self.layout.addWidget(self.attr_table)
         self.refresh()
 
     def refresh(self) -> None:
         self.items = self.gateway.attributes()
-        fill_table(self.attr_table, [[a.get("id"), a.get("attribute_name"), a.get("attribute_type"), a.get("current_weight")] for a in self.items])
+        fill_table(self.attr_table, [[a.get("id"), a.get("attribute_name"), a.get("attribute_type"), a.get("current_weight"), "启用" if int(a.get("status", 1)) == 1 else "禁用"] for a in self.items])
 
     def selected_item(self) -> dict[str, Any] | None:
         row = self.attr_table.currentRow()
@@ -1535,12 +2155,94 @@ class AttributePage(Page):
         if not item:
             QMessageBox.information(self, "提示", "请先选择属性。")
             return
-        self.gateway.set_attribute_status(int(item["id"]), 0 if int(item.get("status") or 1) else 1)
-        self.refresh()
+        current = 1 if item.get("status") is None else int(item.get("status"))
+        try:
+            self.gateway.set_attribute_status(int(item["id"]), 0 if current else 1)
+            self.refresh()
+        except Exception as exc:
+            QMessageBox.warning(self, "状态更新失败", str(exc))
+
+    def delete_attribute(self) -> None:
+        item = self.selected_item()
+        if not item:
+            QMessageBox.information(self, "提示", "请先选择属性。")
+            return
+        if QMessageBox.question(self, "确认删除", f"确定删除属性「{item.get('attribute_name', '')}」吗？") != QMessageBox.Yes:
+            return
+        try:
+            self.gateway.delete_attribute(int(item["id"]))
+            self.refresh()
+        except Exception as exc:
+            QMessageBox.warning(self, "删除失败", str(exc))
+
+
+class BusinessThresholdPanel(QFrame):
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.setObjectName("Card")
+        self.setting_inputs: dict[str, QSpinBox | QDoubleSpinBox] = {}
+        layout = QGridLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setHorizontalSpacing(12)
+        layout.setVerticalSpacing(10)
+        title = QLabel("业务阈值")
+        title.setObjectName("CardTitle")
+        hint = QLabel("修改后保存到服务器，FastMoss、衍生任务和 1688 匹配会使用最新值。")
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        layout.addWidget(title, 0, 0, 1, 2)
+        layout.addWidget(hint, 1, 0, 1, 2)
+        specs = [
+            ("1688_match_threshold", "1688 图片匹配分数", "float"),
+            ("1688_page_size", "1688 每页候选数", "int"),
+            ("1688_max_candidates", "1688 最大候选数", "int"),
+            ("1688_batch_limit", "1688 单次处理量", "int"),
+            ("derivatives_per_product", "每个原商品衍生数量", "int"),
+            ("fastmoss_page_size", "FastMoss 每次采集数", "int"),
+        ]
+        for row, (key, label_text, value_type) in enumerate(specs, start=2):
+            layout.addWidget(QLabel(label_text), row, 0)
+            if value_type == "float":
+                field: QSpinBox | QDoubleSpinBox = QDoubleSpinBox()
+                field.setRange(0, 100)
+                field.setDecimals(1)
+            else:
+                field = QSpinBox()
+                field.setRange(1, 500)
+            field.setMinimumWidth(180)
+            self.setting_inputs[key] = field
+            layout.addWidget(field, row, 1)
+        save = QPushButton("保存业务阈值")
+        save.clicked.connect(self.save)
+        layout.addWidget(save, len(specs) + 2, 0, 1, 2)
+
+    def refresh(self) -> None:
+        if not self.gateway.user:
+            return
+        try:
+            items = self.gateway.system_settings()
+        except Exception:
+            return
+        for item in items:
+            field = self.setting_inputs.get(str(item.get("setting_key") or ""))
+            if field:
+                try:
+                    field.setValue(float(item.get("setting_value") or 0))
+                except (TypeError, ValueError):
+                    pass
+
+    def save(self) -> None:
+        values = {key: str(field.value()) for key, field in self.setting_inputs.items()}
+        try:
+            self.gateway.update_system_settings(values)
+            QMessageBox.information(self, "保存成功", "业务阈值已保存到服务器。")
+        except Exception as exc:
+            QMessageBox.warning(self, "保存失败", str(exc))
 
 
 class ThemePage(Page):
-    def __init__(self, on_theme_change, on_font_change=None) -> None:
+    def __init__(self, on_theme_change, on_font_change=None, gateway: DataGateway | None = None) -> None:
         super().__init__()
         self.on_theme_change = on_theme_change
         self.on_font_change = on_font_change
@@ -1595,6 +2297,7 @@ class ThemePage(Page):
         font_layout.addWidget(self.font_size, 2, 1)
         font_layout.addWidget(font_hint, 3, 0, 1, 2)
         self.layout.addWidget(font_panel)
+
         self.layout.addStretch()
 
     def change_theme(self) -> None:
@@ -2089,10 +2792,6 @@ class StudioNewProductCard(QFrame):
         name.setWordWrap(True)
         name.setToolTip(title)
         layout.addWidget(name)
-        tag = QLabel("新品")
-        tag.setObjectName("StudioNewTag")
-        tag.setFixedWidth(42)
-        layout.addWidget(tag)
         metrics = QHBoxLayout()
         price_label = QLabel(format_jpy_price(price))
         price_label.setObjectName("StudioNewPrice")
@@ -2102,6 +2801,8 @@ class StudioNewProductCard(QFrame):
         metrics.addStretch()
         metrics.addWidget(sales_label)
         layout.addLayout(metrics)
+        for child in self.findChildren(QWidget):
+            child.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
     def mousePressEvent(self, event) -> None:
         if self.on_click:
@@ -2174,6 +2875,15 @@ class SelectionStudioPage(Page):
         tutorial.setObjectName("StudioTutorial")
         tutorial.clicked.connect(self.show_tutorial)
         heading.addWidget(tutorial)
+        refresh_button = QPushButton()
+        refresh_button.setObjectName("IconButton")
+        refresh_button.setFixedSize(34, 34)
+        refresh_button.setIcon(QIcon(icon_path("06_刷新图标.png")))
+        refresh_button.setIconSize(QSize(17, 17))
+        refresh_button.setToolTip("刷新商品数据")
+        refresh_button.clicked.connect(self.force_refresh)
+        self.data_refresh_button = refresh_button
+        heading.addWidget(refresh_button)
         left_stack = QVBoxLayout()
         left_stack.setContentsMargins(0, 0, 0, 0)
         left_stack.setSpacing(14)
@@ -2184,46 +2894,27 @@ class SelectionStudioPage(Page):
         chat_layout = QVBoxLayout(chat)
         chat_layout.setContentsMargins(18, 15, 18, 15)
         chat_layout.setSpacing(9)
-        chat_header = QHBoxLayout()
-        dot = QLabel("●")
-        dot.setObjectName("StudioDot")
-        assistant_label = QLabel("AI 选品助手")
-        assistant_label.setObjectName("StudioPanelTitle")
-        market_label = QLabel("日本站 · 实时分析")
-        market_label.setObjectName("StudioMarket")
-        chat_header.addWidget(dot)
-        chat_header.addWidget(assistant_label)
-        chat_header.addStretch()
-        chat_header.addWidget(market_label)
-        chat_layout.addLayout(chat_header)
-        self.chat_history = QVBoxLayout()
-        self.chat_history.setSpacing(7)
-        self.chat_history.addWidget(self._bubble("你好，我可以根据你的需求推荐适合 TikTok Japan 的商品。", False))
-        chat_layout.addLayout(self.chat_history)
         prompt_row = QHBoxLayout()
         prompt_row.setSpacing(8)
-        prompt_icon = QLabel("✦")
-        prompt_icon.setObjectName("StudioPromptIcon")
-        prompt_row.addWidget(prompt_icon)
-        self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText("请输入产品关键词、类目或 TikTok 热门趋势，支持用自然语言描述")
-        self.chat_input.returnPressed.connect(self.send_chat)
-        self.chat_input.textChanged.connect(self._update_prompt_count)
-        self.prompt_count = QLabel("0/200")
-        self.prompt_count.setObjectName("StudioPromptCount")
-        self.send_button = QPushButton("开始选品")
-        self.send_button.setObjectName("StudioPrimary")
+        prompt_editor = PromptEditorFrame()
+        prompt_editor.setMinimumHeight(116)
+        self.chat_input = prompt_editor.editor
+        self.chat_input.textChanged.connect(lambda: self._update_prompt_count(self.chat_input.toPlainText()))
+        self.prompt_count = prompt_editor.count_label
+        self.send_button = prompt_editor.analyze_button
+        self._update_prompt_count(self.chat_input.toPlainText())
         self.send_button.clicked.connect(self.send_chat)
-        prompt_row.addWidget(self.chat_input, 1)
-        prompt_row.addWidget(self.prompt_count)
-        prompt_row.addWidget(self.send_button)
+        prompt_row.addWidget(prompt_editor, 1)
         chat_layout.addLayout(prompt_row)
         chips = QHBoxLayout()
         chips.setSpacing(6)
-        for text in ("日本小众家居好物", "学生党平价好物", "轻小件高利润"):
+        hot_label = QLabel("热门搜索：")
+        hot_label.setObjectName("StudioMarket")
+        chips.addWidget(hot_label)
+        for text in ("厨房小工具", "收纳整理", "美姿个护", "宠物用品", "创意小物", "夏季用品"):
             chip = QPushButton(text)
             chip.setObjectName("StudioChip")
-            chip.clicked.connect(lambda checked=False, value=text: self.chat_input.setText(value))
+            chip.clicked.connect(lambda checked=False, value=text: self.chat_input.setPlainText(value))
             chips.addWidget(chip)
         chips.addStretch()
         chat_layout.addLayout(chips)
@@ -2281,6 +2972,8 @@ class SelectionStudioPage(Page):
         self.report_product = QLabel("选择商品查看分析")
         self.report_product.setObjectName("StudioReportTitle")
         self.report_product.setWordWrap(True)
+        self.report_price = QLabel("")
+        self.report_price.setObjectName("StudioReportPrice")
         self.report_image_box = QWidget()
         self.report_image_layout = QVBoxLayout(self.report_image_box)
         self.report_image_layout.setContentsMargins(0, 0, 0, 0)
@@ -2293,6 +2986,7 @@ class SelectionStudioPage(Page):
         report_product_text = QVBoxLayout()
         report_product_text.setSpacing(6)
         report_product_text.addWidget(self.report_product)
+        report_product_text.addWidget(self.report_price)
         report_product_text.addWidget(self.report_summary)
         report_product_text.addStretch()
         report_product_info.addLayout(report_product_text, 1)
@@ -2312,22 +3006,22 @@ class SelectionStudioPage(Page):
         self.report_dimensions = QVBoxLayout()
         self.report_dimensions.setSpacing(6)
         report_layout.addLayout(self.report_dimensions)
-        report_actions = QHBoxLayout()
-        report_actions.setSpacing(8)
-        self.favorite_button = QPushButton("☆  加入收藏")
-        self.favorite_button.setObjectName("StudioSecondaryAction")
-        self.favorite_button.clicked.connect(self.toggle_favorite)
-        self.start_button = QPushButton("✦  开始选品")
-        self.start_button.setObjectName("StudioPrimary")
-        self.start_button.clicked.connect(self.start_selection)
-        report_actions.addWidget(self.favorite_button, 1)
-        report_actions.addWidget(self.start_button, 1)
-        report_layout.addLayout(report_actions)
-        report_layout.addStretch()
         report_hint = QLabel("点击新品卡片查看完整维度报告")
         report_hint.setObjectName("Muted")
         report_hint.setWordWrap(True)
         report_layout.addWidget(report_hint)
+        report_layout.addStretch(1)
+        report_actions = QHBoxLayout()
+        report_actions.setSpacing(8)
+        self.favorite_button = QPushButton("☆  加入采集箱")
+        self.favorite_button.setObjectName("StudioSecondaryAction")
+        self.favorite_button.clicked.connect(self.toggle_favorite)
+        self.start_button = QPushButton("⇩  导出报告")
+        self.start_button.setObjectName("StudioPrimary")
+        self.start_button.clicked.connect(self.export_report)
+        report_actions.addWidget(self.favorite_button, 1)
+        report_actions.addWidget(self.start_button, 1)
+        report_layout.addLayout(report_actions)
         workspace.addWidget(self.report_panel)
         self.layout.addLayout(workspace, 1)
         self.report_item: dict[str, Any] | None = None
@@ -2353,7 +3047,7 @@ class SelectionStudioPage(Page):
             self,
             "使用教程",
             "1. 描述你想找的商品、人群、预算或使用场景。\n"
-            "2. 点击“开始选品”，AI 会生成本次推荐结果。\n"
+            "2. 点击“智能选品”，AI 会生成本次推荐结果。\n"
             "3. 下方今日选品推荐展示 AI 衍生品。\n"
             "4. 商品图片和销量以后台最新数据为准。",
         )
@@ -2375,10 +3069,9 @@ class SelectionStudioPage(Page):
             QMessageBox.warning(self, "刷新失败", str(exc))
 
     def send_chat(self) -> None:
-        text = self.chat_input.text().strip()
+        text = self.chat_input.toPlainText().strip()
         if not text:
             return
-        self.chat_history.addWidget(self._bubble(text, True))
         try:
             result = self.gateway.start_ai_selection(text)
         except Exception as exc:
@@ -2392,7 +3085,6 @@ class SelectionStudioPage(Page):
                 parent.user = self.gateway.user
             if hasattr(parent, "update_login_status"):
                 parent.update_login_status()
-        self.chat_history.addWidget(self._bubble("好的，我正在根据你的需求分析日本市场商品，请稍候。", False))
         self.send_button.setEnabled(False)
         self.chat_input.setEnabled(False)
         self.progress_bar.setValue(0)
@@ -2421,7 +3113,6 @@ class SelectionStudioPage(Page):
             self.progress_label.setText(f"选品完成，生成 {status.get('success_count') or 0} 个商品")
             self.chat_input.setEnabled(True)
             self.send_button.setEnabled(True)
-            self.chat_history.addWidget(self._bubble("已完成本次选品，推荐结果已保存到你的账号。", False))
         elif status.get("status") == "failed":
             self.selection_timer.stop()
             self.chat_input.setEnabled(True)
@@ -2454,12 +3145,14 @@ class SelectionStudioPage(Page):
         self.start_button.setEnabled(bool(item))
         if not item:
             self.report_product.setText("选择商品查看分析")
+            self.report_price.clear()
             self.report_summary.setText("选择商品后显示销量和综合参考")
-            self.favorite_button.setText("☆  加入收藏")
+            self.favorite_button.setText("☆  加入采集箱")
             return
         title = str(item.get("title") or item.get("derived_title") or "未命名商品")
         price = item.get("supplier_price") or item.get("price") or item.get("suggested_price_min") or 0
-        self.report_product.setText(f"{title[:32]}\n{format_jpy_price(price)}")
+        self.report_product.setText(title[:32])
+        self.report_price.setText(format_jpy_price(price))
         sales = int(float(item.get("sales_count") or item.get("supplier_sales_count") or 0))
         score = item.get("weighted_score") or item.get("ai_score") or item.get("supplier_match_score") or 0
         self.report_summary.setText(f"销量 {sales:,} · AI 参考 {float(score):.0f} 分")
@@ -2468,32 +3161,44 @@ class SelectionStudioPage(Page):
         title_key = str(item.get("title") or item.get("derived_title") or "")
         image_key = str(item.get("image_url") or item.get("supplier_image_url") or "")
         saved = next((favorite for favorite in self.favorite_items if favorite.get("title") == title_key and favorite.get("image_url") == image_key), None)
-        self.favorite_button.setText("★  已收藏" if saved else "☆  加入收藏")
+        self.favorite_button.setText("★  已在采集箱" if saved else "☆  加入采集箱")
         dimensions = dimension_items_from_report(item)
         if self.report_tab == "人群匹配":
             dimensions = [row for row in dimensions if row[0] in {"目标群体", "日本偏好", "竞品属性"}]
         elif self.report_tab == "使用场景":
             dimensions = [row for row in dimensions if row[0] in {"使用场景", "商品周期性", "复购属性"}]
-        for name, level, content in dimensions:
-            box = QFrame()
-            box.setObjectName("StudioDimension")
-            box_layout = QVBoxLayout(box)
-            box_layout.setContentsMargins(10, 7, 10, 7)
-            box_layout.setSpacing(2)
-            line = QHBoxLayout()
+        table = QFrame()
+        table.setObjectName("StudioDimensionTable")
+        table_layout = QVBoxLayout(table)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.setSpacing(0)
+        icons = ["◎", "≡", "↗", "◉", "◌", "▣", "♺", "△"]
+        for index, (name, level, content) in enumerate(dimensions):
+            row = QFrame()
+            row.setObjectName("StudioDimensionRow")
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(8, 8, 8, 8)
+            row_layout.setSpacing(8)
+            icon = QLabel(icons[index % len(icons)])
+            icon.setObjectName("StudioDimensionIcon")
+            icon.setFixedSize(28, 28)
+            icon.setAlignment(Qt.AlignCenter)
+            row_layout.addWidget(icon, 0, Qt.AlignTop)
+            copy = QVBoxLayout()
+            copy.setSpacing(2)
             label = QLabel(name)
             label.setObjectName("StudioDimensionName")
-            grade = QLabel(level or "参考")
-            grade.setObjectName("StudioDimensionGrade")
-            line.addWidget(label)
-            line.addStretch()
-            line.addWidget(grade)
-            box_layout.addLayout(line)
             detail = QLabel(content or "暂无分析内容")
             detail.setObjectName("StudioDimensionText")
             detail.setWordWrap(True)
-            box_layout.addWidget(detail)
-            self.report_dimensions.addWidget(box)
+            copy.addWidget(label)
+            copy.addWidget(detail)
+            row_layout.addLayout(copy, 1)
+            grade = QLabel(level or "参考")
+            grade.setObjectName("StudioDimensionGrade")
+            row_layout.addWidget(grade, 0, Qt.AlignTop)
+            table_layout.addWidget(row)
+        self.report_dimensions.addWidget(table)
 
     def toggle_favorite(self) -> None:
         if not self.report_item:
@@ -2510,17 +3215,21 @@ class SelectionStudioPage(Page):
                 self.favorite_items.insert(0, saved)
             self._show_report(self.report_item)
         except Exception as exc:
-            QMessageBox.warning(self, "收藏失败", str(exc))
+            QMessageBox.warning(self, "采集失败", str(exc))
 
-    def start_selection(self) -> None:
+    def export_report(self) -> None:
         if not self.report_item:
             return
         title = str(self.report_item.get("title") or self.report_item.get("derived_title") or "")
         try:
-            self.gateway.start_ai_selection(f"请围绕这个商品继续选品：{title}")
-            QMessageBox.information(self, "已开始选品", "已提交 AI 选品任务，请稍后查看结果。")
+            output_dir = APP_DIR / "data" / "selection_reports"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            safe_title = "".join(char for char in title[:24] if char not in '\\/:*?"<>|') or "商品"
+            output_path = output_dir / f"{safe_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            output_path.write_text(json.dumps(self.report_item, ensure_ascii=False, indent=2), encoding="utf-8")
+            QMessageBox.information(self, "报告已导出", f"完整报告已保存：\n{output_path}")
         except Exception as exc:
-            QMessageBox.warning(self, "启动失败", str(exc))
+            QMessageBox.warning(self, "导出失败", str(exc))
 
     def _select_report_tab(self, name: str, button: QPushButton) -> None:
         self.report_tab = name
@@ -2530,7 +3239,7 @@ class SelectionStudioPage(Page):
 
     def refresh(self) -> None:
         self.load_favorites()
-        items = self.gateway.recommended_derived_products(10)
+        items = self.gateway.recommended_derived_products()
         while self.new_product_grid.count():
             child = self.new_product_grid.takeAt(0)
             if child.widget():
@@ -2538,10 +3247,12 @@ class SelectionStudioPage(Page):
         for index, item in enumerate(items):
             self.new_product_grid.addWidget(StudioNewProductCard(item, index, self._show_report), index // 6, index % 6)
         self.new_product_grid.setColumnStretch(6, 1)
+        if items and not self.report_item:
+            self._show_report(items[0])
 
 
 class SelectionLibraryPage(Page):
-    """衍生品选品库：商品浏览与分析报告。"""
+    """当前用户 AI 搜索结果选品库。"""
 
     def __init__(self, gateway: DataGateway) -> None:
         super().__init__()
@@ -2556,7 +3267,7 @@ class SelectionLibraryPage(Page):
         header = QVBoxLayout()
         title = QLabel("选品库")
         title.setObjectName("StudioTitle")
-        subtitle = QLabel("浏览 AI 生成的衍生品，并查看完整选品分析报告")
+        subtitle = QLabel("查看当前账号最近 7 天的 AI 搜索选品结果")
         subtitle.setObjectName("Muted")
         header.addWidget(title)
         header.addWidget(subtitle)
@@ -2567,18 +3278,17 @@ class SelectionLibraryPage(Page):
         attribute_layout.setContentsMargins(14, 12, 14, 12)
         attribute_layout.setSpacing(8)
         attribute_heading = QHBoxLayout()
+        attribute_icon = QLabel("✦")
+        attribute_icon.setObjectName("StudioReportIcon")
+        attribute_heading.addWidget(attribute_icon)
         attribute_title = QLabel("选品属性维度")
         attribute_title.setObjectName("StudioPanelTitle")
-        attribute_hint = QLabel("用于衍生品分析与老师审核权重")
-        attribute_hint.setObjectName("StudioMarket")
         attribute_heading.addWidget(attribute_title)
-        attribute_heading.addSpacing(8)
-        attribute_heading.addWidget(attribute_hint)
         attribute_heading.addStretch()
         attribute_layout.addLayout(attribute_heading)
         self.attribute_grid = QGridLayout()
-        self.attribute_grid.setHorizontalSpacing(8)
-        self.attribute_grid.setVerticalSpacing(6)
+        self.attribute_grid.setHorizontalSpacing(10)
+        self.attribute_grid.setVerticalSpacing(8)
         self.attribute_grid.setContentsMargins(0, 0, 0, 0)
         attribute_layout.addLayout(self.attribute_grid)
         self.attribute_box = attribute_box
@@ -2592,10 +3302,20 @@ class SelectionLibraryPage(Page):
         left_layout.addLayout(header)
         left_layout.addWidget(self.attribute_box)
         list_header = QHBoxLayout()
-        list_title = QLabel("衍生品商品")
+        list_title = QLabel("我的搜索选品")
         list_title.setObjectName("StudioSectionTitle")
+        self.list_title = list_title
         list_header.addWidget(list_title)
         list_header.addStretch()
+        refresh_button = QPushButton()
+        refresh_button.setObjectName("IconButton")
+        refresh_button.setFixedSize(34, 34)
+        refresh_button.setIcon(QIcon(icon_path("06_刷新图标.png")))
+        refresh_button.setIconSize(QSize(17, 17))
+        refresh_button.setToolTip("刷新商品数据")
+        refresh_button.clicked.connect(self.force_refresh)
+        self.data_refresh_button = refresh_button
+        list_header.addWidget(refresh_button)
         left_layout.addLayout(list_header)
         scroll = QScrollArea()
         scroll.setObjectName("StudioScroll")
@@ -2624,6 +3344,8 @@ class SelectionLibraryPage(Page):
         self.report_product = QLabel("选择商品查看分析")
         self.report_product.setObjectName("StudioReportTitle")
         self.report_product.setWordWrap(True)
+        self.report_price = QLabel("")
+        self.report_price.setObjectName("StudioReportPrice")
         self.report_image_box = QWidget()
         self.report_image_layout = QVBoxLayout(self.report_image_box)
         self.report_image_layout.setContentsMargins(0, 0, 0, 0)
@@ -2636,6 +3358,7 @@ class SelectionLibraryPage(Page):
         report_product_text = QVBoxLayout()
         report_product_text.setSpacing(6)
         report_product_text.addWidget(self.report_product)
+        report_product_text.addWidget(self.report_price)
         report_product_text.addWidget(self.report_summary)
         report_product_text.addStretch()
         report_product_info.addLayout(report_product_text, 1)
@@ -2665,12 +3388,12 @@ class SelectionLibraryPage(Page):
         report_layout.addWidget(dimensions_scroll, 1)
         actions = QHBoxLayout()
         actions.setSpacing(8)
-        self.favorite_button = QPushButton("☆  加入收藏")
+        self.favorite_button = QPushButton("☆  加入采集箱")
         self.favorite_button.setObjectName("StudioSecondaryAction")
         self.favorite_button.clicked.connect(self.toggle_favorite)
-        self.start_button = QPushButton("✦  开始选品")
+        self.start_button = QPushButton("⇩  导出报告")
         self.start_button.setObjectName("StudioPrimary")
-        self.start_button.clicked.connect(self.start_selection)
+        self.start_button.clicked.connect(self.export_report)
         actions.addWidget(self.favorite_button, 1)
         actions.addWidget(self.start_button, 1)
         report_layout.addLayout(actions)
@@ -2710,15 +3433,17 @@ class SelectionLibraryPage(Page):
             child = self.product_grid.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
-        items = self.gateway.selection_library_products(100)
+        items = self.gateway.user_search_results()
         if not items:
-            empty = QLabel("暂无衍生品，请先完成 AI 选品或等待任务生成。")
+            empty = QLabel("暂无搜索选品，请先在智能选品对话框提交需求。")
             empty.setObjectName("Muted")
             self.product_grid.addWidget(empty, 0, 0)
             return
         for index, item in enumerate(items):
             self.product_grid.addWidget(StudioNewProductCard(item, index, self._show_report), index // 6, index % 6)
         self.product_grid.setColumnStretch(6, 1)
+        if items and not self.report_item:
+            self._show_report(items[0])
 
     def refresh_attributes(self) -> None:
         while self.attribute_grid.count():
@@ -2741,15 +3466,21 @@ class SelectionLibraryPage(Page):
             card_layout = QHBoxLayout(card)
             card_layout.setContentsMargins(9, 6, 9, 6)
             card_layout.setSpacing(5)
+            icon_label = QLabel("✦")
+            icon_label.setObjectName("StudioReportIcon")
+            icon_label.setFixedWidth(18)
+            icon_label.setAlignment(Qt.AlignCenter)
             name_label = QLabel(name)
             name_label.setObjectName("LibraryAttributeName")
             value_label = QLabel(f"{float(weight) * 100:.0f}%" if weight is not None else "默认")
             value_label.setObjectName("LibraryAttributeValue")
+            card_layout.addWidget(icon_label)
             card_layout.addWidget(name_label)
             card_layout.addStretch()
             card_layout.addWidget(value_label)
             self.attribute_grid.addWidget(card, index // 4, index % 4)
-        self.attribute_grid.setColumnStretch(4, 1)
+        for column in range(4):
+            self.attribute_grid.setColumnStretch(column, 1)
 
     def _show_report(self, item: dict[str, Any] | None) -> None:
         self.report_item = item
@@ -2765,12 +3496,14 @@ class SelectionLibraryPage(Page):
         self.start_button.setEnabled(bool(item))
         if not item:
             self.report_product.setText("选择商品查看分析")
+            self.report_price.clear()
             self.report_summary.setText("选择商品后显示销量和综合参考")
-            self.favorite_button.setText("☆  加入收藏")
+            self.favorite_button.setText("☆  加入采集箱")
             return
         title = str(item.get("title") or item.get("derived_title") or "未命名商品")
         price = item.get("supplier_price") or item.get("price") or item.get("suggested_price_min") or 0
-        self.report_product.setText(f"{title[:32]}\n{format_jpy_price(price)}")
+        self.report_product.setText(title[:32])
+        self.report_price.setText(format_jpy_price(price))
         sales = int(float(item.get("sales_count") or item.get("supplier_sales_count") or 0))
         score = item.get("weighted_score") or item.get("ai_score") or item.get("supplier_match_score") or 0
         self.report_summary.setText(f"销量 {sales:,} · AI 参考 {float(score):.0f} 分")
@@ -2778,32 +3511,44 @@ class SelectionLibraryPage(Page):
         title_key = str(item.get("title") or item.get("derived_title") or "")
         image_key = str(item.get("image_url") or item.get("supplier_image_url") or "")
         saved = next((favorite for favorite in self.favorite_items if favorite.get("title") == title_key and favorite.get("image_url") == image_key), None)
-        self.favorite_button.setText("★  已收藏" if saved else "☆  加入收藏")
+        self.favorite_button.setText("★  已在采集箱" if saved else "☆  加入采集箱")
         dimensions = dimension_items_from_report(item)
         if self.report_tab == "人群匹配":
             dimensions = [row for row in dimensions if row[0] in {"目标群体", "日本偏好", "竞品属性"}]
         elif self.report_tab == "使用场景":
             dimensions = [row for row in dimensions if row[0] in {"使用场景", "商品周期性", "复购属性"}]
-        for name, level, detail_text in dimensions:
-            box = QFrame()
-            box.setObjectName("StudioDimension")
-            box_layout = QVBoxLayout(box)
-            box_layout.setContentsMargins(10, 7, 10, 7)
-            box_layout.setSpacing(2)
-            line = QHBoxLayout()
+        table = QFrame()
+        table.setObjectName("StudioDimensionTable")
+        table_layout = QVBoxLayout(table)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.setSpacing(0)
+        icons = ["◎", "≡", "↗", "◉", "◌", "▣", "♺", "△"]
+        for index, (name, level, detail_text) in enumerate(dimensions):
+            row = QFrame()
+            row.setObjectName("StudioDimensionRow")
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(8, 8, 8, 8)
+            row_layout.setSpacing(8)
+            icon = QLabel(icons[index % len(icons)])
+            icon.setObjectName("StudioDimensionIcon")
+            icon.setFixedSize(28, 28)
+            icon.setAlignment(Qt.AlignCenter)
+            row_layout.addWidget(icon, 0, Qt.AlignTop)
+            copy = QVBoxLayout()
+            copy.setSpacing(2)
             label = QLabel(name)
             label.setObjectName("StudioDimensionName")
-            grade = QLabel(level or "参考")
-            grade.setObjectName("StudioDimensionGrade")
-            line.addWidget(label)
-            line.addStretch()
-            line.addWidget(grade)
-            box_layout.addLayout(line)
             detail = QLabel(detail_text or "暂无分析内容")
             detail.setObjectName("StudioDimensionText")
             detail.setWordWrap(True)
-            box_layout.addWidget(detail)
-            self.report_dimensions.addWidget(box)
+            copy.addWidget(label)
+            copy.addWidget(detail)
+            row_layout.addLayout(copy, 1)
+            grade = QLabel(level or "参考")
+            grade.setObjectName("StudioDimensionGrade")
+            row_layout.addWidget(grade, 0, Qt.AlignTop)
+            table_layout.addWidget(row)
+        self.report_dimensions.addWidget(table)
 
     def _select_report_tab(self, name: str, button: QPushButton) -> None:
         self.report_tab = name
@@ -2826,17 +3571,21 @@ class SelectionLibraryPage(Page):
                 self.favorite_items.insert(0, saved)
             self._show_report(self.report_item)
         except Exception as exc:
-            QMessageBox.warning(self, "收藏失败", str(exc))
+            QMessageBox.warning(self, "采集失败", str(exc))
 
-    def start_selection(self) -> None:
+    def export_report(self) -> None:
         if not self.report_item:
             return
         title = str(self.report_item.get("title") or self.report_item.get("derived_title") or "")
         try:
-            self.gateway.start_ai_selection(f"请围绕这个衍生品继续选品：{title}")
-            QMessageBox.information(self, "已开始选品", "已提交 AI 选品任务，请稍后在智能选品页面查看结果。")
+            output_dir = APP_DIR / "data" / "selection_reports"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            safe_title = "".join(char for char in title[:24] if char not in '\\/:*?"<>|') or "商品"
+            output_path = output_dir / f"{safe_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            output_path.write_text(json.dumps(self.report_item, ensure_ascii=False, indent=2), encoding="utf-8")
+            QMessageBox.information(self, "报告已导出", f"完整报告已保存：\n{output_path}")
         except Exception as exc:
-            QMessageBox.warning(self, "启动失败", str(exc))
+            QMessageBox.warning(self, "导出失败", str(exc))
 
 
 class NewProductsPage(SelectionLibraryPage):
@@ -2844,31 +3593,191 @@ class NewProductsPage(SelectionLibraryPage):
 
     def __init__(self, gateway: DataGateway) -> None:
         super().__init__(gateway)
+        filter_panel = QFrame()
+        filter_panel.setObjectName("RankFilterPanel")
+        filter_layout = QVBoxLayout(filter_panel)
+        filter_layout.setContentsMargins(0, 0, 0, 8)
+        filter_layout.setSpacing(8)
+
+        def add_filter_option(row: QHBoxLayout, text: str, value: str, group: list[QPushButton], callback=None) -> QPushButton:
+            button = QPushButton(text)
+            button.setObjectName("RankFilterOption")
+            button.setCheckable(True)
+            button.setAutoExclusive(False)
+            button.setFocusPolicy(Qt.NoFocus)
+            button.clicked.connect(lambda checked=False, current=button: self._select_filter_option(current, group, callback))
+            group.append(button)
+            row.addWidget(button)
+            return button
+
+        first_row = QHBoxLayout()
+        first_row.setSpacing(4)
+        time_label = QLabel("上架时间：")
+        time_label.setObjectName("RankFilterLabel")
+        first_row.addWidget(time_label)
+        today = QDate.currentDate()
+        self.start_date_edit = QDateEdit(today.addDays(-30))
+        self.start_date_edit.setObjectName("RankFilterDate")
+        self.start_date_edit.setCalendarPopup(True)
+        self.start_date_edit.setDisplayFormat("yyyy-MM-dd")
+        first_row.addWidget(self.start_date_edit)
+        arrow = QLabel("→")
+        arrow.setObjectName("RankFilterLabel")
+        first_row.addWidget(arrow)
+        self.end_date_edit = QDateEdit(today)
+        self.end_date_edit.setObjectName("RankFilterDate")
+        self.end_date_edit.setCalendarPopup(True)
+        self.end_date_edit.setDisplayFormat("yyyy-MM-dd")
+        first_row.addWidget(self.end_date_edit)
+        self.start_date_edit.dateChanged.connect(lambda _: self.force_refresh())
+        self.end_date_edit.dateChanged.connect(lambda _: self.force_refresh())
+        first_row.addStretch()
+        self.sync_rank_button = QPushButton("同步当前榜单")
+        self.sync_rank_button.setObjectName("StudioSecondaryAction")
+        self.sync_rank_button.clicked.connect(self.sync_current_rank)
+        self.view_derivable_button = QPushButton("查看可衍生品")
+        self.view_derivable_button.setObjectName("RankFilterViewButton")
+        self.view_derivable_button.clicked.connect(self.show_japan_new_products)
+        first_row.addWidget(self.sync_rank_button)
+        first_row.addWidget(self.view_derivable_button)
+        filter_layout.addLayout(first_row)
+
+        region_row = QHBoxLayout()
+        region_row.setSpacing(4)
+        region_label = QLabel("国家/地区：")
+        region_label.setObjectName("RankFilterLabel")
+        region_row.addWidget(region_label)
+        self.region_options: list[QPushButton] = []
+        region_values = (
+            ("全部", "ALL"), ("美国", "US"), ("印度尼西亚", "ID"), ("英国", "GB"),
+            ("越南", "VN"), ("泰国", "TH"), ("马来西亚", "MY"), ("菲律宾", "PH"),
+            ("西班牙", "ES"), ("墨西哥", "MX"), ("德国", "DE"), ("法国", "FR"),
+            ("意大利", "IT"), ("巴西", "BR"), ("日本", "JP"), ("新加坡", "SG"),
+        )
+        self.region_buttons: list[QPushButton] = []
+        for label, code in region_values:
+            button = add_filter_option(region_row, label, code, self.region_buttons, self._region_changed)
+            button.setProperty("filter_value", code)
+        self.region_buttons[0].setChecked(False)
+        self.region_buttons[1].setChecked(False)
+        self.region_buttons[14].setChecked(True)
+        region_row.addStretch()
+        filter_layout.addLayout(region_row)
+
+        category_row = QHBoxLayout()
+        category_row.setSpacing(4)
+        category_label = QLabel("商品分类：")
+        category_label.setObjectName("RankFilterLabel")
+        category_row.addWidget(category_label)
+        self.category_buttons: list[QPushButton] = []
+        for label in ("全部", "美妆个护", "女装与女士内衣", "保健", "时尚配件", "运动与户外", "手机与数码", "居家日用", "食品饮料", "汽车与摩托车", "男装与男士内衣", "收藏品", "玩具和爱好"):
+            button = add_filter_option(category_row, label, label, self.category_buttons, self._category_changed)
+            button.setProperty("filter_value", label)
+        self.category_buttons[0].setChecked(True)
+        category_row.addStretch()
+        filter_layout.addLayout(category_row)
+
+        rank_row = QHBoxLayout()
+        rank_row.setSpacing(4)
+        rank_label = QLabel("商品榜单：")
+        rank_label.setObjectName("RankFilterLabel")
+        rank_row.addWidget(rank_label)
+        self.rank_buttons: list[QPushButton] = []
+        for label, code in (("销量榜", "sales"), ("新品榜", "new"), ("热销榜", "hot")):
+            button = add_filter_option(rank_row, label, code, self.rank_buttons, self._rank_changed)
+            button.setProperty("filter_value", code)
+        self.rank_buttons[1].setChecked(True)
+        rank_row.addStretch()
+        filter_layout.addLayout(rank_row)
+        self.layout.insertWidget(0, filter_panel)
         self.attribute_box.hide()
         self.report_panel.hide()
+        self.list_title.hide()
+        self.data_refresh_button.hide()
         for label in self.findChildren(QLabel):
             if label.text() == "选品库":
+                self.page_title = label
+                label.hide()
+            elif label.text() == "查看当前账号最近 7 天的 AI 搜索选品结果":
+                self.page_subtitle = label
+                label.hide()
+            elif label.text() == "我的搜索选品":
+                self.page_title = label
                 label.setText("新品榜单")
-            elif label.text() == "浏览 AI 生成的衍生品，并查看完整选品分析报告":
-                label.setText("查看 FastMoss 日本站最新入库商品")
-            elif label.text() == "衍生品商品":
-                label.setText("新品商品")
 
     def refresh(self) -> None:
+        rank_names = {"new": "新品榜单", "hot": "热销榜", "sales": "销量榜"}
+        current_rank = str(self._selected_value(self.rank_buttons, "new"))
+        current_region = str(self._selected_value(self.region_buttons, "JP"))
+        current_category = str(self._selected_value(self.category_buttons, "全部"))
+        start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
+        end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
+        self.rank_code = current_rank
+        self.region_code = current_region
+        self.category_code = current_category
+        self.page_title.setText(rank_names.get(current_rank, "榜单商品"))
         while self.product_grid.count():
             child = self.product_grid.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
         self.load_favorites()
-        items = self.gateway.daily_recommendations()
+        items = self.gateway.daily_recommendations(current_region, current_rank, current_category, start_date, end_date)
         if not items:
             empty = QLabel("暂无新品榜单数据，请先同步 FastMoss。")
             empty.setObjectName("Muted")
             self.product_grid.addWidget(empty, 0, 0)
             return
         for index, item in enumerate(items):
-            self.product_grid.addWidget(StudioNewProductCard(item, index), index // 8, index % 8)
+            can_derive = str(item.get("region") or "").upper() == "JP" and str(item.get("list_type") or "").lower() == "new"
+            self.product_grid.addWidget(TeacherProductCard(item, self.open_derivable_product, can_derive=can_derive), index // 6, index % 6)
         self.product_grid.setColumnStretch(8, 1)
+
+    def open_derivable_product(self, product: dict[str, Any]) -> None:
+        dialog = DerivedDialog(self.gateway, product, [product], 0, self, review_mode=False)
+        dialog.exec()
+        self.refresh()
+
+    def sync_current_rank(self) -> None:
+        try:
+            self.sync_rank_button.setEnabled(False)
+            self.gateway.sync_fastmoss_products(getattr(self, "region_code", "JP"), getattr(self, "rank_code", "new"))
+            self.refresh()
+        except Exception as exc:
+            QMessageBox.warning(self, "同步失败", str(exc))
+        finally:
+            self.sync_rank_button.setEnabled(True)
+
+    def show_japan_new_products(self) -> None:
+        for button in self.region_buttons:
+            button.setChecked(button.property("filter_value") == "JP")
+        for button in self.rank_buttons:
+            button.setChecked(button.property("filter_value") == "new")
+        for button in self.category_buttons:
+            button.setChecked(button.property("filter_value") == "全部")
+        self.force_refresh()
+
+    @staticmethod
+    def _selected_value(buttons: list[QPushButton], default: str) -> str:
+        for button in buttons:
+            if button.isChecked():
+                return str(button.property("filter_value") or default)
+        return default
+
+    @staticmethod
+    def _select_filter_option(button: QPushButton, group: list[QPushButton], callback=None) -> None:
+        for item in group:
+            item.setChecked(item is button)
+        if callback:
+            callback()
+
+    def _region_changed(self) -> None:
+        self.force_refresh()
+
+    def _rank_changed(self) -> None:
+        self.force_refresh()
+
+    def _category_changed(self) -> None:
+        self.force_refresh()
 
 
 
@@ -2877,13 +3786,14 @@ class FavoritesPage(SelectionLibraryPage):
 
     def __init__(self, gateway: DataGateway) -> None:
         super().__init__(gateway)
+        self.report_panel.hide()
         for label in self.findChildren(QLabel):
             if label.text() == "选品库":
-                label.setText("我的收藏")
-            elif label.text() == "浏览 AI 生成的衍生品，并查看完整选品分析报告":
+                label.setText("采集箱")
+            elif label.text() == "查看当前账号最近 7 天的 AI 搜索选品结果":
                 label.setText("查看当前账号收藏的商品快照")
-            elif label.text() == "衍生品商品":
-                label.setText("收藏商品")
+            elif label.text() == "我的搜索选品":
+                label.setText("采集商品")
 
     def activate(self) -> None:
         self.load_favorites()
@@ -2897,13 +3807,144 @@ class FavoritesPage(SelectionLibraryPage):
                 child.widget().deleteLater()
         items = self.favorite_items
         if not items:
-            empty = QLabel("暂无收藏商品，请在商品报告面板点击加入收藏。")
+            empty = QLabel("暂无采集商品，请在商品报告面板点击加入采集箱。")
             empty.setObjectName("Muted")
             self.product_grid.addWidget(empty, 0, 0)
             return
-        for index, item in enumerate(items):
-            self.product_grid.addWidget(StudioNewProductCard(item, index, self._show_report), index // 6, index % 6)
-        self.product_grid.setColumnStretch(6, 1)
+        listing = QTableWidget(0, 7)
+        listing.setObjectName("CollectionTable")
+        listing.setHorizontalHeaderLabels(["商品信息", "国家/地区", "商品分类", "价格", "销量", "1688 链接", "操作"])
+        listing.verticalHeader().setVisible(False)
+        listing.setShowGrid(False)
+        listing.setAlternatingRowColors(True)
+        listing.setSelectionBehavior(QAbstractItemView.SelectRows)
+        listing.setSelectionMode(QAbstractItemView.NoSelection)
+        listing.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        listing.setWordWrap(False)
+        listing.setFocusPolicy(Qt.NoFocus)
+        listing.cellClicked.connect(lambda row, column: self._show_report(items[row]) if 0 <= row < len(items) else None)
+        header = listing.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.resizeSection(0, 310)
+        for column in range(1, 7):
+            header.setSectionResizeMode(column, QHeaderView.Stretch)
+
+        for row, item in enumerate(items):
+            listing.insertRow(row)
+            snapshot = item.get("product_snapshot") if isinstance(item.get("product_snapshot"), dict) else {}
+            supplier_raw = snapshot.get("supplier_raw_data") or snapshot.get("raw_data") or {}
+            if isinstance(supplier_raw, str):
+                try:
+                    supplier_raw = json.loads(supplier_raw)
+                except (TypeError, ValueError):
+                    supplier_raw = {}
+            if not isinstance(supplier_raw, dict):
+                supplier_raw = {}
+            title = str(item.get("title") or snapshot.get("title") or "未命名商品")
+            image_url = str(item.get("image_url") or snapshot.get("supplier_image_url") or "")
+            region = str(item.get("region") or snapshot.get("region") or snapshot.get("country") or "日本")
+            category = str(
+                item.get("supplier_category")
+                or snapshot.get("supplier_category")
+                or supplier_raw.get("category")
+                or supplier_raw.get("category_name")
+                or item.get("category")
+                or snapshot.get("category")
+                or "未分类"
+            )
+            price = item.get("price") or snapshot.get("supplier_price") or snapshot.get("suggested_price_min") or 0
+            sales = item.get("sales_count") or snapshot.get("supplier_sales_count") or snapshot.get("sales_count") or 0
+            source_url = str(
+                item.get("supplier_source_url")
+                or snapshot.get("supplier_source_url")
+                or snapshot.get("source_url")
+                or snapshot.get("detail_url")
+                or ""
+            )
+
+            info = QWidget()
+            info_layout = QHBoxLayout(info)
+            info_layout.setContentsMargins(8, 5, 8, 5)
+            info_layout.setSpacing(10)
+            info_layout.addWidget(create_product_image(image_url, "📦", 66, 66), 0)
+            title_label = QLabel(title[:24])
+            title_label.setObjectName("CollectionTitle")
+            title_label.setToolTip(title)
+            title_label.setWordWrap(False)
+            info_layout.addWidget(title_label, 1)
+            listing.setCellWidget(row, 0, info)
+
+            for column, value in ((1, region), (2, category)):
+                label = QLabel(value)
+                label.setObjectName("CollectionText")
+                label.setAlignment(Qt.AlignCenter)
+                listing.setCellWidget(row, column, label)
+
+            price_label = QLabel(format_jpy_price(price))
+            price_label.setObjectName("CollectionPrice")
+            price_label.setAlignment(Qt.AlignCenter)
+            listing.setCellWidget(row, 3, price_label)
+            sales_label = QLabel(f"{int(float(sales or 0)):,}")
+            sales_label.setObjectName("CollectionText")
+            sales_label.setAlignment(Qt.AlignCenter)
+            listing.setCellWidget(row, 4, sales_label)
+
+            link_label = QLabel(f'<a href="{source_url}">打开链接</a>' if source_url else "暂无链接")
+            link_label.setObjectName("CollectionLink")
+            link_label.setOpenExternalLinks(bool(source_url))
+            link_label.setAlignment(Qt.AlignCenter)
+            listing.setCellWidget(row, 5, link_label)
+
+            actions = QWidget()
+            actions_layout = QHBoxLayout(actions)
+            actions_layout.setContentsMargins(4, 4, 4, 4)
+            actions_layout.setSpacing(6)
+            publish_button = QPushButton("加入上品")
+            publish_button.setObjectName("CollectionAction")
+            publish_button.clicked.connect(lambda checked=False, selected=item, url=source_url: self.add_to_publish(selected, url))
+            export_button = QPushButton("导出报告")
+            export_button.setObjectName("CollectionAction")
+            export_button.clicked.connect(lambda checked=False, selected=item: self.export_collection_report(selected))
+            actions_layout.addWidget(publish_button)
+            actions_layout.addWidget(export_button)
+            listing.setCellWidget(row, 6, actions)
+            listing.setRowHeight(row, 82)
+
+        self.product_grid.addWidget(listing, 0, 0)
+        if items:
+            self._show_report(items[0])
+
+    def add_to_publish(self, item: dict[str, Any], source_url: str) -> None:
+        if not source_url:
+            QMessageBox.information(self, "无法加入上品", "该商品没有可用的 1688 链接。")
+            return
+        main_window = self.window()
+        if not hasattr(main_window, "nav") or not hasattr(main_window, "pages"):
+            QMessageBox.information(self, "无法加入上品", "店铺管理页面暂不可用。")
+            return
+        for index in range(main_window.nav.count()):
+            nav_item = main_window.nav.item(index)
+            if nav_item and nav_item.text() == "店铺管理":
+                main_window.nav.setCurrentRow(index)
+                page_index = nav_item.data(Qt.UserRole)
+                if isinstance(page_index, int) and 0 <= page_index < len(main_window.pages):
+                    page = main_window.pages[page_index]
+                    if hasattr(page, "offer_url_input"):
+                        page.offer_url_input.setText(source_url)
+                return
+        QMessageBox.information(self, "无法加入上品", "未找到店铺管理页面。")
+
+    def export_collection_report(self, item: dict[str, Any]) -> None:
+        title = str(item.get("title") or item.get("derived_title") or "商品")
+        try:
+            output_dir = APP_DIR / "data" / "selection_reports"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            safe_title = "".join(char for char in title[:24] if char not in '\\/:*?"<>|') or "商品"
+            output_path = output_dir / f"{safe_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            output_path.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
+            QMessageBox.information(self, "报告已导出", f"完整报告已保存：\n{output_path}")
+        except Exception as exc:
+            QMessageBox.warning(self, "导出失败", str(exc))
 
 
 class StudioSelectionPage(Page):
@@ -3288,7 +4329,7 @@ class StudioSelectionPage(Page):
 
 
 class TeacherProductCard(QFrame):
-    def __init__(self, product: dict[str, Any], on_open) -> None:
+    def __init__(self, product: dict[str, Any], on_open, can_derive: bool = True) -> None:
         super().__init__()
         self.product = product
         self.on_open = on_open
@@ -3322,9 +4363,19 @@ class TeacherProductCard(QFrame):
         metrics.addWidget(sales_label)
         layout.addLayout(metrics)
 
-        open_button = QPushButton("查看衍生品")
-        open_button.setObjectName("PrimaryAction")
-        open_button.clicked.connect(lambda: self.on_open(self.product))
+        has_derived = int(product.get("derived_count") or 0) > 0
+        if has_derived:
+            open_button = QPushButton("查看衍生品")
+            open_button.setObjectName("ProductDeriveView")
+        elif can_derive:
+            open_button = QPushButton("可以衍生")
+            open_button.setObjectName("ProductDeriveAvailable")
+        else:
+            open_button = QPushButton("暂不支持衍生")
+            open_button.setObjectName("ProductDeriveDisabled")
+            open_button.setEnabled(False)
+        if has_derived or can_derive:
+            open_button.clicked.connect(lambda: self.on_open(self.product))
         layout.addWidget(open_button)
 
     def metric_box(self, label: str, value: str) -> QWidget:
@@ -3725,7 +4776,7 @@ class TeacherDashboardPage(Page):
             if self.gateway.is_invalid_token_error(exc) and hasattr(parent, "clear_invalid_session"):
                 parent.clear_invalid_session()
                 return
-            QMessageBox.warning(self, "加载失败", str(exc))
+            show_error_details(self, "加载失败", exc)
             return
         total_derived = sum(int(item.get("derived_count") or 0) for item in self.products)
         total_pending = sum(int(item.get("pending_count") or 0) for item in self.products)
@@ -3753,17 +4804,48 @@ class TeacherDashboardPage(Page):
 
 
 class DerivedDialog(QDialog):
-    def __init__(self, gateway: DataGateway, product: dict[str, Any], products: list[dict[str, Any]] | None = None, product_index: int = 0, parent=None) -> None:
+    def __init__(self, gateway: DataGateway, product: dict[str, Any], products: list[dict[str, Any]] | None = None, product_index: int = 0, parent=None, review_mode: bool = True) -> None:
         super().__init__(parent)
         self.gateway = gateway
         self.products = products or [product]
         self.product_index = max(0, min(product_index, len(self.products) - 1))
         self.product = product
-        self.setWindowTitle(f"衍生品审核 - {self.product['title']}")
-        self.resize(1120, 780)
+        self.review_mode = review_mode
+        self.collection_saved = False
+        self.generation_task_id: int | None = None
+        self.generation_timer = QTimer(self)
+        self.generation_timer.setInterval(1800)
+        self.generation_timer.timeout.connect(self.poll_generation)
+        self.setWindowTitle(f"衍生品审核 - {str(self.product.get('title') or '')[:40]}")
+        self.setMinimumSize(1000, 650)
+        self.resize(1220, 800)
         layout = QVBoxLayout(self)
-        self.header = make_title(self.product["title"], "审核对象是 AI 衍生品，不是具体 1688 商品。")
+        self.header = QFrame()
+        self.header.setObjectName("PageHeader")
+        header_layout = QHBoxLayout(self.header)
+        header_layout.setContentsMargins(20, 16, 20, 16)
+        header_layout.setSpacing(14)
+        self.header_image_box = QWidget()
+        self.header_image_layout = QVBoxLayout(self.header_image_box)
+        self.header_image_layout.setContentsMargins(0, 0, 0, 0)
+        self.header_image_layout.setSpacing(0)
+        self.header_image_layout.addWidget(create_product_image("", "📦", 86, 86))
+        header_layout.addWidget(self.header_image_box, 0, Qt.AlignTop)
+        header_text = QVBoxLayout()
+        header_text.setSpacing(6)
+        self.header_title = QLabel()
+        self.header_title.setObjectName("DerivedDialogTitle")
+        self.header_title.setWordWrap(True)
+        self.header_title.setMinimumWidth(0)
+        self.header_title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        header_text.addWidget(self.header_title)
+        header_subtitle = QLabel("审核对象是 AI 衍生品，不是具体 1688 商品。")
+        header_subtitle.setObjectName("Muted")
+        header_subtitle.setWordWrap(True)
+        header_text.addWidget(header_subtitle)
+        header_layout.addLayout(header_text, 1)
         layout.addWidget(self.header)
+        self._update_header()
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -3778,23 +4860,76 @@ class DerivedDialog(QDialog):
         footer_layout.setContentsMargins(14, 12, 14, 12)
         self.product_progress = QLabel()
         self.product_progress.setObjectName("Muted")
-        next_button = QPushButton("下一个原商品")
-        next_button.setObjectName("PrimaryAction")
-        next_button.clicked.connect(self.next_product)
+        self.generation_progress = QProgressBar()
+        self.generation_progress.setRange(0, 100)
+        self.generation_progress.setFixedWidth(210)
+        self.generation_progress.setFormat("衍生处理中 %p%")
+        self.generation_progress.hide()
+        self.generate_button = QPushButton("开始衍生")
+        self.generate_button.setObjectName("PrimaryAction")
+        self.generate_button.clicked.connect(self.start_generation)
+        if not self.review_mode:
+            self.collection_items: list[dict[str, Any]] = []
+            self.load_collection_items()
+        next_button = None
+        if self.review_mode:
+            next_button = QPushButton("下一个原商品")
+            next_button.setObjectName("PrimaryAction")
+            next_button.clicked.connect(self.next_product)
         footer_layout.addWidget(self.product_progress)
         footer_layout.addStretch()
-        footer_layout.addWidget(next_button)
+        footer_layout.addWidget(self.generation_progress)
+        footer_layout.addWidget(self.generate_button)
+        if next_button is not None:
+            footer_layout.addWidget(next_button)
         layout.addWidget(footer)
 
         self.refresh_cards()
 
     def set_product(self, product: dict[str, Any]) -> None:
         self.product = product
-        self.setWindowTitle(f"衍生品审核 - {self.product['title']}")
-        title_label = self.header.findChild(QLabel, "PageTitle")
-        if title_label:
-            title_label.setText(str(self.product.get("title") or "未命名原商品"))
+        self.setWindowTitle(f"衍生品审核 - {str(self.product.get('title') or '')[:40]}")
+        self._update_header()
         self.refresh_cards()
+
+    def _update_header(self) -> None:
+        while self.header_image_layout.count():
+            child = self.header_image_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        image_url = str(self.product.get("image_url") or self.product.get("supplier_image_url") or "")
+        self.header_image_layout.addWidget(create_product_image(image_url, "📦", 86, 86))
+        self.header_title.setText(str(self.product.get("title") or "未命名原商品"))
+        
+    def load_collection_items(self) -> None:
+        try:
+            self.collection_items = self.gateway.favorites()
+        except Exception:
+            self.collection_items = []
+
+    @staticmethod
+    def collection_key(item: dict[str, Any]) -> tuple[str, str]:
+        return (
+            str(item.get("title") or item.get("derived_title") or ""),
+            str(item.get("image_url") or item.get("supplier_image_url") or ""),
+        )
+
+    def toggle_item_collection(self, item: dict[str, Any], button: QPushButton) -> None:
+        try:
+            key = self.collection_key(item)
+            saved = next((favorite for favorite in self.collection_items if self.collection_key(favorite) == key), None)
+            if saved:
+                self.gateway.delete_favorite(int(saved["id"]))
+                self.collection_items = [favorite for favorite in self.collection_items if int(favorite.get("id") or 0) != int(saved["id"])]
+                button.setText("加入采集箱")
+            else:
+                snapshot = dict(item)
+                snapshot["source_type"] = "derived"
+                created = self.gateway.create_favorite(snapshot)
+                self.collection_items.insert(0, created)
+                button.setText("已在采集箱")
+        except Exception as exc:
+            show_error_details(self, "采集失败", exc)
 
     def next_product(self) -> None:
         if not self.products:
@@ -3818,16 +4953,54 @@ class DerivedDialog(QDialog):
                 parent.clear_invalid_session()
                 items = []
             else:
-                QMessageBox.warning(self, "加载失败", str(exc))
+                show_error_details(self, "加载失败", exc)
                 items = []
         if not items:
-            empty = QLabel("暂无衍生品，请先在任务看板补齐衍生品。")
+            empty = QLabel("暂无衍生品，点击下方“开始衍生”进行翻译、分族、AI生成和1688匹配。")
             empty.setObjectName("Muted")
             self.cards.addWidget(empty)
         for item in items:
             self.cards.addWidget(self.card(item))
         self.cards.addStretch()
         self.product_progress.setText(f"原商品 {self.product_index + 1}/{len(self.products)}")
+        self.generate_button.setText("重新衍生" if items else "开始衍生")
+        self.generate_button.setEnabled(not bool(self.generation_task_id))
+
+    def start_generation(self) -> None:
+        try:
+            result = self.gateway.start_product_full_pipeline(int(self.product["id"]))
+            self.generation_task_id = int(result["task_id"])
+            self.generation_progress.setValue(0)
+            self.generation_progress.show()
+            self.generate_button.setEnabled(False)
+            self.generation_timer.start()
+            self.product_progress.setText("正在执行：翻译、分族、衍生、1688匹配")
+        except Exception as exc:
+            QMessageBox.warning(self, "启动失败", str(exc))
+
+    def poll_generation(self) -> None:
+        if not self.generation_task_id:
+            return
+        try:
+            result = self.gateway.product_full_pipeline_task(self.generation_task_id)
+            self.generation_progress.setValue(int(result.get("progress") or 0))
+            self.product_progress.setText(str(result.get("message") or "正在处理"))
+            if result.get("status") in {"success", "failed"}:
+                self.generation_timer.stop()
+                task_failed = result.get("status") == "failed"
+                self.generation_task_id = None
+                self.generation_progress.hide()
+                self.generate_button.setEnabled(True)
+                if task_failed:
+                    QMessageBox.warning(self, "衍生失败", str(result.get("error_message") or result.get("message") or "任务失败"))
+                else:
+                    self.refresh_cards()
+        except Exception as exc:
+            self.generation_timer.stop()
+            self.generation_task_id = None
+            self.generation_progress.hide()
+            self.generate_button.setEnabled(True)
+            QMessageBox.warning(self, "任务查询失败", str(exc))
 
     def dimension_items(self, item: dict[str, Any]) -> list[tuple[str, str, str]]:
         return dimension_items_from_report(item)
@@ -3859,9 +5032,16 @@ class DerivedDialog(QDialog):
         meta.setObjectName("Muted")
         head.addWidget(meta)
         head.addStretch()
-        reject = QPushButton("拒绝")
-        reject.clicked.connect(lambda: self.reject_item(item))
-        head.addWidget(reject)
+        if self.review_mode:
+            reject = QPushButton("拒绝")
+            reject.clicked.connect(lambda: self.reject_item(item))
+            head.addWidget(reject)
+        else:
+            collected = any(self.collection_key(saved) == self.collection_key(item) for saved in self.collection_items)
+            collect = QPushButton("已在采集箱" if collected else "加入采集箱")
+            collect.setObjectName("SecondaryAction")
+            collect.clicked.connect(lambda checked=False, selected=item, button=collect: self.toggle_item_collection(selected, button))
+            head.addWidget(collect)
         layout.addLayout(head)
 
         dimensions = QGridLayout()
@@ -3895,6 +5075,47 @@ class DerivedDialog(QDialog):
             self.refresh_cards()
 
 
+class MultiSelectComboBox(QComboBox):
+    """可勾选下拉框，用于一次选择多个拒绝维度。"""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().setPlaceholderText("请选择拒绝维度")
+        self.view().pressed.connect(self._toggle_item)
+
+    def add_check_item(self, text: str, data: Any) -> None:
+        self.addItem(text, data)
+        item = self.model().item(self.count() - 1)
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item.setData(Qt.Unchecked, Qt.CheckStateRole)
+
+    def _toggle_item(self, index) -> None:
+        item = self.model().itemFromIndex(index)
+        if item is None:
+            return
+        state = item.data(Qt.CheckStateRole)
+        item.setData(Qt.Unchecked if state == Qt.Checked else Qt.Checked, Qt.CheckStateRole)
+        self._update_text()
+        QTimer.singleShot(0, self.showPopup)
+
+    def _update_text(self) -> None:
+        labels = []
+        for index in range(self.count()):
+            item = self.model().item(index)
+            if item.data(Qt.CheckStateRole) == Qt.Checked:
+                labels.append(str(item.text()))
+        self.lineEdit().setText("、".join(labels) if labels else "请选择拒绝维度")
+
+    def selected_data(self) -> list[Any]:
+        return [
+            self.itemData(index)
+            for index in range(self.count())
+            if self.model().item(index).data(Qt.CheckStateRole) == Qt.Checked
+        ]
+
+
 class RejectDialog(QDialog):
     def __init__(self, gateway: DataGateway, item: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
@@ -3922,12 +5143,12 @@ class RejectDialog(QDialog):
         reason_layout.setSpacing(8)
         reason_label = QLabel("选择拒绝维度")
         reason_label.setObjectName("FormLabel")
-        self.reason = QComboBox()
+        self.reason = MultiSelectComboBox()
         self.reason.setObjectName("ReasonCombo")
         self.reason.setMinimumHeight(42)
         self.attributes = gateway.attributes()
         for attr in self.attributes:
-            self.reason.addItem(attr["attribute_name"], attr["id"])
+            self.reason.add_check_item(attr["attribute_name"], attr["id"])
         reason_layout.addWidget(reason_label)
         reason_layout.addWidget(self.reason)
         layout.addWidget(reason_box)
@@ -3951,8 +5172,11 @@ class RejectDialog(QDialog):
         QMessageBox.information(self, "MVP 提示", "新增属性接口已预留。下一阶段会补充弹窗表单并写入 MySQL。")
 
     def submit(self) -> None:
-        attribute_id = int(self.reason.currentData())
-        self.gateway.reject(self.item["id"], [attribute_id], self.comment.toPlainText())
+        attribute_ids = [int(value) for value in self.reason.selected_data() if value is not None]
+        if not attribute_ids:
+            QMessageBox.information(self, "请选择属性", "请至少选择一个拒绝维度。")
+            return
+        self.gateway.reject(self.item["id"], attribute_ids, self.comment.toPlainText())
         self.item["review_status"] = "rejected"
         self.accept()
 
@@ -3995,35 +5219,35 @@ THEMES = {
         "metric": "#10151c",
     },
     "light": {
-        "bg": "#f4f8fb",
-        "sidebar": "#fbfdff",
+        "bg": "#f7f9fb",
+        "sidebar": "#ffffff",
         "panel": "#ffffff",
-        "panel2": "#f8fbfd",
-        "hero": "#f1fbf8",
-        "input": "#f7fafc",
-        "border": "#e1eaf0",
-        "text": "#1f2a44",
-        "muted": "#718096",
+        "panel2": "#fbfcfd",
+        "hero": "#effaf6",
+        "input": "#fbfcfd",
+        "border": "#e4ebef",
+        "text": "#24324a",
+        "muted": "#7b8798",
         "accent": "#159878",
-        "accent_hover": "#0f8065",
-        "tag": "#e7f7f1",
-        "tag_text": "#147b67",
-        "image_a": "#e9f5f2",
-        "image_b": "#fff0ec",
-        "metric": "#f2f7f9",
+        "accent_hover": "#117f66",
+        "tag": "#e8f7f1",
+        "tag_text": "#17846e",
+        "image_a": "#edf7f4",
+        "image_b": "#fff2ef",
+        "metric": "#f4f7f9",
     },
 }
 
 
 def apply_style(app: QApplication, theme_name: str = "light") -> None:
     theme = THEMES.get(theme_name, THEMES["light"])
-    app.setFont(QFont("Microsoft YaHei UI", 10))
+    app.setFont(QFont("Microsoft YaHei UI", 13))
     qss = Template(
         """
         QWidget { background: $bg; color: $text; }
         QLineEdit, QTextEdit, QComboBox {
-            background: $input; color: $text; border: 1px solid $border; border-radius: 8px;
-            padding: 10px; selection-background-color: $accent;
+            background: $input; color: $text; border: 1px solid $border; border-radius: 9px;
+            padding: 9px 11px; selection-background-color: $accent;
         }
         QLineEdit:focus, QTextEdit:focus, QComboBox:focus {
             border: 1px solid $accent;
@@ -4047,8 +5271,9 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         QLineEdit::placeholder { color: $muted; }
         QPushButton {
             background: $accent; color: white; border: 0; border-radius: 8px;
-            padding: 10px 16px; font-weight: 600;
+            padding: 9px 16px; min-height: 34px; font-weight: 700; outline: 0;
         }
+        QPushButton:focus { outline: 0; }
         QPushButton:hover { background: $accent_hover; }
         QTableWidget {
             background: $panel; alternate-background-color: $panel2; color: $text;
@@ -4056,6 +5281,17 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         }
         QTableWidget::item { padding: 8px; border: 0; }
         QTableWidget::item:selected { background: $accent; color: #ffffff; }
+        #CollectionTable { border: 1px solid $border; border-radius: 10px; }
+        #CollectionTable QHeaderView::section {
+            background: $panel2; color: $text; padding: 11px 10px; border: 0;
+            font-size: 13px; font-weight: 800;
+        }
+        #CollectionTitle { background: transparent; color: $text; font-size: 13px; font-weight: 700; }
+        #CollectionText { background: transparent; color: $muted; font-size: 13px; }
+        #CollectionPrice { background: transparent; color: #ef6461; font-size: 15px; font-weight: 900; }
+        #CollectionLink { background: transparent; color: $accent; font-size: 12px; }
+        #CollectionReference { background: transparent; color: $muted; font-size: 12px; }
+        #CollectionAction { min-height: 28px; padding: 5px 10px; font-size: 12px; }
         QHeaderView::section {
             background: $panel2; color: $text; padding: 9px; border: 0;
             font-weight: 700;
@@ -4080,21 +5316,21 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             background: $sidebar; border-bottom: 1px solid $border;
         }
         #BrandTitle {
-            background: transparent; color: $text; font-size: 15px; font-weight: 900;
+            background: transparent; color: $text; font-size: 16px; font-weight: 900;
         }
         #BrandSub {
             background: transparent; color: $muted; font-size: 11px; letter-spacing: 0px;
         }
         #SideNav {
-            background: $sidebar; color: $muted; border: 0; padding: 14px;
+            background: $sidebar; color: $muted; border: 0; padding: 16px 10px;
             outline: 0; font-family: "Microsoft YaHei UI"; font-size: 14px; font-weight: 500;
         }
         #SideNav::item {
-            height: 44px; border-radius: 9px; margin: 4px 8px; padding-left: 12px;
-            font-family: "Microsoft YaHei UI"; font-size: 14px; font-weight: 500;
+            height: 50px; border-radius: 8px; margin: 5px 0; padding-left: 10px;
+            font-family: "Microsoft YaHei UI"; font-size: 14px; font-weight: 700; text-align: center;
         }
         #SideNav::item:hover { background: $panel2; color: $text; }
-        #SideNav::item:selected { background: $tag; color: $tag_text; }
+        #SideNav::item:selected { background: rgba(21, 152, 120, 38); color: #17846e; }
         #UserBox {
             background: $panel2; border: 1px solid $border; border-radius: 12px;
             margin: 10px 12px 14px 12px;
@@ -4124,11 +5360,11 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #IconButton:hover { background: $accent; color: #ffffff; }
         #Page { background: $bg; }
         #StudioHeader { background: transparent; }
-        #StudioTitle { background: transparent; color: $text; font-size: 28px; font-weight: 900; }
+        #StudioTitle { background: transparent; color: $text; font-size: 26px; font-weight: 900; }
         #StudioChat, #StudioReport {
-            background: $panel; border: 1px solid $border; border-radius: 14px;
+            background: $panel; border: 1px solid $border; border-radius: 12px;
         }
-        #StudioChat { background: $hero; }
+        #StudioChat { background: $hero; border-color: #d9eee7; }
         #LibraryAttributes {
             background: $panel; border: 1px solid $border; border-radius: 12px;
         }
@@ -4136,8 +5372,14 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             background: $panel2; border: 1px solid $border; border-radius: 7px;
         }
         #LibraryAttributeCard:hover { border-color: $accent; background: $tag; }
-        #LibraryAttributeName { background: transparent; color: $text; font-size: 11px; font-weight: 700; }
+        #LibraryAttributeName { background: transparent; color: $text; font-size: 13px; font-weight: 800; }
         #LibraryAttributeValue { background: transparent; color: $accent; font-size: 11px; font-weight: 900; }
+        #StudioReportIcon { background: $tag; color: $accent; border-radius: 14px; font-size: 14px; font-weight: 900; }
+        #StudioReportPrice { background: transparent; color: #ef6461; font-size: 18px; font-weight: 900; }
+        #StudioDimensionTable { background: $panel; border: 1px solid $border; border-radius: 9px; }
+        #StudioDimensionRow { background: transparent; border-bottom: 1px solid $border; }
+        #StudioDimensionRow:last-child { border-bottom: 0; }
+        #StudioDimensionIcon { background: $tag; color: $accent; border-radius: 14px; font-size: 14px; font-weight: 900; }
         #StudioTutorial {
             background: $panel; color: $muted; border: 1px solid $border;
             border-radius: 8px; padding: 8px 12px; font-size: 11px; font-weight: 700;
@@ -4151,6 +5393,9 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             padding: 10px 12px; color: $text; font-size: 12px;
         }
         #StudioChat QLineEdit:focus { border: 1px solid #4e75f6; }
+        #StudioPromptFrame { background: $panel; border: 1px solid $border; border-radius: 10px; }
+        #StudioPromptFrame:focus-within { border: 1px solid #16a085; }
+        #StudioPromptEditor { background: transparent; color: $text; border: 0; padding: 10px 12px 48px 12px; font-size: 13px; }
         #StudioBubbleUser, #StudioBubbleAi {
             border-radius: 8px; border: 1px solid $border;
         }
@@ -4159,17 +5404,30 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #StudioBubbleText { background: transparent; color: $text; font-size: 12px; }
         #StudioPanelTitle { background: transparent; color: $text; font-size: 15px; font-weight: 900; }
         #StudioDot { background: transparent; color: #16a085; font-size: 16px; }
+        #StudioPromptTitle { background: transparent; color: $text; font-size: 16px; font-weight: 800; }
+        #StudioPromptHint { background: transparent; color: $muted; font-size: 13px; }
+        #StudioModeCombo { min-width: 108px; min-height: 38px; padding: 0 24px 0 12px; color: $text; background: $panel; border: 1px solid $border; border-radius: 8px; }
+        #StudioAnalyze { background: #16a085; color: #ffffff; border: 0; border-radius: 8px; min-width: 122px; min-height: 38px; font-weight: 800; }
+        #StudioAnalyze:hover { background: #12866f; }
         #StudioPrimary {
-            background: #ff6b6b; color: #ffffff; border: 0; border-radius: 8px;
+            background: $accent; color: #ffffff; border: 0; border-radius: 8px;
             min-width: 112px; min-height: 38px; font-weight: 800;
         }
-        #StudioPrimary:hover { background: #f05252; }
+        #StudioPrimary:hover { background: $accent_hover; }
         #StudioSecondaryAction {
             background: $panel; color: $text; border: 1px solid $border;
             border-radius: 8px; min-height: 38px; font-weight: 800;
         }
         #StudioSecondaryAction:hover { color: $accent; border-color: $accent; }
         #StudioSecondaryAction:disabled, #StudioPrimary:disabled { color: $muted; background: $metric; }
+        #RankFilterLabel { background: transparent; color: $text; font-size: 14px; font-weight: 700; padding-left: 2px; }
+        #RankFilterPanel { background: transparent; border-bottom: 1px solid $border; }
+        #RankFilterDate { background: $panel; color: $text; border: 1px solid $border; border-radius: 17px; padding: 7px 12px; font-size: 13px; font-weight: 700; }
+        #RankFilterOption { background: transparent; color: $muted; border: 0; border-radius: 16px; padding: 7px 12px; min-height: 30px; font-size: 13px; }
+        #RankFilterOption:hover { color: $accent; background: $tag; }
+        #RankFilterOption:checked { color: #ffffff; background: $accent; font-weight: 800; }
+        #RankFilterViewButton { background: $tag; color: $accent; border: 1px solid $border; border-radius: 8px; min-height: 32px; font-weight: 800; }
+        #RankFilterViewButton:hover { background: $accent; color: #ffffff; }
         #StudioChip {
             background: $panel; color: $muted; border: 1px solid $border;
             border-radius: 14px; padding: 5px 12px; font-size: 11px;
@@ -4204,7 +5462,7 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #StudioCompactPrice { background: transparent; color: #ef6461; font-size: 13px; font-weight: 900; }
         #StudioCompactMuted { background: transparent; color: $muted; font-size: 9px; }
         #StudioNewCard {
-            background: $panel; border: 1px solid $border; border-radius: 10px;
+            background: $panel; border: 1px solid $border; border-radius: 9px;
         }
         #StudioNewCard:hover { border: 1px solid $accent; }
         #StudioNewName { background: transparent; color: $text; font-size: 12px; font-weight: 800; }
@@ -4224,6 +5482,7 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             background: $panel; border: 1px solid $border; border-radius: 14px;
         }
         #PageTitle { background: transparent; font-size: 28px; font-weight: 900; color: $text; }
+        #DerivedDialogTitle { background: transparent; font-size: 22px; font-weight: 800; color: $text; }
         #Toolbar {
             background: $panel; border: 1px solid $border; border-radius: 12px;
         }
@@ -4266,6 +5525,22 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #PrimaryAction {
             background: $accent; min-width: 130px;
         }
+        #SecondaryAction {
+            background: $panel; color: $accent; border: 1px solid $accent;
+            min-width: 130px;
+        }
+        #SecondaryAction:hover { background: $tag; }
+        #ProductDeriveView {
+            background: #4e75f6; min-width: 130px;
+        }
+        #ProductDeriveView:hover { background: #3d62d7; }
+        #ProductDeriveAvailable {
+            background: $accent; min-width: 130px;
+        }
+        #ProductDeriveAvailable:hover { background: $accent_hover; }
+        #ProductDeriveDisabled {
+            background: $metric; color: $muted; border: 1px solid $border; min-width: 130px;
+        }
         #ChatResult {
             background: $metric; border: 1px solid $border; color: $text;
         }
@@ -4283,7 +5558,7 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #CarouselNext:hover { background: $accent; color: #ffffff; }
         #ProductGridWrap { background: $bg; }
         #ProductCard, #TeacherProductCard, #CompactProductCard {
-            background: $panel2; border: 1px solid $border; border-radius: 14px;
+            background: $panel; border: 1px solid $border; border-radius: 10px;
         }
         #ProductCard:hover, #TeacherProductCard:hover, #CompactProductCard:hover { border: 1px solid $accent; }
         #ProductImage, #TeacherProductImage { background: transparent; border-radius: 0; }
@@ -4335,10 +5610,14 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(icon_path("10_TK跨境助手.ico")))
+    text_selection_filter = TextSelectionFilter(app)
+    app.installEventFilter(text_selection_filter)
+    app.setWindowIcon(QIcon(icon_path("tk_brand.png")))
     apply_style(app)
     gateway = DataGateway()
     window = MainWindow(gateway)
+    for label in window.findChildren(QLabel):
+        enable_label_selection(label)
     window.showMaximized()
     return app.exec()
 

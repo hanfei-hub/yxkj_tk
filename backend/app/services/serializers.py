@@ -15,6 +15,7 @@ from app.models.entities import (
     SelectionAttribute,
     TeacherReviewRecord,
     ThirdPartyConfig,
+    SystemSetting,
     User,
 )
 
@@ -48,7 +49,6 @@ def model_config_to_dict(item: ModelConfig) -> dict[str, Any]:
         "model_name": item.model_name,
         "temperature": item.temperature,
         "max_tokens": item.max_tokens,
-        "is_default": item.is_default,
         "status": item.status,
         "remark": item.remark,
     }
@@ -91,6 +91,8 @@ def product_to_dict(item: FmProduct) -> dict[str, Any]:
         "id": item.id,
         "family_id": item.family_id,
         "fm_product_id": item.fm_product_id,
+        "region": item.region,
+        "list_type": item.list_type,
         "title": item.title,
         "image_url": item.image_url,
         "price": item.price,
@@ -139,6 +141,8 @@ def derived_to_dict(item: DerivedProductRecommendation) -> dict[str, Any]:
         "ai_score": item.ai_score,
         "weighted_score": item.weighted_score,
         "supplier_search_status": item.supplier_search_status,
+        "supplier_next_page": item.supplier_next_page,
+        "supplier_searched_count": item.supplier_searched_count,
         "supplier_product_id": item.supplier_product_id,
         "supplier_title": item.supplier_title,
         "supplier_image_url": item.supplier_image_url,
@@ -170,11 +174,32 @@ def daily_to_dict(item: DailyRecommendation) -> dict[str, Any]:
     }
 
 
+def system_setting_to_dict(item: SystemSetting) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "setting_key": item.setting_key,
+        "setting_name": item.setting_name,
+        "setting_value": item.setting_value,
+        "description": item.description,
+        "value_type": item.value_type,
+        "min_value": item.min_value,
+        "max_value": item.max_value,
+    }
+
+
 def favorite_to_dict(item: FavoriteProduct) -> dict[str, Any]:
     try:
         snapshot = json.loads(item.product_snapshot or "{}")
     except (TypeError, ValueError):
         snapshot = {}
+    supplier_source_url = str(
+        snapshot.get("supplier_source_url")
+        or snapshot.get("source_url")
+        or snapshot.get("detail_url")
+        or ""
+    )
+    if not supplier_source_url and snapshot.get("supplier_product_id"):
+        supplier_source_url = f"https://detail.1688.com/offer/{snapshot['supplier_product_id']}.html"
     snapshot.update(
         {
             "title": item.title,
@@ -196,6 +221,7 @@ def favorite_to_dict(item: FavoriteProduct) -> dict[str, Any]:
         "category": item.category,
         "recommendation_reason": item.recommendation_reason,
         "analysis_report": item.analysis_report,
+        "supplier_source_url": supplier_source_url,
         "product_snapshot": snapshot,
         "created_at": fmt_dt(item.created_at),
     }

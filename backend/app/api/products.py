@@ -7,38 +7,85 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import require_role
 from app.core.database import get_db
-from app.models.entities import DailyRecommendation, FastMossSyncLog, FmProduct
+from app.models.entities import DailyRecommendation, DerivedProductRecommendation, FastMossSyncLog, FmProduct
 from app.services.fastmoss_service import (
     FastMossError,
     get_fastmoss_config,
-    request_new_listed,
-    upsert_new_listed_products,
+    request_rank,
+    upsert_rank_products,
 )
-from app.services.selection_derivation_service import generate_derivatives_for_product_ids
 from app.services.execution_log_service import create_task, elapsed_ms, finish_task, start_timer
-from app.services.serializers import daily_to_dict, fastmoss_sync_log_to_dict, product_to_dict
+from app.services.serializers import daily_to_dict, derived_to_dict, fastmoss_sync_log_to_dict, product_to_dict
+from app.services.system_settings_service import get_setting_int
 
 router = APIRouter(prefix="/api", tags=["products"])
 
 
+@router.get("/derived-recommendations", dependencies=[Depends(require_role("student", "admin", "teacher"))])
+def derived_recommendations(limit: int = Query(12, ge=1, le=50), db: Session = Depends(get_db)):
+    items = db.scalars(
+        select(DerivedProductRecommendation)
+        .options(selectinload(DerivedProductRecommendation.source_product))
+        .where(DerivedProductRecommendation.review_status != "rejected")
+        .order_by(func.rand())
+        .limit(limit)
+    ).all()
+    result = []
+    for item in items:
+        row = derived_to_dict(item)
+        row.update(
+            {
+                "title": item.derived_title,
+                # 1688 尚未匹配完成时，先用原商品图作为可视化回退，匹配成功后优先使用供应商首图。
+                "image_url": item.supplier_image_url or (item.source_product.image_url if item.source_product else "") or "",
+                "price": item.supplier_price or item.suggested_price_min or 0,
+                "sales_count": item.supplier_sales_count or 0,
+                "reference_image_url": item.source_product.image_url if item.source_product else "",
+                "region": item.source_product.region if item.source_product else "JP",
+                "category": item.source_product.category if item.source_product else "",
+            }
+        )
+        result.append(row)
+    return result
+
+CATEGORY_FILTERS = {
+    "美妆个护": "Beauty & Personal Care", "女装与女士内衣": "Womenswear & Underwear", "保健": "Health",
+    "时尚配件": "Fashion Accessories", "运动与户外": "Sports & Outdoor", "手机与数码": "Phones & Electronics",
+    "居家日用": "Home Supplies", "食品饮料": "Food & Beverage", "汽车与摩托车": "Automotive & Motorcycle",
+    "男装与男士内衣": "Menswear & Underwear", "收藏品": "Collectibles", "玩具和爱好": "Toys & Hobbies",
+}
+
+
+def product_filters(region: str, list_type: str, category: str, start_date: str = "", end_date: str = ""):
+    conditions = [FmProduct.platform == "TikTok", FmProduct.list_type == list_type.lower()]
+    if region.upper() != "ALL":
+        conditions.append(FmProduct.region == region.upper())
+    if category and category != "全部":
+        conditions.append(FmProduct.category.ilike(f"%{CATEGORY_FILTERS.get(category, category)}%"))
+    if start_date:
+        conditions.append(FmProduct.data_date >= start_date)
+    if end_date:
+        conditions.append(FmProduct.data_date <= end_date)
+    return conditions
+
+
 @router.get("/products/hot", dependencies=[Depends(require_role("admin", "teacher", "student"))])
-def hot_products(db: Session = Depends(get_db)):
+def hot_products(region: str = Query("JP"), list_type: str = Query("new"), category: str = Query("全部"), start_date: str = Query(""), end_date: str = Query(""), db: Session = Depends(get_db)):
     products = db.scalars(
         select(FmProduct)
         .options(selectinload(FmProduct.derived_products))
-        .where(FmProduct.platform == "TikTok", FmProduct.list_type == "new")
+        .where(*product_filters(region, list_type, category, start_date, end_date))
         .order_by(FmProduct.rank_no, FmProduct.id)
     ).all()
     return [product_to_dict(item) for item in products]
 
 
-@router.get("/daily-recommendations", dependencies=[Depends(require_role("student", "admin"))])
-def daily_recommendations(db: Session = Depends(get_db)):
+@router.get("/daily-recommendations", dependencies=[Depends(require_role("student", "admin", "teacher"))])
+def daily_recommendations(region: str = Query("JP"), list_type: str = Query("new"), category: str = Query("全部"), start_date: str = Query(""), end_date: str = Query(""), db: Session = Depends(get_db)):
     products = db.scalars(
         select(FmProduct)
-        .where(FmProduct.platform == "TikTok", FmProduct.list_type == "new")
+        .where(*product_filters(region, list_type, category, start_date, end_date))
         .order_by(FmProduct.rank_no, FmProduct.id)
-        .limit(10)
     ).all()
     if products:
         return [
@@ -51,12 +98,17 @@ def daily_recommendations(db: Session = Depends(get_db)):
                 "image_url": item.image_url,
                 "price": item.price,
                 "sales_count": item.sales_count,
+                "category": item.category,
+                "region": item.region,
+                "list_type": item.list_type,
                 "reason_summary": "FastMoss 日本新品榜：跨境商品=是，全托管商品=否。",
                 "sort_order": index,
             }
             for index, item in enumerate(products, start=1)
         ]
-    items = db.scalars(select(DailyRecommendation).order_by(DailyRecommendation.sort_order).limit(10)).all()
+    if region.upper() != "JP" or list_type.lower() != "new" or category != "全部" or start_date or end_date:
+        return []
+    items = db.scalars(select(DailyRecommendation).order_by(DailyRecommendation.sort_order)).all()
     return [daily_to_dict(item) for item in items]
 
 
@@ -99,9 +151,12 @@ def create_sync_log(
 def sync_fastmoss_products(
     background_tasks: BackgroundTasks,
     page: int = Query(1, ge=1),
-    pagesize: int = Query(20, ge=1, le=100),
+    pagesize: int | None = Query(None, ge=1, le=100),
+    region: str = Query("JP"),
+    list_type: str = Query("new"),
     db: Session = Depends(get_db),
 ):
+    pagesize = pagesize or get_setting_int(db, "fastmoss_page_size")
     started_at = datetime.utcnow()
     timer = start_timer()
     task = create_task(
@@ -110,7 +165,7 @@ def sync_fastmoss_products(
         task_name="FastMoss新品榜同步",
         trigger_source="api",
         total_count=pagesize,
-        input_snapshot={"page": page, "pagesize": pagesize},
+        input_snapshot={"page": page, "pagesize": pagesize, "region": region.upper(), "list_type": list_type.lower()},
     )
     raw: dict = {}
     stats = {
@@ -121,10 +176,11 @@ def sync_fastmoss_products(
     }
     try:
         config = get_fastmoss_config(db)
-        raw = request_new_listed(config, page=page, page_size=pagesize)
-        stats = upsert_new_listed_products(db, raw, task_id=task.id)
+        raw = request_rank(config, region=region, list_type=list_type, page=page, page_size=pagesize)
+        stats = upsert_rank_products(db, raw, region=region, list_type=list_type)
         request_date = str(raw.get("request", {}).get("filter", {}).get("date_info", {}).get("value", ""))
-        if stats.get("synced_count", 0):
+        # FastMoss sync is raw ingestion only. Translation/family/derivation starts from a product click.
+        if False and stats.get("synced_count", 0):
             synced_product_ids = list(
                 db.scalars(
                 select(FmProduct.id)

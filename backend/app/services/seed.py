@@ -8,6 +8,7 @@ from app.core.security import hash_password
 from app.models.entities import ModelConfig, SelectionAttribute, ThirdPartyConfig, User
 from app.services.product_family_service import DIMENSIONS, INITIAL_WEIGHT
 from app.services.selection_derivation_service import ensure_selection_prompt
+from app.services.system_settings_service import ensure_system_settings
 
 
 def init_db() -> None:
@@ -18,6 +19,7 @@ def init_db() -> None:
     db = SessionLocal()
     try:
         ensure_dimension_attributes(db)
+        ensure_system_settings(db)
         seed_all(db)
         ensure_selection_prompt(db)
         db.commit()
@@ -42,6 +44,8 @@ def ensure_runtime_schema() -> None:
         "supplier_source_url": "TEXT",
         "supplier_match_score": "FLOAT",
         "supplier_match_report": "TEXT",
+        "supplier_next_page": "INTEGER DEFAULT 1",
+        "supplier_searched_count": "INTEGER DEFAULT 0",
         "supplier_raw_data": "TEXT",
     }
     fm_columns = {
@@ -52,6 +56,20 @@ def ensure_runtime_schema() -> None:
     }
     user_columns = {
         "credit_balance": "INTEGER DEFAULT 0",
+    }
+    search_result_columns = {
+        "supplier_search_status": "VARCHAR(32) DEFAULT 'not_searched'",
+        "supplier_next_page": "INTEGER DEFAULT 1",
+        "supplier_searched_count": "INTEGER DEFAULT 0",
+        "supplier_product_id": "VARCHAR(128) DEFAULT ''",
+        "supplier_title": "VARCHAR(512) DEFAULT ''",
+        "supplier_image_url": "TEXT",
+        "supplier_price": "FLOAT NULL",
+        "supplier_sales_count": "INTEGER DEFAULT 0",
+        "supplier_shop_name": "VARCHAR(255) DEFAULT ''",
+        "supplier_source_url": "TEXT",
+        "supplier_match_score": "FLOAT NULL",
+        "supplier_match_report": "TEXT",
     }
     with engine.begin() as conn:
         dialect = engine.dialect.name
@@ -84,6 +102,36 @@ def ensure_runtime_schema() -> None:
                 ).first()
                 if not exists:
                     conn.execute(text(f"ALTER TABLE users ADD COLUMN {column} {definition}"))
+            for column, definition in search_result_columns.items():
+                exists = conn.execute(
+                    text("SHOW COLUMNS FROM user_search_recommendations LIKE :column"),
+                    {"column": column},
+                ).first()
+                if not exists:
+                    conn.execute(text(f"ALTER TABLE user_search_recommendations ADD COLUMN {column} {definition}"))
+        elif dialect == "sqlite":
+            # Keep existing server deployments bootable while their SQLite data is
+            # being migrated to MySQL. SQLite has no SHOW COLUMNS equivalent.
+            tables = {
+                "derived_product_recommendations": derived_columns,
+                "fm_products": fm_columns,
+                "model_configs": model_columns,
+                "users": user_columns,
+                "user_search_recommendations": search_result_columns,
+            }
+            for table, columns in tables.items():
+                existing = {
+                    row[1]
+                    for row in conn.execute(text(f"PRAGMA table_info({table})"))
+                }
+                for column, definition in columns.items():
+                    if column not in existing:
+                        conn.execute(
+                            text(
+                                f"ALTER TABLE {table} "
+                                f"ADD COLUMN {column} {definition}"
+                            )
+                        )
         else:
             raise RuntimeError(f"Unsupported database dialect: {dialect}")
 

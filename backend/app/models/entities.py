@@ -59,6 +59,19 @@ class ThirdPartyConfig(Base, TimestampMixin):
     remark: Mapped[str] = mapped_column(Text, default="")
 
 
+class SystemSetting(Base, TimestampMixin):
+    __tablename__ = "system_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    setting_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    setting_value: Mapped[str] = mapped_column(String(255), default="")
+    setting_name: Mapped[str] = mapped_column(String(128), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    value_type: Mapped[str] = mapped_column(String(32), default="int")
+    min_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
 class SelectionAttribute(Base, TimestampMixin):
     __tablename__ = "selection_attributes"
 
@@ -176,6 +189,8 @@ class DerivedProductRecommendation(Base, TimestampMixin):
     ai_score: Mapped[float] = mapped_column(Float, default=0)
     weighted_score: Mapped[float] = mapped_column(Float, default=0)
     supplier_search_status: Mapped[str] = mapped_column(String(32), default="not_searched")
+    supplier_next_page: Mapped[int] = mapped_column(Integer, default=1)
+    supplier_searched_count: Mapped[int] = mapped_column(Integer, default=0)
     supplier_product_id: Mapped[str] = mapped_column(String(128), default="")
     supplier_title: Mapped[str] = mapped_column(String(512), default="")
     supplier_image_url: Mapped[str] = mapped_column(Text, default="")
@@ -311,6 +326,18 @@ class UserSearchRecommendation(Base):
     sales_count: Mapped[int] = mapped_column(Integer, default=0)
     reason_summary: Mapped[str] = mapped_column(Text, default="")
     analysis_report: Mapped[str] = mapped_column(Text, default="{}")
+    supplier_search_status: Mapped[str] = mapped_column(String(32), default="not_searched")
+    supplier_next_page: Mapped[int] = mapped_column(Integer, default=1)
+    supplier_searched_count: Mapped[int] = mapped_column(Integer, default=0)
+    supplier_product_id: Mapped[str] = mapped_column(String(128), default="")
+    supplier_title: Mapped[str] = mapped_column(String(512), default="")
+    supplier_image_url: Mapped[str] = mapped_column(Text, default="")
+    supplier_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    supplier_sales_count: Mapped[int] = mapped_column(Integer, default=0)
+    supplier_shop_name: Mapped[str] = mapped_column(String(255), default="")
+    supplier_source_url: Mapped[str] = mapped_column(Text, default="")
+    supplier_match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    supplier_match_report: Mapped[str] = mapped_column(Text, default="")
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

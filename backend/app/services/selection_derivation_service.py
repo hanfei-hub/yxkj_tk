@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -15,14 +16,15 @@ from app.models.entities import (
     TaskExecution,
 )
 from app.services.ai_model_service import (
-    MODEL_TYPE_PRODUCT_VISION,
+    MODEL_TYPE_GENERAL,
     ModelCallError,
     chat_completion,
     extract_json_object,
     get_model_config,
 )
-from app.services.product_family_service import save_dimension_reports, weights_for_prompt
+from app.services.product_family_service import active_dimensions, save_dimension_reports, weights_for_prompt
 from app.services.execution_log_service import create_task, elapsed_ms, finish_task, start_timer
+from app.services.system_settings_service import get_setting_int
 
 
 PROMPT_CODE = "fastmoss_jp_derivation_v1"
@@ -40,15 +42,8 @@ https://support.oceanengine.com/support/content/189021?mappingType=2&spaceId=235
 [维度权重信息]
 
 2. 输出的业务结果：
-八个维度完整分析报告，每个维度包含【判定等级】+【客观分析内容】。
-维度1：使用场景
-维度2：商品周期性
-维度3：目标群体
-维度4：短视频流量种草适配能力
-维度5：日本市场偏好
-维度6：是否属于新奇特商品
-维度7：复购属性
-维度8：竞品属性
+根据当前启用的维度列表输出完整分析报告，每个维度包含【判定等级】+【客观分析内容】。
+[维度列表]
 
 补充要求：
 1. 每个原商品必须输出10个相关衍生品方向。
@@ -86,26 +81,26 @@ OUTPUT_SCHEMA = {
         }
     ]
 }
+
+
+def build_output_schema(db: Session) -> dict[str, Any]:
+    schema = json.loads(json.dumps(OUTPUT_SCHEMA, ensure_ascii=False))
+    schema["items"][0]["analysis_report"] = {
+        code: {
+            "dimension_name": name,
+            "rating_level": "",
+            "analysis_content": "",
+        }
+        for code, name in active_dimensions(db)
+    }
+    return schema
+
+
 def ensure_selection_prompt(db: Session) -> AiPromptTemplate:
     item = db.scalar(select(AiPromptTemplate).where(AiPromptTemplate.prompt_code == PROMPT_CODE))
-    schema_text = json.dumps(OUTPUT_SCHEMA, ensure_ascii=False)
     if item:
-        item.prompt_name = "FastMoss 日本站衍生选品分析"
-        item.prompt_content = PROMPT_CONTENT
-        item.output_schema = schema_text
-        item.status = 1
         return item
-    item = AiPromptTemplate(
-        prompt_code=PROMPT_CODE,
-        prompt_name="FastMoss 日本站衍生选品分析",
-        prompt_content=PROMPT_CONTENT,
-        output_schema=schema_text,
-        status=1,
-        remark="FastMoss 商品入库后，按商品分族权重生成 10 个中文衍生品，并沉淀 8 维度分析报告。",
-    )
-    db.add(item)
-    db.flush()
-    return item
+    raise RuntimeError(f"未找到启用的选品提示词：{PROMPT_CODE}")
 
 
 def product_payload(products: list[FmProduct]) -> list[dict[str, Any]]:
@@ -124,6 +119,13 @@ def format_weight_prompt(weights: dict[str, str]) -> str:
     for name, percent in weights.items():
         lines.append(f"{name}：{percent}")
     return "\n".join(lines)
+
+
+def format_dimension_prompt(db: Session) -> str:
+    return "\n".join(
+        f"维度{index}：{name}（字段：{code}）"
+        for index, (code, name) in enumerate(active_dimensions(db), start=1)
+    )
 
 
 def normalize_items(raw: Any, product_ids: set[int]) -> list[dict[str, Any]]:
@@ -148,21 +150,21 @@ def normalize_items(raw: Any, product_ids: set[int]) -> list[dict[str, Any]]:
     return items
 
 
-def build_derivation_prompt(db: Session, products: list[FmProduct], prompt_template: AiPromptTemplate) -> str:
+def build_derivation_prompt(db: Session, products: list[FmProduct], prompt_template: AiPromptTemplate, derivative_count: int) -> str:
     current_product = products[0] if products else None
     weight_info = weights_for_prompt(db, current_product.family_id if current_product else None)
     prompt_content = prompt_template.prompt_content.replace(
         "[维度权重信息]",
         format_weight_prompt(weight_info),
-    )
+    ).replace("[维度列表]", format_dimension_prompt(db)).replace("10个", f"{derivative_count}个")
     return (
         f"{prompt_content}\n\n"
         f"输出 JSON 结构必须严格等于：{prompt_template.output_schema}\n\n"
         "请只基于下面传入的商品名称、商品图片URL和维度权重信息，"
-        "为每个 source_product_id 输出 10 个最值得进一步找货的中文衍生品方向。\n"
+        f"为每个 source_product_id 输出 {derivative_count} 个最值得进一步找货的中文衍生品方向。\n"
         "维度权重越高，表示老师历史审核越认可；维度权重越低，表示更容易被拒绝。"
         "生成衍生品时请有意识偏向高权重维度，并谨慎处理低权重维度。\n"
-        "每个衍生品必须包含完整 8 维度 analysis_report，并补充 source_search_keywords 和 match_tags，"
+        "每个衍生品必须包含当前维度列表的完整 analysis_report，并补充 source_search_keywords 和 match_tags，"
         "用于后续 1688/API 找货匹配。\n"
         f"商品名称和图片：{json.dumps(product_payload(products), ensure_ascii=False)}"
     )
@@ -171,10 +173,12 @@ def generate_derivatives_for_products(db: Session, products: list[FmProduct], ta
     if not products:
         return {"model_used": False, "generated_count": 0, "error": ""}
     prompt_template = ensure_selection_prompt(db)
-    model_config = get_model_config(db, MODEL_TYPE_PRODUCT_VISION)
+    derivative_count = get_setting_int(db, "derivatives_per_product")
+    model_config = get_model_config(db, MODEL_TYPE_GENERAL)
     if not model_config:
         return {"model_used": False, "generated_count": 0, "error": "no_model_config"}
 
+    answer = ""
     try:
         answer = chat_completion(
             db,
@@ -183,14 +187,22 @@ def generate_derivatives_for_products(db: Session, products: list[FmProduct], ta
                     "role": "system",
                     "content": "你是 TikTok 日本站跨境专业选品分析师。只输出合法 JSON，所有字段内容必须使用简体中文。",
                 },
-                {"role": "user", "content": build_derivation_prompt(db, products, prompt_template)},
+                {"role": "user", "content": build_derivation_prompt(db, products, prompt_template, derivative_count)},
             ],
-            model_type=MODEL_TYPE_PRODUCT_VISION,
+            model_type=MODEL_TYPE_GENERAL,
             task_id=task_id,
             temperature=0.2,
             max_tokens=12000,
         )
-        items = normalize_items(extract_json_object(answer), {item.id for item in products})
+        try:
+            parsed = extract_json_object(answer)
+        except ModelCallError as exc:
+            return {
+                "model_used": True,
+                "generated_count": 0,
+                "error": f"json_parse_failed: {exc}; response_tail={answer[-800:]}",
+            }
+        items = normalize_items(parsed, {item.id for item in products})
     except ModelCallError as exc:
         return {"model_used": True, "generated_count": 0, "error": str(exc)}
 
@@ -241,6 +253,8 @@ def generate_derivatives_for_products(db: Session, products: list[FmProduct], ta
             ai_score=float(item.get("ai_score") or 0),
             weighted_score=float(item.get("weighted_score") or item.get("ai_score") or 0),
             supplier_search_status="not_searched",
+            supplier_next_page=1,
+            supplier_searched_count=0,
             review_status="pending",
         )
         db.add(derived)
@@ -266,17 +280,42 @@ def generate_derivatives_for_product_ids(product_ids: list[int], task_id: int | 
                 total_count=len(product_ids),
                 input_snapshot={"product_ids": product_ids},
             )
-        task_result_id = task.id
+        task_result_id = int(task.id)
+        shared_task_id = task_result_id
         started = start_timer()
-        for product_id in product_ids:
-            product = db.get(FmProduct, product_id)
-            if not product:
-                errors.append(f"{product_id}: product_not_found")
-                continue
-            result = generate_derivatives_for_products(db, [product], task_id=task.id)
-            total_generated += int(result.get("generated_count") or 0)
-            if result.get("error"):
-                errors.append(f"{product_id}: {result['error']}")
+        def process_one(product_id: int) -> dict[str, Any]:
+            with SessionLocal() as worker_db:
+                product = worker_db.get(FmProduct, product_id)
+                if not product:
+                    return {"product_id": product_id, "generated_count": 0, "error": "product_not_found"}
+                result = generate_derivatives_for_products(worker_db, [product], task_id=shared_task_id)
+                return {
+                    "product_id": product_id,
+                    "generated_count": int(result.get("generated_count") or 0),
+                    "error": str(result.get("error") or ""),
+                }
+
+        # Ten source products are processed concurrently as one batch. Each
+        # worker owns its DB session, while chat_completion distributes calls
+        # across all active models of the requested type.
+        for batch_start in range(0, len(product_ids), 10):
+            batch = product_ids[batch_start : batch_start + 10]
+            with ThreadPoolExecutor(max_workers=len(batch), thread_name_prefix="derive") as executor:
+                futures = [executor.submit(process_one, product_id) for product_id in batch]
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = {"product_id": 0, "generated_count": 0, "error": str(exc)}
+                    total_generated += result["generated_count"]
+                    if result["error"]:
+                        errors.append(f"{result['product_id']}: {result['error']}")
+            # Persist visible progress after every ten-product batch.
+            db.expire_all()
+            task.processed_count = min(batch_start + len(batch), len(product_ids))
+            task.success_count = task.processed_count - len(errors)
+            task.failed_count = len(errors)
+            db.commit()
         finish_task(
             db,
             task,
