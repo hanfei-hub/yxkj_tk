@@ -4,7 +4,7 @@ root = fso.GetParentFolderName(WScript.ScriptFullName)
 shell.CurrentDirectory = root & "\desktop"
 apiBase = shell.Environment("USER")("TK_SELECTION_API_BASE_URL")
 If apiBase = "" Then
-    shell.Environment("PROCESS")("TK_SELECTION_API_BASE_URL") = "http://127.0.0.1:8000"
+    shell.Environment("PROCESS")("TK_SELECTION_API_BASE_URL") = "http://120.26.207.89"
 Else
     shell.Environment("PROCESS")("TK_SELECTION_API_BASE_URL") = apiBase
 End If

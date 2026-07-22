@@ -19,6 +19,7 @@ def init_db() -> None:
     try:
         ensure_dimension_attributes(db)
         seed_all(db)
+        ensure_ark_third_party_config(db)
         ensure_selection_prompt(db)
         db.commit()
     finally:
@@ -53,6 +54,31 @@ def ensure_runtime_schema() -> None:
     user_columns = {
         "credit_balance": "INTEGER DEFAULT 0",
     }
+    video_project_columns = {
+        "result_video_url": "TEXT",
+    }
+    video_asset_columns = {
+        "public_url": "TEXT",
+    }
+    video_frame_columns = {
+        "sort_order": "INTEGER DEFAULT 0",
+        "timeline": "VARCHAR(64)",
+        "shot_type": "VARCHAR(128)",
+        "visual_cn": "TEXT",
+        "atmosphere_cn": "TEXT",
+    }
+    video_task_columns = {
+        "generation_mode": "VARCHAR(32) DEFAULT 'text_to_video'",
+        "request_payload": "TEXT",
+        "response_payload": "TEXT",
+        "video_url": "TEXT",
+        "usage_prompt_tokens": "INTEGER DEFAULT 0",
+        "usage_completion_tokens": "INTEGER DEFAULT 0",
+        "usage_total_tokens": "INTEGER DEFAULT 0",
+        "usage_cost_cny": "FLOAT DEFAULT 0",
+        "usage_note": "TEXT",
+        "usage_raw": "TEXT",
+    }
     with engine.begin() as conn:
         dialect = engine.dialect.name
         if dialect not in {"mysql", "sqlite"}:
@@ -61,6 +87,10 @@ def ensure_runtime_schema() -> None:
         ensure_columns(conn, dialect, "fm_products", fm_columns)
         ensure_columns(conn, dialect, "model_configs", model_columns)
         ensure_columns(conn, dialect, "users", user_columns)
+        ensure_columns(conn, dialect, "video_projects", video_project_columns)
+        ensure_columns(conn, dialect, "video_assets", video_asset_columns)
+        ensure_columns(conn, dialect, "video_storyboard_frames", video_frame_columns)
+        ensure_columns(conn, dialect, "video_tasks", video_task_columns)
 
 
 def ensure_columns(conn, dialect: str, table_name: str, columns: dict[str, str]) -> None:
@@ -134,6 +164,8 @@ def seed_all(db: Session) -> None:
             )
         )
 
+    return
+
     if not db.scalar(select(ModelConfig).limit(1)):
         db.add(
             ModelConfig(
@@ -147,6 +179,20 @@ def seed_all(db: Session) -> None:
                 is_default=1,
                 status=1,
                 remark="占位配置，可在模型配置页面替换为真实模型。",
+            )
+        )
+
+
+def ensure_ark_third_party_config(db: Session) -> None:
+    existing = db.scalar(select(ThirdPartyConfig).where(ThirdPartyConfig.service_type == "volcengine_ark"))
+    if not existing:
+        db.add(
+            ThirdPartyConfig(
+                config_name="火山方舟 Ark",
+                service_type="volcengine_ark",
+                api_base_url="https://ark.cn-beijing.volces.com/api/v3",
+                status=0,
+                remark="统一填写火山方舟 API Key。Seedance 视频、生图分镜等 Ark 模型共用这一条配置。",
             )
         )
 

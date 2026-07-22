@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import admin, ai, auth, auto_publish, pipeline, products, selection_attributes, suppliers, teacher
+from app.api import admin, ai, auth, auto_publish, pipeline, products, selection_attributes, suppliers, teacher, video
 from app.core.database import BASE_DIR
 from app.services.seed import init_db
 
@@ -25,9 +25,13 @@ app.include_router(teacher.router)
 app.include_router(auto_publish.router)
 app.include_router(suppliers.router)
 app.include_router(pipeline.router)
+app.include_router(video.router)
 AUTO_PUBLISH_RUNTIME_DIR = BASE_DIR / "runtime" / "auto_publish"
 AUTO_PUBLISH_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static/auto_publish", StaticFiles(directory=AUTO_PUBLISH_RUNTIME_DIR), name="auto_publish")
+VIDEO_RUNTIME_DIR = BASE_DIR / "runtime" / "video_generation"
+VIDEO_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static/video_generation", StaticFiles(directory=VIDEO_RUNTIME_DIR), name="video_generation")
 
 
 @app.on_event("startup")

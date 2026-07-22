@@ -10,8 +10,10 @@ from string import Template
 from typing import Any
 
 import requests
-from PySide6.QtCore import QObject, QRunnable, QSettings, QSize, Qt, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QIcon, QPixmap
+from PySide6.QtCore import QObject, QRunnable, QSettings, QSize, Qt, QThreadPool, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPixmap
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimediaWidgets import QVideoWidget
 from PIL import Image, ImageOps
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -31,6 +34,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QStackedWidget,
     QTableWidget,
@@ -302,6 +306,35 @@ class DataGateway:
 
     def search_1688_for_derived(self, derived_id: int, page: int = 1, page_size: int = 20) -> dict[str, Any]:
         return self.client.post(f"/api/suppliers/1688/derived-products/{derived_id}/search?page={page}&page_size={page_size}")
+
+    def video_projects(self) -> list[dict[str, Any]]:
+        if not self.user:
+            return []
+        return self.client.get("/api/video/projects")
+
+    def create_video_project(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.post("/api/video/projects", payload)
+
+    def update_video_project(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.put(f"/api/video/projects/{project_id}", payload)
+
+    def upload_video_asset(self, project_id: int, file_path: str, fields: dict[str, Any]) -> dict[str, Any]:
+        return self.client.upload(f"/api/video/projects/{project_id}/assets", file_path, fields, timeout=180)
+
+    def update_video_asset(self, project_id: int, asset_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.put(f"/api/video/projects/{project_id}/assets/{asset_id}", payload)
+
+    def generate_video_script(self, project_id: int) -> dict[str, Any]:
+        return self.client.post(f"/api/video/projects/{project_id}/script/generate", timeout=240)
+
+    def save_video_script(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.put(f"/api/video/projects/{project_id}/script", payload)
+
+    def create_video_task(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.post(f"/api/video/projects/{project_id}/tasks", payload, timeout=300)
+
+    def refresh_video_task(self, project_id: int, task_id: int) -> dict[str, Any]:
+        return self.client.post(f"/api/video/projects/{project_id}/tasks/{task_id}/refresh", timeout=180)
 
 
 def make_title(text: str, subtitle: str = "") -> QWidget:
@@ -716,9 +749,10 @@ class MainWindow(QMainWindow):
         self.add_page("教师看板", self.build_page_safely(lambda: TeacherDashboardPage(self.gateway)), "02_教师看板.ico")
         self.add_page("任务看板", self.build_page_safely(lambda: PipelinePage(self.gateway)), "07_第三方API.ico")
         self.add_page("自动上架", self.build_page_safely(lambda: AutoPublishPage(self.gateway)), "10_TK跨境助手.ico")
+        self.add_page("视频生成", self.build_page_safely(lambda: VideoGenerationPage(self.gateway)), "10_TK跨境助手.ico")
         self.add_page("用户管理", self.build_page_safely(lambda: AdminUsersPage(self.gateway)), "03_用户管理.ico")
         self.add_page("模型配置", self.build_page_safely(lambda: SimpleConfigPage("模型配置", self.gateway.model_configs, ["配置名称", "服务商", "类型", "Base URL", "模型", "Key", "状态", "默认"], self.gateway, "model")), "04_模型配置.ico")
-        self.add_page("第三方 API", self.build_page_safely(lambda: SimpleConfigPage("第三方 API 配置", self.gateway.third_party_configs, ["配置名称", "服务类型", "状态"], self.gateway, "third")), "07_第三方API.ico")
+        self.add_page("第三方 API", self.build_page_safely(lambda: SimpleConfigPage("第三方 API 配置", self.gateway.third_party_configs, ["配置名称", "服务类型", "API 地址", "Key", "状态"], self.gateway, "third")), "07_第三方API.ico")
         self.add_page("选品属性", self.build_page_safely(lambda: AttributePage(self.gateway)), "08_选品属性.ico")
         self.add_page("主题皮肤", ThemePage(self.apply_theme), "05_主题皮肤.ico")
 
@@ -792,6 +826,883 @@ class Page(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(28, 26, 28, 26)
         self.layout.setSpacing(14)
+
+
+class VideoScriptSignals(QObject):
+    finished = Signal(dict)
+    failed = Signal(str)
+
+
+class VideoScriptTask(QRunnable):
+    def __init__(self, gateway: DataGateway, project_id: int, signals: VideoScriptSignals) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.project_id = project_id
+        self.signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.signals.finished.emit(self.gateway.generate_video_script(self.project_id))
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
+class VideoTaskSignals(QObject):
+    finished = Signal(dict)
+    failed = Signal(str)
+
+
+class VideoSubmitTask(QRunnable):
+    def __init__(self, gateway: DataGateway, project_id: int, payload: dict[str, Any], signals: VideoTaskSignals) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.project_id = project_id
+        self.payload = payload
+        self.signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.signals.finished.emit(self.gateway.create_video_task(self.project_id, self.payload))
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
+class VideoRefreshTask(QRunnable):
+    def __init__(self, gateway: DataGateway, project_id: int, task_id: int, signals: VideoTaskSignals) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.project_id = project_id
+        self.task_id = task_id
+        self.signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.signals.finished.emit(self.gateway.refresh_video_task(self.project_id, self.task_id))
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
+class VideoGenerationPage(Page):
+    VIDEO_STRATEGY_OPTIONS = [
+        ("自动稳妥", "auto_safe"),
+        ("静态展示：适合复杂结构/带线/带屏商品", "static_display"),
+        ("轻交互：只允许手指触摸/指向", "light_interaction"),
+        ("手持演示：适合简单小件商品", "handheld_demo"),
+        ("佩戴演示：仅适合服饰/首饰/帽子等", "wearable_demo"),
+    ]
+
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.loaded = False
+        self.current_project: dict[str, Any] | None = None
+        self.video_task_busy = False
+        self.video_refresh_busy = False
+        self.video_poll_timer = QTimer(self)
+        self.video_poll_timer.setInterval(8000)
+        self.video_poll_timer.timeout.connect(self.auto_refresh_video_task)
+        self.layout.addWidget(make_title("视频生成", "上传产品图，生成脚本，再提交视频。产品图会作为强参考。"))
+        body = QHBoxLayout()
+        self.step_nav = QListWidget()
+        self.step_nav.setObjectName("SideNav")
+        self.step_nav.setFixedWidth(190)
+        for name in ["1 产品信息", "2 产品图片", "3 视频脚本", "4 生成视频"]:
+            self.step_nav.addItem(QListWidgetItem(name))
+        self.stack = QStackedWidget()
+        self.step_nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        body.addWidget(self.step_nav)
+        body.addWidget(self.stack, 1)
+        self.layout.addLayout(body, 1)
+        self.build_info_step()
+        self.build_assets_step()
+        self.build_script_step()
+        self.build_generate_step()
+        self.step_nav.setCurrentRow(0)
+
+    def hint(self, title: str, text: str) -> QWidget:
+        box = QFrame()
+        box.setObjectName("PromptHint")
+        layout = QVBoxLayout(box)
+        title_label = QLabel(title)
+        title_label.setObjectName("CardTitle")
+        text_label = QLabel(text)
+        text_label.setObjectName("Muted")
+        text_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(text_label)
+        return box
+
+    def activate(self) -> None:
+        if not self.loaded:
+            self.refresh_projects()
+            self.loaded = True
+
+    def build_info_step(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self.hint("第 1 步：填写产品信息", "产品详情用中文填写；字幕/口播语言默认日语。"))
+        grid = QGridLayout()
+        self.video_title = QLineEdit()
+        self.video_title.setPlaceholderText("项目标题")
+        self.market = QComboBox()
+        self.market.setEditable(True)
+        self.market.addItems(["日本", "美国", "英国", "东南亚", "韩国"])
+        self.language = QComboBox()
+        self.language.setEditable(True)
+        self.language.addItems(["日语", "英语", "中文", "韩语", "泰语"])
+        self.video_strategy = QComboBox()
+        for label, key in self.VIDEO_STRATEGY_OPTIONS:
+            self.video_strategy.addItem(label, key)
+        self.product_details = QTextEdit()
+        self.product_details.setMinimumHeight(150)
+        self.product_details.setPlaceholderText("粘贴产品详情、卖点、人群、场景、风格要求。")
+        grid.addWidget(QLabel("项目标题"), 0, 0)
+        grid.addWidget(self.video_title, 0, 1)
+        grid.addWidget(QLabel("目标市场"), 0, 2)
+        grid.addWidget(self.market, 0, 3)
+        grid.addWidget(QLabel("字幕/口播语言"), 0, 4)
+        grid.addWidget(self.language, 0, 5)
+        grid.addWidget(QLabel("产品详情"), 1, 0)
+        grid.addWidget(self.product_details, 1, 1, 1, 5)
+        grid.addWidget(QLabel("拍摄方案"), 2, 0)
+        grid.addWidget(self.video_strategy, 2, 1, 1, 5)
+        layout.addLayout(grid)
+        actions = QHBoxLayout()
+        create = QPushButton("保存为新项目")
+        save = QPushButton("保存当前产品信息")
+        create.clicked.connect(self.create_project)
+        save.clicked.connect(lambda: self.save_project(False))
+        actions.addWidget(create)
+        actions.addWidget(save)
+        actions.addStretch()
+        layout.addLayout(actions)
+        self.project_table = table(["ID", "项目", "市场", "语言", "状态"])
+        self.project_table.doubleClicked.connect(self.load_selected_project)
+        layout.addWidget(self.project_table, 1)
+        self.stack.addWidget(page)
+
+    def build_assets_step(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self.hint("第 2 步：上传产品图", "建议 2-5 张。至少上传一张清晰产品主图。"))
+        row = QHBoxLayout()
+        self.asset_role = QLineEdit()
+        self.asset_role.setPlaceholderText("图片角色：主图/细节图/场景图")
+        self.asset_desc = QLineEdit()
+        self.asset_desc.setPlaceholderText("图片说明：这张图代表什么")
+        self.primary_asset = QCheckBox("主参考图")
+        upload = QPushButton("上传产品图")
+        save_asset = QPushButton("保存图片说明")
+        upload.clicked.connect(self.upload_assets)
+        save_asset.clicked.connect(self.save_selected_asset)
+        row.addWidget(self.asset_role)
+        row.addWidget(self.asset_desc, 1)
+        row.addWidget(self.primary_asset)
+        row.addWidget(save_asset)
+        row.addWidget(upload)
+        layout.addLayout(row)
+        self.asset_table = table(["ID", "角色", "说明", "主图", "地址"])
+        self.asset_table.itemSelectionChanged.connect(self.load_selected_asset)
+        layout.addWidget(self.asset_table, 1)
+        self.stack.addWidget(page)
+
+    def build_script_step(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self.hint("第 3 步：生成并修改脚本", "中文脚本说明，日语字幕/口播。生成时有进度条，窗口不会卡住。"))
+        actions = QHBoxLayout()
+        self.generate_script_button = QPushButton("AI 生成脚本")
+        self.save_script_button = QPushButton("保存修改后的脚本")
+        self.generate_script_button.clicked.connect(self.generate_script)
+        self.save_script_button.clicked.connect(lambda: self.save_script(False))
+        actions.addWidget(self.generate_script_button)
+        actions.addWidget(self.save_script_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+        self.script_progress = QProgressBar()
+        self.script_progress.setRange(0, 0)
+        self.script_progress.hide()
+        self.script_progress_label = QLabel("正在请求 AI 生成脚本，请稍候...")
+        self.script_progress_label.setObjectName("Muted")
+        self.script_progress_label.hide()
+        layout.addWidget(self.script_progress)
+        layout.addWidget(self.script_progress_label)
+        self.script_text = QTextEdit()
+        self.script_text.setMinimumHeight(130)
+        layout.addWidget(self.script_text)
+        self.shot_table = table(["时间轴", "景别", "中文画面", "日语字幕/口播", "中文氛围与画质"])
+        self.shot_table.setEditTriggers(QAbstractItemView.AllEditTriggers)
+        layout.addWidget(self.shot_table, 1)
+        self.stack.addWidget(page)
+
+    def build_generate_step(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self.hint("第 4 步：生成视频", "系统会用产品图、分镜画面和脚本生成视频。产品图优先级最高。"))
+        row = QHBoxLayout()
+        self.image_mode_label = QLabel("产品参考视频")
+        self.image_mode_label.setObjectName("CardTitle")
+        self.video_model = QComboBox()
+        self.video_model.addItem("Seedance 2.0 mini", "doubao-seedance-2-0-mini-260615")
+        self.video_model.addItem("Seedance 2.0 Fast", "doubao-seedance-2-0-fast")
+        self.submit_video_button = QPushButton("提交生成视频")
+        self.refresh_task_button = QPushButton("刷新任务")
+        self.download_video_button = QPushButton("下载视频")
+        self.submit_video_button.clicked.connect(self.create_video_task)
+        self.refresh_task_button.clicked.connect(self.refresh_selected_video_task)
+        self.download_video_button.clicked.connect(self.download_current_video)
+        row.addWidget(self.image_mode_label)
+        row.addWidget(self.video_model)
+        row.addWidget(self.submit_video_button)
+        row.addWidget(self.refresh_task_button)
+        row.addWidget(self.download_video_button)
+        row.addStretch()
+        layout.addLayout(row)
+
+        content = QHBoxLayout()
+        left = QVBoxLayout()
+        self.generate_status = QLabel("准备就绪：确认脚本和产品图后提交。")
+        self.generate_status.setObjectName("Muted")
+        self.generate_status.setWordWrap(True)
+        left.addWidget(self.generate_status)
+        self.video_progress = QProgressBar()
+        self.video_progress.setRange(0, 0)
+        self.video_progress.hide()
+        self.video_progress_label = QLabel("模型任务已提交，正在生成中；页面会自动刷新状态。")
+        self.video_progress_label.setObjectName("Muted")
+        self.video_progress_label.setWordWrap(True)
+        self.video_progress_label.hide()
+        left.addWidget(self.video_progress)
+        left.addWidget(self.video_progress_label)
+        self.video_storage_label = QLabel("存放位置：-")
+        self.video_storage_label.setObjectName("Muted")
+        self.video_storage_label.setWordWrap(True)
+        left.addWidget(self.video_storage_label)
+        self.video_usage_label = QLabel("消耗：-")
+        self.video_usage_label.setObjectName("Muted")
+        self.video_usage_label.setWordWrap(True)
+        left.addWidget(self.video_usage_label)
+        self.task_table = table(["任务ID", "状态", "消耗", "结果"])
+        self.task_table.setMaximumHeight(190)
+        self.task_table.itemSelectionChanged.connect(self.preview_selected_task)
+        left.addWidget(self.task_table)
+        self.video_result = QTextEdit()
+        self.video_result.setReadOnly(True)
+        self.video_result.setMaximumHeight(120)
+        self.video_result.setPlaceholderText("任务摘要会显示在这里。")
+        left.addWidget(self.video_result)
+
+        preview = QVBoxLayout()
+        preview_title = QLabel("视频预览")
+        preview_title.setObjectName("CardTitle")
+        self.video_preview_status = QLabel("生成完成后会在这里播放 9:16 视频。")
+        self.video_preview_status.setObjectName("Muted")
+        self.video_preview_status.setWordWrap(True)
+        self.video_widget = QVideoWidget()
+        self.video_widget.setFixedSize(300, 533)
+        self.video_widget.setAspectRatioMode(Qt.KeepAspectRatio)
+        self.video_player = QMediaPlayer(self)
+        self.audio_output = QAudioOutput(self)
+        self.video_player.setAudioOutput(self.audio_output)
+        self.video_player.setVideoOutput(self.video_widget)
+        self.current_video_url = ""
+        self.current_video_storage = ""
+        preview.addWidget(preview_title)
+        preview.addWidget(self.video_preview_status)
+        preview.addWidget(self.video_widget, 0, Qt.AlignHCenter)
+        preview.addStretch(1)
+
+        content.setSpacing(22)
+        content.addLayout(left, 2)
+        content.addLayout(preview, 1)
+        layout.addLayout(content, 1)
+        self.stack.addWidget(page)
+
+    def strategy_label(self) -> str:
+        return self.video_strategy.currentText().strip() or "自动稳妥"
+
+    def split_strategy_details(self, text: str) -> tuple[str, str]:
+        strategy = "自动稳妥"
+        cleaned_lines: list[str] = []
+        labels = {label for label, _ in self.VIDEO_STRATEGY_OPTIONS}
+        for raw_line in (text or "").splitlines():
+            line = raw_line.strip()
+            if line.startswith("拍摄方案：") or line.startswith("拍摄方案:"):
+                value = re.split(r"[:：]", line, maxsplit=1)[-1].strip()
+                if value in labels:
+                    strategy = value
+                continue
+            if line.startswith("video_strategy_key:"):
+                continue
+            cleaned_lines.append(raw_line)
+        return strategy, "\n".join(cleaned_lines).strip()
+
+    def set_strategy_label(self, label: str) -> None:
+        for index in range(self.video_strategy.count()):
+            if self.video_strategy.itemText(index) == label:
+                self.video_strategy.setCurrentIndex(index)
+                return
+        self.video_strategy.setCurrentIndex(0)
+
+    def payload(self) -> dict[str, Any]:
+        _, details = self.split_strategy_details(self.product_details.toPlainText())
+        strategy = self.strategy_label()
+        strategy_key = self.video_strategy.currentData() or "auto_safe"
+        if details:
+            details = f"video_strategy_key:{strategy_key}\n拍摄方案：{strategy}\n{details}"
+        else:
+            details = f"video_strategy_key:{strategy_key}\n拍摄方案：{strategy}"
+        return {
+            "title": self.video_title.text().strip() or "未命名视频项目",
+            "target_market": self.market.currentText().strip() or "日本",
+            "video_language": self.language.currentText().strip() or "日语",
+            "product_details": details,
+        }
+
+    def create_project(self) -> None:
+        try:
+            self.current_project = self.gateway.create_video_project(self.payload())
+            self.refresh_projects()
+            self.load_project(self.current_project)
+            self.step_nav.setCurrentRow(1)
+        except Exception as exc:
+            QMessageBox.warning(self, "创建失败", str(exc))
+
+    def save_project(self, silent: bool = False) -> bool:
+        if not self.current_project:
+            self.create_project()
+            return bool(self.current_project)
+        try:
+            self.current_project = self.gateway.update_video_project(int(self.current_project["id"]), self.payload())
+            if not silent:
+                QMessageBox.information(self, "保存成功", "产品信息已保存。")
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self, "保存失败", str(exc))
+            return False
+
+    def refresh_projects(self) -> None:
+        try:
+            self.projects = self.gateway.video_projects()
+        except Exception:
+            self.projects = []
+        fill_table(self.project_table, [[p.get("id"), p.get("title"), p.get("target_market"), p.get("video_language"), p.get("status")] for p in self.projects])
+
+    def load_selected_project(self) -> None:
+        row = self.project_table.currentRow()
+        if hasattr(self, "projects") and 0 <= row < len(self.projects):
+            self.current_project = self.projects[row]
+            self.load_project(self.current_project)
+
+    def load_project(self, project: dict[str, Any]) -> None:
+        self.video_title.setText(str(project.get("title") or ""))
+        self.market.setEditText(str(project.get("target_market") or "日本"))
+        self.language.setEditText(str(project.get("video_language") or "日语"))
+        strategy, details = self.split_strategy_details(str(project.get("product_details") or ""))
+        self.set_strategy_label(strategy)
+        self.product_details.setPlainText(details)
+        self.render_assets()
+        self.render_script()
+        self.refresh_generate_summary()
+
+    def render_assets(self) -> None:
+        assets = (self.current_project or {}).get("assets") or []
+        rows = []
+        for asset in assets:
+            if asset.get("asset_type") not in {"product", "product_image", ""}:
+                continue
+            rows.append([
+                asset.get("id"),
+                asset.get("role"),
+                asset.get("description"),
+                "是" if asset.get("is_primary") else "-",
+                asset.get("public_url") or asset.get("url"),
+            ])
+        fill_table(self.asset_table, rows)
+
+    def selected_asset(self) -> dict[str, Any] | None:
+        row = self.asset_table.currentRow()
+        if row < 0:
+            return None
+        asset_id_item = self.asset_table.item(row, 0)
+        if not asset_id_item:
+            return None
+        asset_id = int(asset_id_item.text() or 0)
+        for asset in (self.current_project or {}).get("assets") or []:
+            if int(asset.get("id") or 0) == asset_id:
+                return asset
+        return None
+
+    def load_selected_asset(self) -> None:
+        asset = self.selected_asset()
+        if not asset:
+            return
+        self.asset_role.setText(str(asset.get("role") or ""))
+        self.asset_desc.setText(str(asset.get("description") or ""))
+        self.primary_asset.setChecked(bool(asset.get("is_primary")))
+
+    def save_selected_asset(self) -> None:
+        if not self.current_project:
+            return
+        asset = self.selected_asset()
+        if not asset:
+            QMessageBox.information(self, "提示", "请先选中下面要修改的图片。")
+            return
+        try:
+            self.current_project = self.gateway.update_video_asset(
+                int(self.current_project["id"]),
+                int(asset["id"]),
+                {
+                    "role": self.asset_role.text().strip(),
+                    "description": self.asset_desc.text().strip(),
+                    "is_primary": 1 if self.primary_asset.isChecked() else 0,
+                },
+            )
+            self.render_assets()
+            QMessageBox.information(self, "保存成功", "图片说明已同步到选中图片。")
+        except Exception as exc:
+            QMessageBox.warning(self, "保存失败", str(exc))
+
+    def upload_assets(self) -> None:
+        if not self.current_project:
+            self.create_project()
+        if not self.current_project:
+            return
+        files, _ = QFileDialog.getOpenFileNames(self, "选择产品图", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        if not files:
+            return
+        for index, path in enumerate(files):
+            self.current_project = self.gateway.upload_video_asset(
+                int(self.current_project["id"]),
+                path,
+                {"role": self.asset_role.text(), "description": self.asset_desc.text(), "is_primary": 1 if self.primary_asset.isChecked() and index == 0 else 0},
+            )
+        self.render_assets()
+        QMessageBox.information(self, "上传完成", f"已上传 {len(files)} 张产品图。")
+
+    def generate_script(self) -> None:
+        if not self.current_project:
+            self.create_project()
+        elif not self.save_project(True):
+            return
+        if not self.current_project:
+            return
+        self.generate_script_button.setEnabled(False)
+        self.save_script_button.setEnabled(False)
+        self.script_progress.show()
+        self.script_progress_label.show()
+        self.script_signals = VideoScriptSignals()
+        self.script_signals.finished.connect(self.on_script_generated)
+        self.script_signals.failed.connect(self.on_script_failed)
+        IMAGE_THREAD_POOL.start(VideoScriptTask(self.gateway, int(self.current_project["id"]), self.script_signals))
+
+    def on_script_generated(self, project: dict[str, Any]) -> None:
+        self.current_project = project
+        self.generate_script_button.setEnabled(True)
+        self.save_script_button.setEnabled(True)
+        self.script_progress.hide()
+        self.script_progress_label.hide()
+        self.render_script()
+        QMessageBox.information(self, "脚本已生成", "脚本说明为中文，字幕/口播为日语。")
+
+    def on_script_failed(self, message: str) -> None:
+        self.generate_script_button.setEnabled(True)
+        self.save_script_button.setEnabled(True)
+        self.script_progress.hide()
+        self.script_progress_label.hide()
+        QMessageBox.warning(self, "生成失败", message)
+
+    def render_script(self) -> None:
+        if not self.current_project:
+            return
+        script_text = str(self.current_project.get("script_text") or "")
+        self.script_text.setPlainText(script_text)
+        self.shot_table.setRowCount(0)
+        for shot in self.normalized_storyboard(script_text):
+            row = self.shot_table.rowCount()
+            self.shot_table.insertRow(row)
+            for col, key in enumerate(["timeline", "shot_type", "visual_cn", "copy", "atmosphere_cn"]):
+                self.shot_table.setItem(row, col, QTableWidgetItem(str(shot.get(key) or "")))
+
+    def normalized_storyboard(self, script_text: str = "") -> list[dict[str, str]]:
+        if not self.current_project:
+            return []
+        raw = self.current_project.get("storyboard") or []
+        if not raw:
+            script_json = self.current_project.get("script_json") or {}
+            if isinstance(script_json, str):
+                try:
+                    script_json = json.loads(script_json or "{}")
+                except ValueError:
+                    script_json = {}
+            if isinstance(script_json, dict):
+                raw = script_json.get("storyboard") or script_json.get("shot_list") or []
+        shots = [self.normalize_shot(item) for item in raw if isinstance(item, dict)]
+        if shots:
+            return shots
+        return self.parse_shots_from_text(script_text)
+
+    def normalize_shot(self, shot: dict[str, Any]) -> dict[str, str]:
+        return {
+            "timeline": str(shot.get("timeline") or shot.get("time") or shot.get("time_range") or ""),
+            "shot_type": str(shot.get("shot_type") or shot.get("shot_size") or shot.get("shot") or ""),
+            "visual_cn": str(shot.get("visual_cn") or shot.get("visual") or shot.get("image") or ""),
+            "copy": str(shot.get("copy") or shot.get("subtitle") or shot.get("voiceover") or ""),
+            "atmosphere_cn": str(shot.get("atmosphere_cn") or shot.get("atmosphere_quality") or shot.get("quality") or ""),
+        }
+
+    def parse_shots_from_text(self, script_text: str) -> list[dict[str, str]]:
+        shots: list[dict[str, str]] = []
+        for line in script_text.splitlines():
+            if not re.match(r"^\s*\d+\s*-\s*\d+\s*s", line):
+                continue
+            parts = [part.strip() for part in line.split("|")]
+            if len(parts) < 3:
+                continue
+            shot = {
+                "timeline": parts[0],
+                "shot_type": parts[1] if len(parts) > 1 else "",
+                "visual_cn": "",
+                "copy": "",
+                "atmosphere_cn": "",
+            }
+            for part in parts[2:]:
+                text = part.strip()
+                if text.startswith("画面：") or text.startswith("画面:"):
+                    shot["visual_cn"] = re.sub(r"^画面[:：]\s*", "", text)
+                elif text.startswith("字幕/口播：") or text.startswith("字幕/口播:"):
+                    shot["copy"] = re.sub(r"^字幕/口播[:：]\s*", "", text)
+                elif text.startswith("氛围与画质：") or text.startswith("氛围与画质:"):
+                    shot["atmosphere_cn"] = re.sub(r"^氛围与画质[:：]\s*", "", text)
+                elif not shot["visual_cn"]:
+                    shot["visual_cn"] = text
+            shots.append(shot)
+        return shots
+
+    def script_payload(self) -> dict[str, Any]:
+        shots = []
+        for row in range(self.shot_table.rowCount()):
+            values = [self.shot_table.item(row, col).text().strip() if self.shot_table.item(row, col) else "" for col in range(5)]
+            if any(values):
+                shots.append({"timeline": values[0], "shot_type": values[1], "visual_cn": values[2], "copy": values[3], "atmosphere_cn": values[4]})
+        return {"script_text": self.script_text.toPlainText().strip(), "storyboard": shots}
+
+    def save_script(self, silent: bool = False) -> bool:
+        if not self.current_project:
+            return False
+        try:
+            self.current_project = self.gateway.save_video_script(int(self.current_project["id"]), self.script_payload())
+            self.refresh_generate_summary()
+            if not silent:
+                QMessageBox.information(self, "保存成功", "脚本已保存。")
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self, "保存失败", str(exc))
+            return False
+
+    def task_is_active(self, task: dict[str, Any] | None) -> bool:
+        if not task:
+            return False
+        status = str(task.get("status") or "").lower()
+        return status in {"submitted", "running", "queued", "pending", "processing", "in_progress"}
+
+    def set_video_progress(self, active: bool, text: str = "") -> None:
+        if not hasattr(self, "video_progress"):
+            return
+        if active:
+            self.video_progress.show()
+            self.video_progress_label.show()
+            self.video_progress_label.setText(text or "模型任务已提交，正在生成中；页面会自动刷新状态。")
+        else:
+            self.video_progress.hide()
+            self.video_progress_label.hide()
+
+    def set_video_buttons_busy(self, busy: bool) -> None:
+        self.video_task_busy = busy
+        if hasattr(self, "submit_video_button"):
+            self.submit_video_button.setEnabled(not busy)
+        if hasattr(self, "refresh_task_button"):
+            self.refresh_task_button.setEnabled(not busy)
+
+    def selected_or_latest_task(self) -> dict[str, Any] | None:
+        if not self.current_project:
+            return None
+        tasks = self.current_project.get("tasks") or []
+        if not tasks:
+            return None
+        row = self.task_table.currentRow() if hasattr(self, "task_table") else -1
+        if row >= 0:
+            task_id_item = self.task_table.item(row, 0)
+            task_id = int(task_id_item.text() or 0) if task_id_item else 0
+            selected = next((item for item in tasks if int(item.get("id") or 0) == task_id), None)
+            if selected:
+                return selected
+        return tasks[0]
+
+    def create_video_task(self) -> None:
+        if not self.current_project or not self.save_script(True):
+            return
+        product_assets = [asset for asset in (self.current_project.get("assets") or []) if asset.get("asset_type") in {"product", "product_image"}]
+        if not product_assets:
+            QMessageBox.information(self, "提示", "请先上传至少 1 张产品图，再生成视频。")
+            return
+        mode = "image_to_video"
+        payload = {"generation_mode": mode, "model_name": str(self.video_model.currentData() or self.video_model.currentText()).strip()}
+        self.generate_status.setText("正在提交给视频模型。系统会先生成分镜画面，请稍候。")
+        self.set_video_progress(True, "正在调用视频模型，任务创建中...")
+        self.set_video_buttons_busy(True)
+        self.video_submit_signals = VideoTaskSignals()
+        self.video_submit_signals.finished.connect(self.on_video_task_created)
+        self.video_submit_signals.failed.connect(self.on_video_task_failed)
+        IMAGE_THREAD_POOL.start(VideoSubmitTask(self.gateway, int(self.current_project["id"]), payload, self.video_submit_signals))
+
+    def on_video_task_created(self, task: dict[str, Any]) -> None:
+        self.set_video_buttons_busy(False)
+        self.video_result.setPlainText(self.video_task_summary(task))
+        if self.current_project is not None:
+            tasks = self.current_project.setdefault("tasks", [])
+            tasks.insert(0, task)
+        self.refresh_generate_summary()
+        self.preview_task_video(task)
+        if self.task_is_active(task):
+            self.generate_status.setText(f"视频任务已提交，模型正在生成。任务号：{task.get('provider_task_id') or task.get('id')}")
+            self.set_video_progress(True, "模型正在生成视频，系统会自动刷新任务状态。")
+            self.video_poll_timer.start()
+        else:
+            self.set_video_progress(False)
+
+    def on_video_task_failed(self, message: str) -> None:
+        self.set_video_buttons_busy(False)
+        self.set_video_progress(False)
+        self.generate_status.setText("提交失败，请检查模型配置、第三方 API 和余额。")
+        QMessageBox.warning(self, "提交失败", message)
+
+    def refresh_selected_video_task(self) -> None:
+        if not self.current_project:
+            QMessageBox.information(self, "提示", "请先选择一个视频项目。")
+            return
+        task = self.selected_or_latest_task()
+        if not task:
+            QMessageBox.information(self, "提示", "当前项目还没有视频任务。")
+            return
+        self.start_video_refresh(task, manual=True)
+
+    def start_video_refresh(self, task: dict[str, Any], manual: bool = False) -> None:
+        if self.video_refresh_busy or self.video_task_busy or not self.current_project:
+            return
+        self.video_refresh_busy = True
+        if manual:
+            self.generate_status.setText("正在刷新视频任务结果和 token 消耗。")
+        if self.task_is_active(task):
+            self.set_video_progress(True, "模型正在生成视频，系统会自动刷新任务状态。")
+        self.video_refresh_signals = VideoTaskSignals()
+        self.video_refresh_signals.finished.connect(self.on_video_task_refreshed)
+        self.video_refresh_signals.failed.connect(lambda message: self.on_video_refresh_failed(message, manual))
+        IMAGE_THREAD_POOL.start(VideoRefreshTask(self.gateway, int(self.current_project["id"]), int(task["id"]), self.video_refresh_signals))
+
+    def on_video_task_refreshed(self, refreshed: dict[str, Any]) -> None:
+        self.video_refresh_busy = False
+        tasks = self.current_project.get("tasks") if self.current_project else []
+        if tasks is not None:
+            for index, item in enumerate(tasks):
+                if int(item.get("id") or 0) == int(refreshed.get("id") or 0):
+                    tasks[index] = refreshed
+                    break
+            else:
+                tasks.insert(0, refreshed)
+        self.video_result.setPlainText(self.video_task_summary(refreshed))
+        self.refresh_generate_summary()
+        self.preview_task_video(refreshed)
+        status = str(refreshed.get("status") or "")
+        if self.task_is_active(refreshed):
+            self.generate_status.setText(f"视频生成中：{status or 'running'}。任务号：{refreshed.get('provider_task_id') or refreshed.get('id')}")
+            self.set_video_progress(True, "模型正在生成视频，系统会自动刷新任务状态。")
+            self.video_poll_timer.start()
+        else:
+            self.video_poll_timer.stop()
+            self.set_video_progress(False)
+            if refreshed.get("video_url") or refreshed.get("result_video_url") or refreshed.get("local_video_url"):
+                self.generate_status.setText("视频生成完成，可以预览或下载。")
+            elif str(refreshed.get("status") or "").lower() in {"failed", "cancelled", "canceled"}:
+                self.generate_status.setText(f"视频生成失败：{refreshed.get('error_message') or refreshed.get('status')}")
+            else:
+                self.generate_status.setText(f"任务状态：{refreshed.get('status') or '-'}")
+
+    def on_video_refresh_failed(self, message: str, manual: bool = False) -> None:
+        self.video_refresh_busy = False
+        if manual:
+            self.generate_status.setText("刷新失败，请检查状态查询接口配置和任务状态。")
+            QMessageBox.warning(self, "刷新失败", message)
+
+    def auto_refresh_video_task(self) -> None:
+        task = self.selected_or_latest_task()
+        if not task or not self.task_is_active(task):
+            self.video_poll_timer.stop()
+            self.set_video_progress(False)
+            return
+        self.start_video_refresh(task, manual=False)
+
+    def refresh_generate_summary(self) -> None:
+        if not hasattr(self, "task_table"):
+            return
+        project = self.current_project or {}
+        assets = project.get("assets") or []
+        product_assets = [asset for asset in assets if asset.get("asset_type") in {"product", "product_image"}]
+        storyboard_assets = [asset for asset in assets if asset.get("asset_type") == "storyboard_sheet"]
+        storyboard = project.get("storyboard") or []
+        script_ready = bool(str(project.get("script_text") or "").strip() or storyboard)
+        sheet_text = "已有分镜画面" if storyboard_assets else "提交后会先自动生成分镜画面"
+        self.generate_status.setText(f"脚本{'已准备' if script_ready else '未准备'}，产品图 {len(product_assets)} 张，{sheet_text}。产品图会作为最高优先级参考。")
+        task_rows = []
+        for task in project.get("tasks") or []:
+            task_rows.append([
+                task.get("id"),
+                task.get("status"),
+                self.video_usage_text(task, compact=True),
+                self.video_result_text(task),
+            ])
+        fill_table(self.task_table, task_rows)
+        self.preview_task_video(self.latest_video_task())
+        active_task = next((task for task in project.get("tasks") or [] if self.task_is_active(task)), None)
+        if active_task:
+            self.generate_status.setText(f"视频生成中：{active_task.get('status') or 'running'}。任务号：{active_task.get('provider_task_id') or active_task.get('id')}")
+            self.set_video_progress(True, "模型正在生成视频，系统会自动刷新任务状态。")
+            if not self.video_poll_timer.isActive():
+                self.video_poll_timer.start()
+        elif hasattr(self, "video_poll_timer") and self.video_poll_timer.isActive():
+            self.video_poll_timer.stop()
+            self.set_video_progress(False)
+
+    def latest_video_task(self) -> dict[str, Any]:
+        project = self.current_project or {}
+        for task in project.get("tasks") or []:
+            if task.get("video_url") or task.get("result_video_url") or task.get("local_video_url") or task.get("local_video_path"):
+                return task
+        if project.get("result_video_url"):
+            return {"video_url": project.get("result_video_url"), "result_video_url": project.get("result_video_url")}
+        return {}
+
+    def video_storage_text(self, task: dict[str, Any]) -> str:
+        return str(
+            task.get("local_video_path")
+            or task.get("local_video_url")
+            or task.get("video_url")
+            or task.get("result_video_url")
+            or ""
+        )
+
+    def video_result_text(self, task: dict[str, Any]) -> str:
+        if task.get("error_message"):
+            return str(task.get("error_message"))
+        if task.get("video_url") or task.get("result_video_url") or task.get("local_video_url") or task.get("local_video_path"):
+            return "已生成，可预览/下载"
+        if task.get("provider_task_id"):
+            return f"任务号 {task.get('provider_task_id')}"
+        return "-"
+
+    def video_task_summary(self, task: dict[str, Any]) -> str:
+        lines = [
+            f"任务ID：{task.get('id') or '-'}",
+            f"状态：{task.get('status') or '-'}",
+            f"模型任务号：{task.get('provider_task_id') or '-'}",
+            self.video_usage_text(task),
+        ]
+        storage = self.video_storage_text(task)
+        if storage:
+            lines.append("视频：已生成，可预览/下载")
+        if task.get("error_message"):
+            lines.append(f"错误：{task.get('error_message')}")
+        return "\n".join(lines)
+
+    def video_usage_text(self, task: dict[str, Any], compact: bool = False) -> str:
+        total_tokens = int(task.get("usage_total_tokens") or 0)
+        prompt_tokens = int(task.get("usage_prompt_tokens") or 0)
+        completion_tokens = int(task.get("usage_completion_tokens") or 0)
+        cost = float(task.get("usage_cost_cny") or 0)
+        note = str(task.get("usage_note") or "")
+        if total_tokens <= 0:
+            return "API 未返回 token" if compact else f"消耗：API 未返回 token。{note}".strip()
+        if cost > 0:
+            cost_text = f"¥{cost:.4f}" if cost < 0.01 else f"¥{cost:.2f}"
+        else:
+            cost_text = "费用待账单确认"
+        if compact:
+            return f"{total_tokens} token / {cost_text}"
+        detail = f"消耗：{total_tokens} token（输入 {prompt_tokens}，输出 {completion_tokens}），费用 {cost_text}"
+        if note:
+            detail = f"{detail}。{note}"
+        return detail
+
+    def preview_task_video(self, task: dict[str, Any]) -> None:
+        url = str(task.get("video_url") or task.get("local_video_url") or task.get("result_video_url") or "")
+        storage = self.video_storage_text(task)
+        if hasattr(self, "video_usage_label"):
+            self.video_usage_label.setText(self.video_usage_text(task))
+        self.preview_video_url(url, storage)
+
+    def preview_video_url(self, url: str, storage: str = "") -> None:
+        if not hasattr(self, "video_player"):
+            return
+        self.current_video_url = url or ""
+        self.current_video_storage = storage or self.current_video_url
+        if self.current_video_storage:
+            storage_text = self.current_video_storage if self.current_video_storage.startswith(("C:", "D:", "/", "\\")) else "已生成，可点击下载视频保存到本地"
+        else:
+            storage_text = "-"
+        self.video_storage_label.setText(f"存放位置：{storage_text}")
+        if not self.current_video_url:
+            self.video_player.stop()
+            self.video_preview_status.setText("生成完成后会在这里播放 9:16 视频。")
+            return
+        self.video_preview_status.setText("视频已生成，可预览或下载。")
+        self.video_player.setSource(QUrl(self.current_video_url))
+        self.video_player.play()
+
+    def preview_selected_task(self) -> None:
+        if not self.current_project:
+            return
+        row = self.task_table.currentRow()
+        if row < 0:
+            return
+        task_id_item = self.task_table.item(row, 0)
+        if not task_id_item:
+            return
+        task_id = int(task_id_item.text() or 0)
+        for task in self.current_project.get("tasks") or []:
+            if int(task.get("id") or 0) == task_id:
+                self.preview_task_video(task)
+                self.video_result.setPlainText(self.video_task_summary(task))
+                return
+
+    def open_current_video(self) -> None:
+        if not self.current_video_url:
+            QMessageBox.information(self, "提示", "当前还没有可打开的视频链接。")
+            return
+        QDesktopServices.openUrl(QUrl(self.current_video_url))
+
+    def download_current_video(self) -> None:
+        if not self.current_video_url:
+            QMessageBox.information(self, "提示", "当前还没有可下载的视频链接。")
+            return
+        default_name = f"video_{int(time.time())}.mp4"
+        downloads = Path.home() / "Downloads"
+        target, _ = QFileDialog.getSaveFileName(self, "保存视频", str(downloads / default_name), "Video (*.mp4);;All Files (*)")
+        if not target:
+            return
+        try:
+            session = requests.Session()
+            session.trust_env = False
+            response = session.get(self.current_video_url, timeout=300)
+            response.raise_for_status()
+            Path(target).write_bytes(response.content)
+            self.current_video_storage = target
+            self.video_storage_label.setText(f"存放位置：{target}")
+            QMessageBox.information(self, "下载完成", f"视频已保存到：{target}")
+        except Exception as exc:
+            QMessageBox.warning(self, "下载失败", str(exc))
 
 
 class PipelinePage(Page):
@@ -1085,7 +1996,8 @@ class SimpleConfigPage(Page):
                     item.get("is_default"),
                 ])
             else:
-                rows.append([item.get("config_name"), item.get("service_type"), item.get("status")])
+                key_text = "已配置" if item.get("has_access_key") or item.get("access_key_encrypted") else "-"
+                rows.append([item.get("config_name"), item.get("service_type"), item.get("api_base_url"), key_text, item.get("status")])
         fill_table(self.config_table, rows)
 
     def selected_item(self) -> dict[str, Any] | None:
@@ -1110,7 +2022,7 @@ class SimpleConfigPage(Page):
     def third_fields(self) -> list[tuple[str, str, str]]:
         return [
             ("config_name", "配置名称", "1688 寻源 API"),
-            ("service_type", "服务类型", "fastmoss/1688_api/custom_api/oxylabs/miaoshou/volcengine-mediakit"),
+            ("service_type", "服务类型", "volcengine_ark/fastmoss/1688_api/custom_api/oxylabs/miaoshou/volcengine-mediakit"),
             ("api_base_url", "API 地址", "https://example.com"),
             ("access_key_encrypted", "Access Key", "API Key 或 Bearer Token"),
             ("secret_key_encrypted", "Secret Key", "可选"),

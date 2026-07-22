@@ -31,9 +31,13 @@ def format_error_detail(detail: Any) -> str:
 
 @dataclass
 class ApiClient:
-    base_url: str = os.getenv("TK_SELECTION_API_BASE_URL", "http://127.0.0.1:8000")
+    base_url: str = os.getenv("TK_SELECTION_API_BASE_URL", "http://120.26.207.89")
     token: str | None = None
     timeout: int = 180
+
+    def __post_init__(self) -> None:
+        self.session = requests.Session()
+        self.session.trust_env = False
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -43,7 +47,7 @@ class ApiClient:
 
     def request(self, method: str, path: str, payload: dict[str, Any] | None = None, timeout: int | None = None) -> Any:
         try:
-            response = requests.request(
+            response = self.session.request(
                 method,
                 f"{self.base_url}{path}",
                 json=payload,
@@ -66,6 +70,29 @@ class ApiClient:
         if not response.text:
             return None
         return response.json()
+
+    def upload(self, path: str, file_path: str, fields: dict[str, Any] | None = None, timeout: int | None = None) -> Any:
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            with open(file_path, "rb") as file_obj:
+                response = self.session.post(
+                    f"{self.base_url}{path}",
+                    data={key: str(value) for key, value in (fields or {}).items()},
+                    files={"file": (os.path.basename(file_path), file_obj)},
+                    headers=headers,
+                    timeout=timeout or self.timeout,
+                )
+        except (OSError, requests.RequestException) as exc:
+            raise ApiError(f"Upload failed: {exc}") from exc
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("detail", response.text)
+            except ValueError:
+                detail = response.text
+            raise ApiError(f"HTTP {response.status_code}: {format_error_detail(detail)}")
+        return response.json() if response.text else None
 
     def login(self, username: str, password: str) -> dict[str, Any]:
         data = self.request("POST", "/api/auth/login", {"username": username, "password": password})

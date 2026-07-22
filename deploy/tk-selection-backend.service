@@ -9,7 +9,7 @@ Group=tkbackend
 WorkingDirectory=/opt/tk-selection/backend
 EnvironmentFile=/etc/tk-selection/backend.env
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-ExecStart=/opt/tk-selection/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+ExecStart=/opt/tk-selection/backend/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 Restart=always
 RestartSec=5
 TimeoutStopSec=30

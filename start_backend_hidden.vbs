@@ -1,4 +1,2 @@
 Set shell = CreateObject("WScript.Shell")
-root = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName)
-cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File """ & root & "\start_backend.ps1" & """"
-shell.Run cmd, 0, False
+shell.Popup "本地后端启动已禁用。请使用服务器后端：http://120.26.207.89", 5, "TK跨境助手", 64

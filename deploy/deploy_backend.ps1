@@ -14,14 +14,14 @@ $Archive = Join-Path $env:TEMP ("tk-selection-backend-" + [guid]::NewGuid().ToSt
 Push-Location $Root
 try {
     $files = @("backend", "deploy")
-    tar --exclude="backend/.venv" --exclude="backend/runtime/auto_publish/*" --exclude="backend/data/*.db" --exclude="backend/data/*.sqlite*" --exclude="*.log" -czf $Archive @files
+    tar --exclude="backend/.venv" --exclude="backend/runtime" --exclude="backend/data/*.db" --exclude="backend/data/*.sqlite*" --exclude="*.log" -czf $Archive @files
 } finally {
     Pop-Location
 }
 
 ssh -i $KeyPath "${User}@${HostName}" "mkdir -p $RemoteDir"
 scp -i $KeyPath $Archive "${User}@${HostName}:/tmp/tk-selection-backend.tar.gz"
-ssh -i $KeyPath "${User}@${HostName}" "tar -xzf /tmp/tk-selection-backend.tar.gz -C $RemoteDir && bash $RemoteDir/deploy/install_backend_linux.sh"
+ssh -i $KeyPath "${User}@${HostName}" "tar -xzf /tmp/tk-selection-backend.tar.gz -C $RemoteDir && sed -i 's/\r$//' $RemoteDir/deploy/install_backend_linux.sh $RemoteDir/deploy/tk-selection-backend.service && bash $RemoteDir/deploy/install_backend_linux.sh"
 
 Remove-Item -LiteralPath $Archive -Force -ErrorAction SilentlyContinue
 Write-Host "Uploaded backend to ${User}@${HostName}:${RemoteDir}"

@@ -35,13 +35,13 @@ C:\Users\61655\Documents\Codex\2026-07-07\ni\work\tk_selection_app
 ### 后端
 
 ```powershell
-.\start_backend.ps1
+本地后端已禁用。后端只部署并运行在服务器 120.26.207.89。
 ```
 
 接口文档：
 
 ```text
-http://127.0.0.1:8000/docs
+http://120.26.207.89/docs
 ```
 
 ### 前端

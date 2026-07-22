@@ -1315,13 +1315,22 @@ def get_miaoshou_credentials_optional(db: Session, task_id: str | None = None) -
         return None
 
 
+def should_run_miaoshou_headless() -> bool:
+    configured = os.getenv("MIAOSHOU_HEADLESS")
+    if configured is not None:
+        return configured.strip().lower() not in {"0", "false", "no", "off"}
+    if os.name != "nt" and not os.getenv("DISPLAY"):
+        return True
+    return False
+
+
 def ensure_miaoshou_login_state(db: Session, task_id: str, erp_url: str) -> None:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise AutoPublishError(f"Playwright 未安装，无法登录妙手上传图片：{exc}") from exc
 
-    headless = os.getenv("MIAOSHOU_HEADLESS", "0") != "0"
+    headless = should_run_miaoshou_headless()
     target_url = erp_url or "https://erp.91miaoshou.com/?ac=1og270"
     username, password = get_miaoshou_credentials(db, task_id)
     storage_path = miaoshou_storage_state_path_for_username(username)
@@ -1589,7 +1598,7 @@ def import_template_to_miaoshou(
     except ImportError as exc:
         return {"ok": False, "steps": [], "errors": [f"Playwright 未安装：{exc}"], "screenshots": []}
 
-    headless = os.getenv("MIAOSHOU_HEADLESS", "0") != "0"
+    headless = should_run_miaoshou_headless()
     target_url = erp_url or "https://erp.91miaoshou.com/?ac=1og270"
     try:
         username, password = get_miaoshou_credentials(db, task_id)
