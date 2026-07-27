@@ -13,8 +13,8 @@ This file is the project handoff note for continuing development after switching
 
 - Backend: FastAPI + SQLAlchemy.
 - Desktop client: PySide6 Windows app.
-- Online backend base URL currently used by the desktop app: `http://120.26.207.89:8000`.
-- Local backend can be started with `.\start_backend.ps1`.
+- Server backend base URL used by the desktop app: `http://120.26.207.89`.
+- Local backend startup is disabled; do not run a local backend.
 - Desktop app can be started with `.\start_desktop.ps1`.
 
 ## Accounts

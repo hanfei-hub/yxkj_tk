@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -12,11 +11,33 @@ class ApiError(RuntimeError):
     pass
 
 
+def format_error_detail(detail: Any) -> str:
+    if isinstance(detail, str):
+        return detail or "Request failed"
+    if isinstance(detail, list):
+        messages: list[str] = []
+        for item in detail:
+            if isinstance(item, dict):
+                loc = ".".join(str(part) for part in item.get("loc", []) if part != "body")
+                msg = item.get("msg") or item.get("message") or item.get("detail") or item
+                messages.append(f"{loc}: {msg}" if loc else str(msg))
+            else:
+                messages.append(str(item))
+        return "\n".join(messages) or "Request parameter error"
+    if isinstance(detail, dict):
+        return str(detail.get("message") or detail.get("error") or detail.get("detail") or detail)
+    return str(detail or "Request failed")
+
+
 @dataclass
 class ApiClient:
-    base_url: str = os.getenv("TK_SELECTION_API_BASE_URL", "http://120.26.207.89:8000")
+    base_url: str = os.getenv("TK_SELECTION_API_BASE_URL", "http://120.26.207.89")
     token: str | None = None
     timeout: int = 180
+
+    def __post_init__(self) -> None:
+        self.session = requests.Session()
+        self.session.trust_env = False
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -26,7 +47,7 @@ class ApiClient:
 
     def request(self, method: str, path: str, payload: dict[str, Any] | None = None, timeout: int | None = None) -> Any:
         try:
-            response = requests.request(
+            response = self.session.request(
                 method,
                 f"{self.base_url}{path}",
                 json=payload,
@@ -34,37 +55,44 @@ class ApiClient:
                 timeout=timeout or self.timeout,
             )
         except requests.RequestException as exc:
-            raise ApiError(f"网络请求失败\n请求：{method} {path}\n异常：{type(exc).__name__}: {exc}") from exc
+            raise ApiError(f"Network request failed: {exc}") from exc
 
         if response.status_code >= 400:
-            raw_text = (response.text or "").strip()
             try:
                 body = response.json()
+                detail = body.get("detail", body)
             except ValueError:
-                body = None
-            if isinstance(body, dict):
-                detail = body.get("detail") or body.get("message") or body.get("msg") or body
-            else:
-                detail = raw_text
-            if isinstance(detail, (dict, list)):
-                detail = json.dumps(detail, ensure_ascii=False, indent=2)
-            detail = str(detail).strip() or "服务器没有返回错误正文"
+                detail = response.text
             if response.status_code == 401:
-                detail = "请重新登录\n" + detail
-            raise ApiError(
-                f"HTTP {response.status_code} {response.reason}\n"
-                f"请求：{method} {path}\n"
-                f"响应：{detail}"
-            )
+                detail = "Please log in again"
+            message = format_error_detail(detail)
+            raise ApiError(f"HTTP {response.status_code}: {message}")
         if not response.text:
             return None
+        return response.json()
+
+    def upload(self, path: str, file_path: str, fields: dict[str, Any] | None = None, timeout: int | None = None) -> Any:
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
         try:
-            return response.json()
-        except ValueError as exc:
-            raise ApiError(
-                f"响应解析失败\n请求：{method} {path}\n"
-                f"HTTP {response.status_code}\n响应正文：{response.text[:2000]}"
-            ) from exc
+            with open(file_path, "rb") as file_obj:
+                response = self.session.post(
+                    f"{self.base_url}{path}",
+                    data={key: str(value) for key, value in (fields or {}).items()},
+                    files={"file": (os.path.basename(file_path), file_obj)},
+                    headers=headers,
+                    timeout=timeout or self.timeout,
+                )
+        except (OSError, requests.RequestException) as exc:
+            raise ApiError(f"Upload failed: {exc}") from exc
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("detail", response.text)
+            except ValueError:
+                detail = response.text
+            raise ApiError(f"HTTP {response.status_code}: {format_error_detail(detail)}")
+        return response.json() if response.text else None
 
     def login(self, username: str, password: str) -> dict[str, Any]:
         data = self.request("POST", "/api/auth/login", {"username": username, "password": password})

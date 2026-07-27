@@ -2,8 +2,12 @@
 
 import sys
 import json
+import re
+import time
 import math
 import base64
+import hashlib
+import hmac
 import mimetypes
 import os
 import re
@@ -18,6 +22,8 @@ import requests
 from PySide6.QtCore import QDate, QEvent, QObject, QPointF, QRunnable, QRectF, QSettings, QSize, Qt, QThreadPool, QTimer, Signal, Slot, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimediaWidgets import QVideoWidget
 from PIL import Image, ImageOps
 from PySide6.QtWidgets import (
     QApplication,
@@ -66,11 +72,18 @@ if getattr(sys, "frozen", False):
 else:
     APP_DIR = Path(__file__).resolve().parent
 ICON_DIR = APP_DIR / "assets" / "icons"
+DESKTOP_BROWSER_PATHS = [
+    Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+    Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+    Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+    Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+]
 MENU_ICON_MAP = {
     "智能选品": "menu_ai.svg",
     "选品库": "menu_library.svg",
     "新品榜单": "menu_new.svg",
     "采集箱": "menu_favorite.svg",
+    "视频生成": "menu_course.svg",
     "店铺管理": "menu_store.svg",
     "数据看板": "menu_dashboard.svg",
     "个人中心": "menu_settings.svg",
@@ -87,10 +100,10 @@ MENU_ICON_MAP = {
 MENU_ROLE_ACCESS = {
     "admin": None,
     "teacher": {
-        "数据看板", "个人中心", "关于益行", "教师看板", "选品属性", "新品榜单", "智能选品",
+        "数据看板", "个人中心", "关于益行", "教师看板", "选品属性", "新品榜单", "智能选品", "视频生成",
     },
     "student": {
-        "智能选品", "选品库", "新品榜单", "采集箱", "店铺管理", "关于益行", "个人中心",
+        "智能选品", "选品库", "新品榜单", "采集箱", "店铺管理", "关于益行", "个人中心", "视频生成",
     },
 }
 
@@ -526,8 +539,22 @@ class DataGateway:
     def create_1688_auto_publish_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.post("/api/auto-publish/1688/tasks", payload, timeout=60)
 
+
+    def create_1688_batch_auto_publish_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.post("/api/auto-publish/1688/batch-tasks", payload, timeout=60)
+
+    def miaoshou_shop_list(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.post("/api/auto-publish/miaoshou/shop-list", payload, timeout=60)
+
+    def reauthorize_miaoshou_picture_space(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.post("/api/auto-publish/miaoshou/reauthorize-picture-space", payload, timeout=600)
+
     def run_auto_publish_task(self, task_id: str) -> dict[str, Any]:
         return self.client.post(f"/api/auto-publish/tasks/{task_id}/run", timeout=1800)
+
+
+    def start_auto_publish_task_async(self, task_id: str) -> dict[str, Any]:
+        return self.client.post(f"/api/auto-publish/tasks/{task_id}/run-async", timeout=30)
 
     def get_auto_publish_task(self, task_id: str) -> dict[str, Any]:
         return self.client.get(f"/api/auto-publish/tasks/{task_id}", timeout=20)
@@ -674,6 +701,187 @@ def dimension_items_from_report(item: dict[str, Any]) -> list[tuple[str, str, st
                 row = raw_report.get(alias)
                 if row:
                     break
+        if isinstance(row, dict):
+            name = str(row.get("dimension_name") or row.get("维度名称") or default_name)
+            level = str(row.get("判定等级") or row.get("rating_level") or row.get("level") or "")
+            content = str(row.get("客观分析内容") or row.get("analysis_content") or row.get("content") or "")
+            result.append((name, level, content))
+        else:
+            result.append((default_name, "", ""))
+    fallback = {
+        "使用场景": item.get("usage_scene") or "",
+        "目标群体": item.get("target_audience") or "",
+        "短视频种草": item.get("recommendation_reason") or "",
+        "竞品属性": item.get("risk_notes") or "",
+    }
+    return [(name, level, content or str(fallback.get(name, ""))) for name, level, content in result]
+
+
+def show_analysis_report(parent: QWidget, item: dict[str, Any]) -> None:
+    title = str(item.get("title") or item.get("derived_title") or "选品分析报告")
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(f"选品分析报告 - {title[:40]}")
+    dialog.resize(860, 620)
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(20, 20, 20, 20)
+    header = QLabel(title)
+    header.setObjectName("PageTitle")
+    header.setWordWrap(True)
+    layout.addWidget(header)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    content = QWidget()
+    grid = QGridLayout(content)
+    grid.setContentsMargins(0, 0, 10, 10)
+    grid.setHorizontalSpacing(10)
+    grid.setVerticalSpacing(10)
+    for index, (name, level, detail) in enumerate(dimension_items_from_report(item)):
+        box = QFrame()
+        box.setObjectName("MetricBox")
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(12, 10, 12, 10)
+        box_layout.setSpacing(6)
+        name_label = QLabel(name)
+        name_label.setObjectName("CardTitle")
+        level_label = QLabel(level or "暂无等级")
+        level_label.setObjectName("ProductPrice")
+        detail_label = QLabel(detail or "暂无分析内容")
+        detail_label.setObjectName("ProductMuted")
+        detail_label.setWordWrap(True)
+        box_layout.addWidget(name_label)
+        box_layout.addWidget(level_label)
+        box_layout.addWidget(detail_label)
+        grid.addWidget(box, index // 2, index % 2)
+    scroll.setWidget(content)
+    layout.addWidget(scroll, 1)
+    close_button = QPushButton("关闭")
+    close_button.clicked.connect(dialog.accept)
+    actions = QHBoxLayout()
+    actions.addStretch()
+    actions.addWidget(close_button)
+    layout.addLayout(actions)
+    dialog.exec()
+
+
+def table(headers: list[str]) -> QTableWidget:
+    widget = QTableWidget(0, len(headers))
+    widget.setHorizontalHeaderLabels(headers)
+    widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+    widget.verticalHeader().setVisible(False)
+    widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    widget.setSelectionBehavior(QAbstractItemView.SelectRows)
+    widget.setAlternatingRowColors(True)
+    widget.setShowGrid(False)
+    widget.setWordWrap(False)
+    widget.verticalHeader().setDefaultSectionSize(46)
+    return widget
+
+
+def fill_table(widget: QTableWidget, rows: list[list[Any]]) -> None:
+    widget.setRowCount(len(rows))
+    for row_index, row in enumerate(rows):
+        for column_index, value in enumerate(row):
+            item = QTableWidgetItem(str(value))
+            item.setTextAlignment(Qt.AlignCenter)
+            widget.setItem(row_index, column_index, item)
+
+
+def metric_card(title: str, value: str, note: str) -> QWidget:
+    card = QFrame()
+    card.setObjectName("MetricCard")
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(16, 14, 16, 14)
+    layout.setSpacing(4)
+    title_label = QLabel(title)
+    title_label.setObjectName("ProductMuted")
+    value_label = QLabel(value)
+    value_label.setObjectName("DashboardMetric")
+    note_label = QLabel(note)
+    note_label.setObjectName("Muted")
+    layout.addWidget(title_label)
+    layout.addWidget(value_label)
+    layout.addWidget(note_label)
+    return card
+
+
+    def video_projects(self) -> list[dict[str, Any]]:
+        if not self.user:
+            return []
+        return self.client.get("/api/video/projects")
+
+
+    def create_video_project(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.post("/api/video/projects", payload)
+
+
+    def update_video_project(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.put(f"/api/video/projects/{project_id}", payload)
+
+
+    def upload_video_asset(self, project_id: int, file_path: str, fields: dict[str, Any]) -> dict[str, Any]:
+        return self.client.upload(f"/api/video/projects/{project_id}/assets", file_path, fields, timeout=180)
+
+
+    def update_video_asset(self, project_id: int, asset_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.put(f"/api/video/projects/{project_id}/assets/{asset_id}", payload)
+
+
+    def generate_video_script(self, project_id: int) -> dict[str, Any]:
+        return self.client.post(f"/api/video/projects/{project_id}/script/generate", timeout=240)
+
+
+    def save_video_script(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.put(f"/api/video/projects/{project_id}/script", payload)
+
+
+    def create_video_task(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.post(f"/api/video/projects/{project_id}/tasks", payload, timeout=300)
+
+
+    def refresh_video_task(self, project_id: int, task_id: int) -> dict[str, Any]:
+        return self.client.post(f"/api/video/projects/{project_id}/tasks/{task_id}/refresh", timeout=180)
+
+
+def make_title(text: str, subtitle: str = "") -> QWidget:
+    box = QFrame()
+    box.setObjectName("PageHeader")
+    layout = QVBoxLayout(box)
+    layout.setContentsMargins(20, 18, 20, 18)
+    layout.setSpacing(6)
+    title = QLabel(text)
+    title.setObjectName("PageTitle")
+    layout.addWidget(title)
+    if subtitle:
+        sub = QLabel(subtitle)
+        sub.setObjectName("Muted")
+        layout.addWidget(sub)
+    return box
+
+
+DIMENSION_LABELS = [
+    ("dimension_1", "使用场景"),
+    ("dimension_2", "商品周期性"),
+    ("dimension_3", "目标群体"),
+    ("dimension_4", "短视频种草"),
+    ("dimension_5", "日本偏好"),
+    ("dimension_6", "新奇特"),
+    ("dimension_7", "复购属性"),
+    ("dimension_8", "竞品属性"),
+]
+
+
+def dimension_items_from_report(item: dict[str, Any]) -> list[tuple[str, str, str]]:
+    raw_report = item.get("analysis_report") or {}
+    if isinstance(raw_report, str):
+        try:
+            raw_report = json.loads(raw_report)
+        except (TypeError, ValueError):
+            raw_report = {}
+    result: list[tuple[str, str, str]] = []
+    for code, default_name in DIMENSION_LABELS:
+        row = raw_report.get(code) if isinstance(raw_report, dict) else None
+        if not row and isinstance(raw_report, dict):
+            row = raw_report.get(default_name)
         if isinstance(row, dict):
             name = str(row.get("dimension_name") or row.get("维度名称") or default_name)
             level = str(row.get("判定等级") or row.get("rating_level") or row.get("level") or "")
@@ -1226,6 +1434,7 @@ class MainWindow(QMainWindow):
         self.add_page("选品库", SelectionLibraryPage(self.gateway), "08_选品属性.ico")
         self.add_page("新品榜单", NewProductsPage(self.gateway), "01_智能选品.ico")
         self.add_page("采集箱", FavoritesPage(self.gateway), "05_主题皮肤.ico")
+        self.add_page("视频生成", VideoGenerationPage(self.gateway), "menu_course.svg")
         self.add_nav_separator()
         self.add_page("店铺管理", AutoPublishPage(self.gateway), "10_TK跨境助手.ico")
         self.add_page("数据看板", DataDashboardPage(self.gateway), "07_第三方API.ico")
@@ -1310,6 +1519,14 @@ class MainWindow(QMainWindow):
             if item and item.data(Qt.UserRole) != -1 and not item.isHidden():
                 self.nav.setCurrentRow(row)
                 return
+
+    def open_video_generation_page(self) -> None:
+        for row in range(self.nav.count()):
+            item = self.nav.item(row)
+            if item and item.text() == "视频生成" and not item.isHidden():
+                self.nav.setCurrentRow(row)
+                return
+        QMessageBox.information(self, "视频生成", "当前没有找到视频生成入口，请先登录或刷新页面。")
 
     def open_login_dialog(self) -> None:
         if self.user:
@@ -1567,6 +1784,885 @@ class ProductRadarChart(QWidget):
             point = QPointF(center.x() + (radius + 16) * math.cos(angle), center.y() + (radius + 16) * math.sin(angle))
             painter.drawText(QRectF(point.x() - 35, point.y() - 9, 70, 18), Qt.AlignCenter, label)
         painter.end()
+
+
+class VideoScriptSignals(QObject):
+    finished = Signal(dict)
+    failed = Signal(str)
+
+
+class VideoScriptTask(QRunnable):
+    def __init__(self, gateway: DataGateway, project_id: int, signals: VideoScriptSignals) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.project_id = project_id
+        self.signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.signals.finished.emit(self.gateway.generate_video_script(self.project_id))
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
+class VideoTaskSignals(QObject):
+    finished = Signal(dict)
+    failed = Signal(str)
+
+
+class VideoSubmitTask(QRunnable):
+    def __init__(self, gateway: DataGateway, project_id: int, payload: dict[str, Any], signals: VideoTaskSignals) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.project_id = project_id
+        self.payload = payload
+        self.signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.signals.finished.emit(self.gateway.create_video_task(self.project_id, self.payload))
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
+class VideoRefreshTask(QRunnable):
+    def __init__(self, gateway: DataGateway, project_id: int, task_id: int, signals: VideoTaskSignals) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.project_id = project_id
+        self.task_id = task_id
+        self.signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            self.signals.finished.emit(self.gateway.refresh_video_task(self.project_id, self.task_id))
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
+class VideoGenerationPage(Page):
+    VIDEO_STRATEGY_OPTIONS = [
+        ("自动稳妥", "auto_safe"),
+        ("静态展示：适合复杂结构/带线/带屏商品", "static_display"),
+        ("轻交互：只允许手指触摸/指向", "light_interaction"),
+        ("手持演示：适合简单小件商品", "handheld_demo"),
+        ("佩戴演示：仅适合服饰/首饰/帽子等", "wearable_demo"),
+    ]
+
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.loaded = False
+        self.current_project: dict[str, Any] | None = None
+        self.video_task_busy = False
+        self.video_refresh_busy = False
+        self.video_poll_timer = QTimer(self)
+        self.video_poll_timer.setInterval(8000)
+        self.video_poll_timer.timeout.connect(self.auto_refresh_video_task)
+        self.layout.addWidget(make_title("视频生成", "上传产品图，生成脚本，再提交视频。产品图会作为强参考。"))
+        body = QHBoxLayout()
+        self.step_nav = QListWidget()
+        self.step_nav.setObjectName("SideNav")
+        self.step_nav.setFixedWidth(190)
+        for name in ["1 产品信息", "2 产品图片", "3 视频脚本", "4 生成视频"]:
+            self.step_nav.addItem(QListWidgetItem(name))
+        self.stack = QStackedWidget()
+        self.step_nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        body.addWidget(self.step_nav)
+        body.addWidget(self.stack, 1)
+        self.layout.addLayout(body, 1)
+        self.build_info_step()
+        self.build_assets_step()
+        self.build_script_step()
+        self.build_generate_step()
+        self.step_nav.setCurrentRow(0)
+
+    def hint(self, title: str, text: str) -> QWidget:
+        box = QFrame()
+        box.setObjectName("PromptHint")
+        layout = QVBoxLayout(box)
+        title_label = QLabel(title)
+        title_label.setObjectName("CardTitle")
+        text_label = QLabel(text)
+        text_label.setObjectName("Muted")
+        text_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(text_label)
+        return box
+
+    def activate(self) -> None:
+        if not self.loaded:
+            self.refresh_projects()
+            self.loaded = True
+
+    def build_info_step(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self.hint("第 1 步：填写产品信息", "产品详情用中文填写；字幕/口播语言默认日语。"))
+        grid = QGridLayout()
+        self.video_title = QLineEdit()
+        self.video_title.setPlaceholderText("项目标题")
+        self.market = QComboBox()
+        self.market.setEditable(True)
+        self.market.addItems(["日本", "美国", "英国", "东南亚", "韩国"])
+        self.language = QComboBox()
+        self.language.setEditable(True)
+        self.language.addItems(["日语", "英语", "中文", "韩语", "泰语"])
+        self.video_strategy = QComboBox()
+        for label, key in self.VIDEO_STRATEGY_OPTIONS:
+            self.video_strategy.addItem(label, key)
+        self.product_details = QTextEdit()
+        self.product_details.setMinimumHeight(150)
+        self.product_details.setPlaceholderText("粘贴产品详情、卖点、人群、场景、风格要求。")
+        grid.addWidget(QLabel("项目标题"), 0, 0)
+        grid.addWidget(self.video_title, 0, 1)
+        grid.addWidget(QLabel("目标市场"), 0, 2)
+        grid.addWidget(self.market, 0, 3)
+        grid.addWidget(QLabel("字幕/口播语言"), 0, 4)
+        grid.addWidget(self.language, 0, 5)
+        grid.addWidget(QLabel("产品详情"), 1, 0)
+        grid.addWidget(self.product_details, 1, 1, 1, 5)
+        grid.addWidget(QLabel("拍摄方案"), 2, 0)
+        grid.addWidget(self.video_strategy, 2, 1, 1, 5)
+        layout.addLayout(grid)
+        actions = QHBoxLayout()
+        create = QPushButton("保存为新项目")
+        save = QPushButton("保存当前产品信息")
+        create.clicked.connect(self.create_project)
+        save.clicked.connect(lambda: self.save_project(False))
+        actions.addWidget(create)
+        actions.addWidget(save)
+        actions.addStretch()
+        layout.addLayout(actions)
+        self.project_table = table(["ID", "项目", "市场", "语言", "状态"])
+        self.project_table.doubleClicked.connect(self.load_selected_project)
+        layout.addWidget(self.project_table, 1)
+        self.stack.addWidget(page)
+
+    def build_assets_step(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self.hint("第 2 步：上传产品图", "建议 2-5 张。至少上传一张清晰产品主图。"))
+        row = QHBoxLayout()
+        self.asset_role = QLineEdit()
+        self.asset_role.setPlaceholderText("图片角色：主图/细节图/场景图")
+        self.asset_desc = QLineEdit()
+        self.asset_desc.setPlaceholderText("图片说明：这张图代表什么")
+        self.primary_asset = QCheckBox("主参考图")
+        upload = QPushButton("上传产品图")
+        save_asset = QPushButton("保存图片说明")
+        upload.clicked.connect(self.upload_assets)
+        save_asset.clicked.connect(self.save_selected_asset)
+        row.addWidget(self.asset_role)
+        row.addWidget(self.asset_desc, 1)
+        row.addWidget(self.primary_asset)
+        row.addWidget(save_asset)
+        row.addWidget(upload)
+        layout.addLayout(row)
+        self.asset_table = table(["ID", "角色", "说明", "主图", "地址"])
+        self.asset_table.itemSelectionChanged.connect(self.load_selected_asset)
+        layout.addWidget(self.asset_table, 1)
+        self.stack.addWidget(page)
+
+    def build_script_step(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self.hint("第 3 步：生成并修改脚本", "中文脚本说明，日语字幕/口播。生成时有进度条，窗口不会卡住。"))
+        actions = QHBoxLayout()
+        self.generate_script_button = QPushButton("AI 生成脚本")
+        self.save_script_button = QPushButton("保存修改后的脚本")
+        self.generate_script_button.clicked.connect(self.generate_script)
+        self.save_script_button.clicked.connect(lambda: self.save_script(False))
+        actions.addWidget(self.generate_script_button)
+        actions.addWidget(self.save_script_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+        self.script_progress = QProgressBar()
+        self.script_progress.setRange(0, 0)
+        self.script_progress.hide()
+        self.script_progress_label = QLabel("正在请求 AI 生成脚本，请稍候...")
+        self.script_progress_label.setObjectName("Muted")
+        self.script_progress_label.hide()
+        layout.addWidget(self.script_progress)
+        layout.addWidget(self.script_progress_label)
+        self.script_text = QTextEdit()
+        self.script_text.setMinimumHeight(130)
+        layout.addWidget(self.script_text)
+        self.shot_table = table(["时间轴", "景别", "中文画面", "日语字幕/口播", "中文氛围与画质"])
+        self.shot_table.setEditTriggers(QAbstractItemView.AllEditTriggers)
+        layout.addWidget(self.shot_table, 1)
+        self.stack.addWidget(page)
+
+    def build_generate_step(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self.hint("第 4 步：生成视频", "系统会用产品图、分镜画面和脚本生成视频。产品图优先级最高。"))
+        row = QHBoxLayout()
+        self.image_mode_label = QLabel("产品参考视频")
+        self.image_mode_label.setObjectName("CardTitle")
+        self.video_model = QComboBox()
+        self.video_model.addItem("Seedance 2.0 mini", "doubao-seedance-2-0-mini-260615")
+        self.video_model.addItem("Seedance 2.0 Fast", "doubao-seedance-2-0-fast")
+        self.submit_video_button = QPushButton("提交生成视频")
+        self.refresh_task_button = QPushButton("刷新任务")
+        self.download_video_button = QPushButton("下载视频")
+        self.submit_video_button.clicked.connect(self.create_video_task)
+        self.refresh_task_button.clicked.connect(self.refresh_selected_video_task)
+        self.download_video_button.clicked.connect(self.download_current_video)
+        row.addWidget(self.image_mode_label)
+        row.addWidget(self.video_model)
+        row.addWidget(self.submit_video_button)
+        row.addWidget(self.refresh_task_button)
+        row.addWidget(self.download_video_button)
+        row.addStretch()
+        layout.addLayout(row)
+
+        content = QHBoxLayout()
+        left = QVBoxLayout()
+        self.generate_status = QLabel("准备就绪：确认脚本和产品图后提交。")
+        self.generate_status.setObjectName("Muted")
+        self.generate_status.setWordWrap(True)
+        left.addWidget(self.generate_status)
+        self.video_progress = QProgressBar()
+        self.video_progress.setRange(0, 0)
+        self.video_progress.hide()
+        self.video_progress_label = QLabel("模型任务已提交，正在生成中；页面会自动刷新状态。")
+        self.video_progress_label.setObjectName("Muted")
+        self.video_progress_label.setWordWrap(True)
+        self.video_progress_label.hide()
+        left.addWidget(self.video_progress)
+        left.addWidget(self.video_progress_label)
+        self.video_storage_label = QLabel("存放位置：-")
+        self.video_storage_label.setObjectName("Muted")
+        self.video_storage_label.setWordWrap(True)
+        left.addWidget(self.video_storage_label)
+        self.video_usage_label = QLabel("消耗：-")
+        self.video_usage_label.setObjectName("Muted")
+        self.video_usage_label.setWordWrap(True)
+        left.addWidget(self.video_usage_label)
+        self.task_table = table(["任务ID", "状态", "消耗", "结果"])
+        self.task_table.setMaximumHeight(190)
+        self.task_table.itemSelectionChanged.connect(self.preview_selected_task)
+        left.addWidget(self.task_table)
+        self.video_result = QTextEdit()
+        self.video_result.setReadOnly(True)
+        self.video_result.setMaximumHeight(120)
+        self.video_result.setPlaceholderText("任务摘要会显示在这里。")
+        left.addWidget(self.video_result)
+
+        preview = QVBoxLayout()
+        preview_title = QLabel("视频预览")
+        preview_title.setObjectName("CardTitle")
+        self.video_preview_status = QLabel("生成完成后会在这里播放 9:16 视频。")
+        self.video_preview_status.setObjectName("Muted")
+        self.video_preview_status.setWordWrap(True)
+        self.video_widget = QVideoWidget()
+        self.video_widget.setFixedSize(300, 533)
+        self.video_widget.setAspectRatioMode(Qt.KeepAspectRatio)
+        self.video_player = QMediaPlayer(self)
+        self.audio_output = QAudioOutput(self)
+        self.video_player.setAudioOutput(self.audio_output)
+        self.video_player.setVideoOutput(self.video_widget)
+        self.current_video_url = ""
+        self.current_video_storage = ""
+        preview.addWidget(preview_title)
+        preview.addWidget(self.video_preview_status)
+        preview.addWidget(self.video_widget, 0, Qt.AlignHCenter)
+        preview.addStretch(1)
+
+        content.setSpacing(22)
+        content.addLayout(left, 2)
+        content.addLayout(preview, 1)
+        layout.addLayout(content, 1)
+        self.stack.addWidget(page)
+
+    def strategy_label(self) -> str:
+        return self.video_strategy.currentText().strip() or "自动稳妥"
+
+    def split_strategy_details(self, text: str) -> tuple[str, str]:
+        strategy = "自动稳妥"
+        cleaned_lines: list[str] = []
+        labels = {label for label, _ in self.VIDEO_STRATEGY_OPTIONS}
+        for raw_line in (text or "").splitlines():
+            line = raw_line.strip()
+            if line.startswith("拍摄方案：") or line.startswith("拍摄方案:"):
+                value = re.split(r"[:：]", line, maxsplit=1)[-1].strip()
+                if value in labels:
+                    strategy = value
+                continue
+            if line.startswith("video_strategy_key:"):
+                continue
+            cleaned_lines.append(raw_line)
+        return strategy, "\n".join(cleaned_lines).strip()
+
+    def set_strategy_label(self, label: str) -> None:
+        for index in range(self.video_strategy.count()):
+            if self.video_strategy.itemText(index) == label:
+                self.video_strategy.setCurrentIndex(index)
+                return
+        self.video_strategy.setCurrentIndex(0)
+
+    def payload(self) -> dict[str, Any]:
+        _, details = self.split_strategy_details(self.product_details.toPlainText())
+        strategy = self.strategy_label()
+        strategy_key = self.video_strategy.currentData() or "auto_safe"
+        if details:
+            details = f"video_strategy_key:{strategy_key}\n拍摄方案：{strategy}\n{details}"
+        else:
+            details = f"video_strategy_key:{strategy_key}\n拍摄方案：{strategy}"
+        return {
+            "title": self.video_title.text().strip() or "未命名视频项目",
+            "target_market": self.market.currentText().strip() or "日本",
+            "video_language": self.language.currentText().strip() or "日语",
+            "product_details": details,
+        }
+
+    def create_project(self) -> None:
+        try:
+            self.current_project = self.gateway.create_video_project(self.payload())
+            self.refresh_projects()
+            self.load_project(self.current_project)
+            self.step_nav.setCurrentRow(1)
+        except Exception as exc:
+            QMessageBox.warning(self, "创建失败", str(exc))
+
+    def save_project(self, silent: bool = False) -> bool:
+        if not self.current_project:
+            self.create_project()
+            return bool(self.current_project)
+        try:
+            self.current_project = self.gateway.update_video_project(int(self.current_project["id"]), self.payload())
+            if not silent:
+                QMessageBox.information(self, "保存成功", "产品信息已保存。")
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self, "保存失败", str(exc))
+            return False
+
+    def refresh_projects(self) -> None:
+        try:
+            self.projects = self.gateway.video_projects()
+        except Exception:
+            self.projects = []
+        fill_table(self.project_table, [[p.get("id"), p.get("title"), p.get("target_market"), p.get("video_language"), p.get("status")] for p in self.projects])
+
+    def load_selected_project(self) -> None:
+        row = self.project_table.currentRow()
+        if hasattr(self, "projects") and 0 <= row < len(self.projects):
+            self.current_project = self.projects[row]
+            self.load_project(self.current_project)
+
+    def load_project(self, project: dict[str, Any]) -> None:
+        self.video_title.setText(str(project.get("title") or ""))
+        self.market.setEditText(str(project.get("target_market") or "日本"))
+        self.language.setEditText(str(project.get("video_language") or "日语"))
+        strategy, details = self.split_strategy_details(str(project.get("product_details") or ""))
+        self.set_strategy_label(strategy)
+        self.product_details.setPlainText(details)
+        self.render_assets()
+        self.render_script()
+        self.refresh_generate_summary()
+
+    def render_assets(self) -> None:
+        assets = (self.current_project or {}).get("assets") or []
+        rows = []
+        for asset in assets:
+            if asset.get("asset_type") not in {"product", "product_image", ""}:
+                continue
+            rows.append([
+                asset.get("id"),
+                asset.get("role"),
+                asset.get("description"),
+                "是" if asset.get("is_primary") else "-",
+                asset.get("public_url") or asset.get("url"),
+            ])
+        fill_table(self.asset_table, rows)
+
+    def selected_asset(self) -> dict[str, Any] | None:
+        row = self.asset_table.currentRow()
+        if row < 0:
+            return None
+        asset_id_item = self.asset_table.item(row, 0)
+        if not asset_id_item:
+            return None
+        asset_id = int(asset_id_item.text() or 0)
+        for asset in (self.current_project or {}).get("assets") or []:
+            if int(asset.get("id") or 0) == asset_id:
+                return asset
+        return None
+
+    def load_selected_asset(self) -> None:
+        asset = self.selected_asset()
+        if not asset:
+            return
+        self.asset_role.setText(str(asset.get("role") or ""))
+        self.asset_desc.setText(str(asset.get("description") or ""))
+        self.primary_asset.setChecked(bool(asset.get("is_primary")))
+
+    def save_selected_asset(self) -> None:
+        if not self.current_project:
+            return
+        asset = self.selected_asset()
+        if not asset:
+            QMessageBox.information(self, "提示", "请先选中下面要修改的图片。")
+            return
+        try:
+            self.current_project = self.gateway.update_video_asset(
+                int(self.current_project["id"]),
+                int(asset["id"]),
+                {
+                    "role": self.asset_role.text().strip(),
+                    "description": self.asset_desc.text().strip(),
+                    "is_primary": 1 if self.primary_asset.isChecked() else 0,
+                },
+            )
+            self.render_assets()
+            QMessageBox.information(self, "保存成功", "图片说明已同步到选中图片。")
+        except Exception as exc:
+            QMessageBox.warning(self, "保存失败", str(exc))
+
+    def upload_assets(self) -> None:
+        if not self.current_project:
+            self.create_project()
+        if not self.current_project:
+            return
+        files, _ = QFileDialog.getOpenFileNames(self, "选择产品图", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        if not files:
+            return
+        for index, path in enumerate(files):
+            self.current_project = self.gateway.upload_video_asset(
+                int(self.current_project["id"]),
+                path,
+                {"role": self.asset_role.text(), "description": self.asset_desc.text(), "is_primary": 1 if self.primary_asset.isChecked() and index == 0 else 0},
+            )
+        self.render_assets()
+        QMessageBox.information(self, "上传完成", f"已上传 {len(files)} 张产品图。")
+
+    def generate_script(self) -> None:
+        if not self.current_project:
+            self.create_project()
+        elif not self.save_project(True):
+            return
+        if not self.current_project:
+            return
+        self.generate_script_button.setEnabled(False)
+        self.save_script_button.setEnabled(False)
+        self.script_progress.show()
+        self.script_progress_label.show()
+        self.script_signals = VideoScriptSignals()
+        self.script_signals.finished.connect(self.on_script_generated)
+        self.script_signals.failed.connect(self.on_script_failed)
+        IMAGE_THREAD_POOL.start(VideoScriptTask(self.gateway, int(self.current_project["id"]), self.script_signals))
+
+    def on_script_generated(self, project: dict[str, Any]) -> None:
+        self.current_project = project
+        self.generate_script_button.setEnabled(True)
+        self.save_script_button.setEnabled(True)
+        self.script_progress.hide()
+        self.script_progress_label.hide()
+        self.render_script()
+        QMessageBox.information(self, "脚本已生成", "脚本说明为中文，字幕/口播为日语。")
+
+    def on_script_failed(self, message: str) -> None:
+        self.generate_script_button.setEnabled(True)
+        self.save_script_button.setEnabled(True)
+        self.script_progress.hide()
+        self.script_progress_label.hide()
+        QMessageBox.warning(self, "生成失败", message)
+
+    def render_script(self) -> None:
+        if not self.current_project:
+            return
+        script_text = str(self.current_project.get("script_text") or "")
+        self.script_text.setPlainText(script_text)
+        self.shot_table.setRowCount(0)
+        for shot in self.normalized_storyboard(script_text):
+            row = self.shot_table.rowCount()
+            self.shot_table.insertRow(row)
+            for col, key in enumerate(["timeline", "shot_type", "visual_cn", "copy", "atmosphere_cn"]):
+                self.shot_table.setItem(row, col, QTableWidgetItem(str(shot.get(key) or "")))
+
+    def normalized_storyboard(self, script_text: str = "") -> list[dict[str, str]]:
+        if not self.current_project:
+            return []
+        raw = self.current_project.get("storyboard") or []
+        if not raw:
+            script_json = self.current_project.get("script_json") or {}
+            if isinstance(script_json, str):
+                try:
+                    script_json = json.loads(script_json or "{}")
+                except ValueError:
+                    script_json = {}
+            if isinstance(script_json, dict):
+                raw = script_json.get("storyboard") or script_json.get("shot_list") or []
+        shots = [self.normalize_shot(item) for item in raw if isinstance(item, dict)]
+        if shots:
+            return shots
+        return self.parse_shots_from_text(script_text)
+
+    def normalize_shot(self, shot: dict[str, Any]) -> dict[str, str]:
+        return {
+            "timeline": str(shot.get("timeline") or shot.get("time") or shot.get("time_range") or ""),
+            "shot_type": str(shot.get("shot_type") or shot.get("shot_size") or shot.get("shot") or ""),
+            "visual_cn": str(shot.get("visual_cn") or shot.get("visual") or shot.get("image") or ""),
+            "copy": str(shot.get("copy") or shot.get("subtitle") or shot.get("voiceover") or ""),
+            "atmosphere_cn": str(shot.get("atmosphere_cn") or shot.get("atmosphere_quality") or shot.get("quality") or ""),
+        }
+
+    def parse_shots_from_text(self, script_text: str) -> list[dict[str, str]]:
+        shots: list[dict[str, str]] = []
+        for line in script_text.splitlines():
+            if not re.match(r"^\s*\d+\s*-\s*\d+\s*s", line):
+                continue
+            parts = [part.strip() for part in line.split("|")]
+            if len(parts) < 3:
+                continue
+            shot = {
+                "timeline": parts[0],
+                "shot_type": parts[1] if len(parts) > 1 else "",
+                "visual_cn": "",
+                "copy": "",
+                "atmosphere_cn": "",
+            }
+            for part in parts[2:]:
+                text = part.strip()
+                if text.startswith("画面：") or text.startswith("画面:"):
+                    shot["visual_cn"] = re.sub(r"^画面[:：]\s*", "", text)
+                elif text.startswith("字幕/口播：") or text.startswith("字幕/口播:"):
+                    shot["copy"] = re.sub(r"^字幕/口播[:：]\s*", "", text)
+                elif text.startswith("氛围与画质：") or text.startswith("氛围与画质:"):
+                    shot["atmosphere_cn"] = re.sub(r"^氛围与画质[:：]\s*", "", text)
+                elif not shot["visual_cn"]:
+                    shot["visual_cn"] = text
+            shots.append(shot)
+        return shots
+
+    def script_payload(self) -> dict[str, Any]:
+        shots = []
+        for row in range(self.shot_table.rowCount()):
+            values = [self.shot_table.item(row, col).text().strip() if self.shot_table.item(row, col) else "" for col in range(5)]
+            if any(values):
+                shots.append({"timeline": values[0], "shot_type": values[1], "visual_cn": values[2], "copy": values[3], "atmosphere_cn": values[4]})
+        return {"script_text": self.script_text.toPlainText().strip(), "storyboard": shots}
+
+    def save_script(self, silent: bool = False) -> bool:
+        if not self.current_project:
+            return False
+        try:
+            self.current_project = self.gateway.save_video_script(int(self.current_project["id"]), self.script_payload())
+            self.refresh_generate_summary()
+            if not silent:
+                QMessageBox.information(self, "保存成功", "脚本已保存。")
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self, "保存失败", str(exc))
+            return False
+
+    def task_is_active(self, task: dict[str, Any] | None) -> bool:
+        if not task:
+            return False
+        status = str(task.get("status") or "").lower()
+        return status in {"submitted", "running", "queued", "pending", "processing", "in_progress"}
+
+    def set_video_progress(self, active: bool, text: str = "") -> None:
+        if not hasattr(self, "video_progress"):
+            return
+        if active:
+            self.video_progress.show()
+            self.video_progress_label.show()
+            self.video_progress_label.setText(text or "模型任务已提交，正在生成中；页面会自动刷新状态。")
+        else:
+            self.video_progress.hide()
+            self.video_progress_label.hide()
+
+    def set_video_buttons_busy(self, busy: bool) -> None:
+        self.video_task_busy = busy
+        if hasattr(self, "submit_video_button"):
+            self.submit_video_button.setEnabled(not busy)
+        if hasattr(self, "refresh_task_button"):
+            self.refresh_task_button.setEnabled(not busy)
+
+    def selected_or_latest_task(self) -> dict[str, Any] | None:
+        if not self.current_project:
+            return None
+        tasks = self.current_project.get("tasks") or []
+        if not tasks:
+            return None
+        row = self.task_table.currentRow() if hasattr(self, "task_table") else -1
+        if row >= 0:
+            task_id_item = self.task_table.item(row, 0)
+            task_id = int(task_id_item.text() or 0) if task_id_item else 0
+            selected = next((item for item in tasks if int(item.get("id") or 0) == task_id), None)
+            if selected:
+                return selected
+        return tasks[0]
+
+    def create_video_task(self) -> None:
+        if not self.current_project or not self.save_script(True):
+            return
+        product_assets = [asset for asset in (self.current_project.get("assets") or []) if asset.get("asset_type") in {"product", "product_image"}]
+        if not product_assets:
+            QMessageBox.information(self, "提示", "请先上传至少 1 张产品图，再生成视频。")
+            return
+        mode = "image_to_video"
+        payload = {"generation_mode": mode, "model_name": str(self.video_model.currentData() or self.video_model.currentText()).strip()}
+        self.generate_status.setText("正在提交给视频模型。系统会先生成分镜画面，请稍候。")
+        self.set_video_progress(True, "正在调用视频模型，任务创建中...")
+        self.set_video_buttons_busy(True)
+        self.video_submit_signals = VideoTaskSignals()
+        self.video_submit_signals.finished.connect(self.on_video_task_created)
+        self.video_submit_signals.failed.connect(self.on_video_task_failed)
+        IMAGE_THREAD_POOL.start(VideoSubmitTask(self.gateway, int(self.current_project["id"]), payload, self.video_submit_signals))
+
+    def on_video_task_created(self, task: dict[str, Any]) -> None:
+        self.set_video_buttons_busy(False)
+        self.video_result.setPlainText(self.video_task_summary(task))
+        if self.current_project is not None:
+            tasks = self.current_project.setdefault("tasks", [])
+            tasks.insert(0, task)
+        self.refresh_generate_summary()
+        self.preview_task_video(task)
+        if self.task_is_active(task):
+            self.generate_status.setText(f"视频任务已提交，模型正在生成。任务号：{task.get('provider_task_id') or task.get('id')}")
+            self.set_video_progress(True, "模型正在生成视频，系统会自动刷新任务状态。")
+            self.video_poll_timer.start()
+        else:
+            self.set_video_progress(False)
+
+    def on_video_task_failed(self, message: str) -> None:
+        self.set_video_buttons_busy(False)
+        self.set_video_progress(False)
+        self.generate_status.setText("提交失败，请检查模型配置、第三方 API 和余额。")
+        QMessageBox.warning(self, "提交失败", message)
+
+    def refresh_selected_video_task(self) -> None:
+        if not self.current_project:
+            QMessageBox.information(self, "提示", "请先选择一个视频项目。")
+            return
+        task = self.selected_or_latest_task()
+        if not task:
+            QMessageBox.information(self, "提示", "当前项目还没有视频任务。")
+            return
+        self.start_video_refresh(task, manual=True)
+
+    def start_video_refresh(self, task: dict[str, Any], manual: bool = False) -> None:
+        if self.video_refresh_busy or self.video_task_busy or not self.current_project:
+            return
+        self.video_refresh_busy = True
+        if manual:
+            self.generate_status.setText("正在刷新视频任务结果和 token 消耗。")
+        if self.task_is_active(task):
+            self.set_video_progress(True, "模型正在生成视频，系统会自动刷新任务状态。")
+        self.video_refresh_signals = VideoTaskSignals()
+        self.video_refresh_signals.finished.connect(self.on_video_task_refreshed)
+        self.video_refresh_signals.failed.connect(lambda message: self.on_video_refresh_failed(message, manual))
+        IMAGE_THREAD_POOL.start(VideoRefreshTask(self.gateway, int(self.current_project["id"]), int(task["id"]), self.video_refresh_signals))
+
+    def on_video_task_refreshed(self, refreshed: dict[str, Any]) -> None:
+        self.video_refresh_busy = False
+        tasks = self.current_project.get("tasks") if self.current_project else []
+        if tasks is not None:
+            for index, item in enumerate(tasks):
+                if int(item.get("id") or 0) == int(refreshed.get("id") or 0):
+                    tasks[index] = refreshed
+                    break
+            else:
+                tasks.insert(0, refreshed)
+        self.video_result.setPlainText(self.video_task_summary(refreshed))
+        self.refresh_generate_summary()
+        self.preview_task_video(refreshed)
+        status = str(refreshed.get("status") or "")
+        if self.task_is_active(refreshed):
+            self.generate_status.setText(f"视频生成中：{status or 'running'}。任务号：{refreshed.get('provider_task_id') or refreshed.get('id')}")
+            self.set_video_progress(True, "模型正在生成视频，系统会自动刷新任务状态。")
+            self.video_poll_timer.start()
+        else:
+            self.video_poll_timer.stop()
+            self.set_video_progress(False)
+            if refreshed.get("video_url") or refreshed.get("result_video_url") or refreshed.get("local_video_url"):
+                self.generate_status.setText("视频生成完成，可以预览或下载。")
+            elif str(refreshed.get("status") or "").lower() in {"failed", "cancelled", "canceled"}:
+                self.generate_status.setText(f"视频生成失败：{refreshed.get('error_message') or refreshed.get('status')}")
+            else:
+                self.generate_status.setText(f"任务状态：{refreshed.get('status') or '-'}")
+
+    def on_video_refresh_failed(self, message: str, manual: bool = False) -> None:
+        self.video_refresh_busy = False
+        if manual:
+            self.generate_status.setText("刷新失败，请检查状态查询接口配置和任务状态。")
+            QMessageBox.warning(self, "刷新失败", message)
+
+    def auto_refresh_video_task(self) -> None:
+        task = self.selected_or_latest_task()
+        if not task or not self.task_is_active(task):
+            self.video_poll_timer.stop()
+            self.set_video_progress(False)
+            return
+        self.start_video_refresh(task, manual=False)
+
+    def refresh_generate_summary(self) -> None:
+        if not hasattr(self, "task_table"):
+            return
+        project = self.current_project or {}
+        assets = project.get("assets") or []
+        product_assets = [asset for asset in assets if asset.get("asset_type") in {"product", "product_image"}]
+        storyboard_assets = [asset for asset in assets if asset.get("asset_type") == "storyboard_sheet"]
+        storyboard = project.get("storyboard") or []
+        script_ready = bool(str(project.get("script_text") or "").strip() or storyboard)
+        sheet_text = "已有分镜画面" if storyboard_assets else "提交后会先自动生成分镜画面"
+        self.generate_status.setText(f"脚本{'已准备' if script_ready else '未准备'}，产品图 {len(product_assets)} 张，{sheet_text}。产品图会作为最高优先级参考。")
+        task_rows = []
+        for task in project.get("tasks") or []:
+            task_rows.append([
+                task.get("id"),
+                task.get("status"),
+                self.video_usage_text(task, compact=True),
+                self.video_result_text(task),
+            ])
+        fill_table(self.task_table, task_rows)
+        self.preview_task_video(self.latest_video_task())
+        active_task = next((task for task in project.get("tasks") or [] if self.task_is_active(task)), None)
+        if active_task:
+            self.generate_status.setText(f"视频生成中：{active_task.get('status') or 'running'}。任务号：{active_task.get('provider_task_id') or active_task.get('id')}")
+            self.set_video_progress(True, "模型正在生成视频，系统会自动刷新任务状态。")
+            if not self.video_poll_timer.isActive():
+                self.video_poll_timer.start()
+        elif hasattr(self, "video_poll_timer") and self.video_poll_timer.isActive():
+            self.video_poll_timer.stop()
+            self.set_video_progress(False)
+
+    def latest_video_task(self) -> dict[str, Any]:
+        project = self.current_project or {}
+        for task in project.get("tasks") or []:
+            if task.get("video_url") or task.get("result_video_url") or task.get("local_video_url") or task.get("local_video_path"):
+                return task
+        if project.get("result_video_url"):
+            return {"video_url": project.get("result_video_url"), "result_video_url": project.get("result_video_url")}
+        return {}
+
+    def video_storage_text(self, task: dict[str, Any]) -> str:
+        return str(
+            task.get("local_video_path")
+            or task.get("local_video_url")
+            or task.get("video_url")
+            or task.get("result_video_url")
+            or ""
+        )
+
+    def video_result_text(self, task: dict[str, Any]) -> str:
+        if task.get("error_message"):
+            return str(task.get("error_message"))
+        if task.get("video_url") or task.get("result_video_url") or task.get("local_video_url") or task.get("local_video_path"):
+            return "已生成，可预览/下载"
+        if task.get("provider_task_id"):
+            return f"任务号 {task.get('provider_task_id')}"
+        return "-"
+
+    def video_task_summary(self, task: dict[str, Any]) -> str:
+        lines = [
+            f"任务ID：{task.get('id') or '-'}",
+            f"状态：{task.get('status') or '-'}",
+            f"模型任务号：{task.get('provider_task_id') or '-'}",
+            self.video_usage_text(task),
+        ]
+        storage = self.video_storage_text(task)
+        if storage:
+            lines.append("视频：已生成，可预览/下载")
+        if task.get("error_message"):
+            lines.append(f"错误：{task.get('error_message')}")
+        return "\n".join(lines)
+
+    def video_usage_text(self, task: dict[str, Any], compact: bool = False) -> str:
+        total_tokens = int(task.get("usage_total_tokens") or 0)
+        prompt_tokens = int(task.get("usage_prompt_tokens") or 0)
+        completion_tokens = int(task.get("usage_completion_tokens") or 0)
+        cost = float(task.get("usage_cost_cny") or 0)
+        note = str(task.get("usage_note") or "")
+        if total_tokens <= 0:
+            return "API 未返回 token" if compact else f"消耗：API 未返回 token。{note}".strip()
+        if cost > 0:
+            cost_text = f"¥{cost:.4f}" if cost < 0.01 else f"¥{cost:.2f}"
+        else:
+            cost_text = "费用待账单确认"
+        if compact:
+            return f"{total_tokens} token / {cost_text}"
+        detail = f"消耗：{total_tokens} token（输入 {prompt_tokens}，输出 {completion_tokens}），费用 {cost_text}"
+        if note:
+            detail = f"{detail}。{note}"
+        return detail
+
+    def preview_task_video(self, task: dict[str, Any]) -> None:
+        url = str(task.get("video_url") or task.get("local_video_url") or task.get("result_video_url") or "")
+        storage = self.video_storage_text(task)
+        if hasattr(self, "video_usage_label"):
+            self.video_usage_label.setText(self.video_usage_text(task))
+        self.preview_video_url(url, storage)
+
+    def preview_video_url(self, url: str, storage: str = "") -> None:
+        if not hasattr(self, "video_player"):
+            return
+        self.current_video_url = url or ""
+        self.current_video_storage = storage or self.current_video_url
+        if self.current_video_storage:
+            storage_text = self.current_video_storage if self.current_video_storage.startswith(("C:", "D:", "/", "\\")) else "已生成，可点击下载视频保存到本地"
+        else:
+            storage_text = "-"
+        self.video_storage_label.setText(f"存放位置：{storage_text}")
+        if not self.current_video_url:
+            self.video_player.stop()
+            self.video_preview_status.setText("生成完成后会在这里播放 9:16 视频。")
+            return
+        self.video_preview_status.setText("视频已生成，可预览或下载。")
+        self.video_player.setSource(QUrl(self.current_video_url))
+        self.video_player.play()
+
+    def preview_selected_task(self) -> None:
+        if not self.current_project:
+            return
+        row = self.task_table.currentRow()
+        if row < 0:
+            return
+        task_id_item = self.task_table.item(row, 0)
+        if not task_id_item:
+            return
+        task_id = int(task_id_item.text() or 0)
+        for task in self.current_project.get("tasks") or []:
+            if int(task.get("id") or 0) == task_id:
+                self.preview_task_video(task)
+                self.video_result.setPlainText(self.video_task_summary(task))
+                return
+
+    def open_current_video(self) -> None:
+        if not self.current_video_url:
+            QMessageBox.information(self, "提示", "当前还没有可打开的视频链接。")
+            return
+        QDesktopServices.openUrl(QUrl(self.current_video_url))
+
+    def download_current_video(self) -> None:
+        if not self.current_video_url:
+            QMessageBox.information(self, "提示", "当前还没有可下载的视频链接。")
+            return
+        default_name = f"video_{int(time.time())}.mp4"
+        downloads = Path.home() / "Downloads"
+        target, _ = QFileDialog.getSaveFileName(self, "保存视频", str(downloads / default_name), "Video (*.mp4);;All Files (*)")
+        if not target:
+            return
+        try:
+            session = requests.Session()
+            session.trust_env = False
+            response = session.get(self.current_video_url, timeout=300)
+            response.raise_for_status()
+            Path(target).write_bytes(response.content)
+            self.current_video_storage = target
+            self.video_storage_label.setText(f"存放位置：{target}")
+            QMessageBox.information(self, "下载完成", f"视频已保存到：{target}")
+        except Exception as exc:
+            QMessageBox.warning(self, "下载失败", str(exc))
+
+
 
 
 class DataDashboardPage(Page):
@@ -5528,6 +6624,150 @@ class AutoPublishSignals(QObject):
     failed = Signal(str)
 
 
+AUTO_PUBLISH_LINK_LIMIT = 10
+
+
+class AutoPublishOfferRow(QFrame):
+    def __init__(self, offer_url: str, index: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.offer_url = offer_url
+        self.setObjectName("AutoPublishOfferCard")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setMinimumHeight(88)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+
+        index_label = QLabel(f"{index:02d}")
+        index_label.setObjectName("AutoPublishIndex")
+        index_label.setAlignment(Qt.AlignCenter)
+        index_label.setFixedSize(32, 32)
+
+        url_box = QVBoxLayout()
+        url_box.setSpacing(4)
+        url_title = QLabel("1688 链接")
+        url_title.setObjectName("AutoPublishHint")
+        self.url_label = QLabel(offer_url)
+        self.url_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.url_label.setWordWrap(True)
+        self.url_label.setObjectName("AutoPublishUrl")
+        url_box.addWidget(url_title)
+        url_box.addWidget(self.url_label)
+        layout.addWidget(index_label)
+        layout.addLayout(url_box, 1)
+
+        self.weight_spin = QSpinBox()
+        self.weight_spin.setRange(1, 100000)
+        self.weight_spin.setSuffix(" g")
+        self.weight_spin.setValue(500)
+        self.weight_spin.setFixedSize(78, 30)
+
+        self.length_spin = QSpinBox()
+        self.length_spin.setRange(1, 1000)
+        self.length_spin.setSuffix(" cm")
+        self.length_spin.setValue(10)
+        self.length_spin.setFixedSize(72, 30)
+
+        self.width_spin = QSpinBox()
+        self.width_spin.setRange(1, 1000)
+        self.width_spin.setSuffix(" cm")
+        self.width_spin.setValue(10)
+        self.width_spin.setFixedSize(72, 30)
+
+        self.height_spin = QSpinBox()
+        self.height_spin.setRange(1, 1000)
+        self.height_spin.setSuffix(" cm")
+        self.height_spin.setValue(40)
+        self.height_spin.setFixedSize(72, 30)
+
+        def make_field(title: str, widget: QWidget) -> QFrame:
+            field = QFrame()
+            field.setObjectName("AutoPublishSpecBox")
+            field.setFixedWidth(92 if title == "重量" else 88)
+            field.setFixedHeight(58)
+            field_layout = QVBoxLayout(field)
+            field_layout.setContentsMargins(6, 4, 6, 4)
+            field_layout.setSpacing(2)
+            label = QLabel(title)
+            label.setObjectName("AutoPublishHint")
+            field_layout.addWidget(label)
+            field_layout.addWidget(widget)
+            return field
+
+        spec_row = QHBoxLayout()
+        spec_row.setSpacing(8)
+        spec_row.addWidget(make_field("重量", self.weight_spin))
+        spec_row.addWidget(make_field("长", self.length_spin))
+        spec_row.addWidget(make_field("宽", self.width_spin))
+        spec_row.addWidget(make_field("高", self.height_spin))
+        layout.addLayout(spec_row)
+        self.setLayout(layout)
+
+    def collect_payload(self) -> dict[str, Any]:
+        return {
+            "offer_url": self.offer_url,
+            "package_weight_g": int(self.weight_spin.value()),
+            "package_length_cm": int(self.length_spin.value()),
+            "package_width_cm": int(self.width_spin.value()),
+            "package_height_cm": int(self.height_spin.value()),
+        }
+
+    def restore_from(self, values: dict[str, Any]) -> None:
+        if not isinstance(values, dict):
+            return
+        for key, spinbox in (
+            ("package_weight_g", self.weight_spin),
+            ("package_length_cm", self.length_spin),
+            ("package_width_cm", self.width_spin),
+            ("package_height_cm", self.height_spin),
+        ):
+            value = values.get(key)
+            if isinstance(value, (int, float)):
+                spinbox.setValue(int(value))
+            elif isinstance(value, str) and value.strip().isdigit():
+                spinbox.setValue(int(value.strip()))
+
+
+def wait_for_auto_publish_result(gateway: DataGateway, task_id: str, poll_seconds: float = 1.5) -> dict[str, Any]:
+    latest: dict[str, Any] = {}
+    for _ in range(20):
+        try:
+            latest = gateway.start_auto_publish_task_async(task_id)
+            break
+        except ApiError as exc:
+            if "task not found" not in str(exc).lower() and "任务不存在" not in str(exc):
+                raise
+            time.sleep(poll_seconds)
+    if not latest:
+        raise ApiError("任务状态暂时同步失败：后台可能仍在运行，请先等待或点击刷新，不要重复提交。")
+    terminal_statuses = {
+        "imported",
+        "import_failed",
+        "image_failed",
+        "failed",
+        "batch_failed",
+        "batch_partial_failed",
+    }
+    while True:
+        progress = latest.get("progress") if isinstance(latest.get("progress"), dict) else {}
+        status = str(latest.get("status") or "")
+        if status in terminal_statuses or str(progress.get("stage") or "") == "done":
+            return latest
+        time.sleep(poll_seconds)
+        try:
+            latest = gateway.get_auto_publish_task(task_id)
+        except ApiError as exc:
+            if "task not found" not in str(exc).lower() and "任务不存在" not in str(exc):
+                raise
+            try:
+                fallback = gateway.latest_auto_publish_result()
+                if fallback.get("task_id") == task_id:
+                    latest = fallback
+            except ApiError:
+                pass
+            continue
+
+
 class AutoPublishTask(QRunnable):
     def __init__(self, gateway: DataGateway, payload: dict[str, Any], signals: AutoPublishSignals) -> None:
         super().__init__()
@@ -5540,10 +6780,119 @@ class AutoPublishTask(QRunnable):
         try:
             task = self.gateway.create_1688_auto_publish_task(self.payload)
             self.signals.created.emit(task)
-            result = self.gateway.run_auto_publish_task(str(task["task_id"]))
+            result = wait_for_auto_publish_result(self.gateway, str(task["task_id"]))
             self.signals.finished.emit(result)
         except Exception as exc:
             self.signals.failed.emit(str(exc))
+
+
+class AutoPublishBatchTask(QRunnable):
+    def __init__(self, gateway: DataGateway, payloads: list[dict[str, Any]], signals: AutoPublishSignals) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.payloads = payloads
+        self.signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            first_payload = self.payloads[0]
+            task = self.gateway.create_1688_batch_auto_publish_task(
+                {
+                    "offer_urls": [str(payload.get("offer_url") or "") for payload in self.payloads],
+                    "items": [
+                        {
+                            "offer_url": str(payload.get("offer_url") or ""),
+                            "package_weight_g": int(payload.get("package_weight_g") or 500),
+                            "package_length_cm": int(payload.get("package_length_cm") or 10),
+                            "package_width_cm": int(payload.get("package_width_cm") or 10),
+                            "package_height_cm": int(payload.get("package_height_cm") or 40),
+                            "profit_rule": str(payload.get("profit_rule") or ""),
+                            "pricing_currency": str(payload.get("pricing_currency") or "CNY"),
+                        }
+                        for payload in self.payloads
+                    ],
+                    "publish_count": len(self.payloads),
+                    "target_channel": first_payload.get("target_channel") or "TikTok Shop Japan",
+                    "target_language": first_payload.get("target_language") or "ja",
+                    "erp_url": first_payload.get("erp_url") or "https://erp.91miaoshou.com/?ac=1og270",
+                    "dry_run": bool(first_payload.get("dry_run")),
+                    "enable_image_translation": bool(first_payload.get("enable_image_translation", True)),
+                    "enable_image_removal": bool(first_payload.get("enable_image_removal", True)),
+                    "enable_title_optimization": bool(first_payload.get("enable_title_optimization", True)),
+                    "enable_sku_optimization": bool(first_payload.get("enable_sku_optimization", True)),
+                    "enable_description_optimization": bool(first_payload.get("enable_description_optimization", True)),
+                    "remove_logo": bool(first_payload.get("remove_logo", True)),
+                    "remove_transparent_text": bool(first_payload.get("remove_transparent_text", True)),
+                    "remove_text": bool(first_payload.get("remove_text", False)),
+                    "remove_psoriasis": bool(first_payload.get("remove_psoriasis", True)),
+                    "profit_rule": str(first_payload.get("profit_rule") or ""),
+                    "pricing_currency": str(first_payload.get("pricing_currency") or "CNY"),
+                }
+            )
+            self.signals.created.emit(task)
+            result = wait_for_auto_publish_result(self.gateway, str(task["task_id"]))
+            self.signals.finished.emit(result)
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+
+
+class MiaoshouPictureSpaceAuthTask(QRunnable):
+    def __init__(self, gateway: DataGateway, signals: AutoPublishSignals) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        browser = None
+        context = None
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            self.signals.failed.emit(f"桌面端缺少 Playwright，无法打开妙手授权窗口：{exc}")
+            return
+
+        try:
+            with sync_playwright() as playwright:
+                launch_options: dict[str, Any] = {"headless": False, "slow_mo": 80}
+                for browser_path in DESKTOP_BROWSER_PATHS:
+                    if browser_path.exists():
+                        launch_options["executable_path"] = str(browser_path)
+                        break
+                browser = playwright.chromium.launch(**launch_options)
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                page = context.new_page()
+                page.goto("https://erp.91miaoshou.com/?ac=1og270", wait_until="domcontentloaded", timeout=60000)
+                deadline = time.time() + 600
+                last_url = ""
+                while time.time() < deadline:
+                    page.wait_for_timeout(1000)
+                    try:
+                        last_url = page.url
+                        body_text = page.locator("body").inner_text(timeout=1200)
+                    except Exception:
+                        body_text = ""
+                    cookies = context.cookies()
+                    has_miaoshou_cookie = any("91miaoshou.com" in str(cookie.get("domain") or "") for cookie in cookies)
+                    has_backend_text = bool(re.search(r"采集箱|图片空间|授权店铺|订单|商品|刊登|工作台", body_text))
+                    still_login_page = bool(re.search(r"账号登录|扫码登录|立即登录|验证码登录|登录密码", body_text))
+                    if has_miaoshou_cookie and has_backend_text and not still_login_page:
+                        storage_state = context.storage_state()
+                        result = self.gateway.reauthorize_miaoshou_picture_space({"storage_state": storage_state})
+                        self.signals.finished.emit(result)
+                        return
+                raise TimeoutError(f"等待妙手登录超时。最后停留页面：{last_url or '未知'}")
+        except Exception as exc:
+            self.signals.failed.emit(str(exc))
+        finally:
+            try:
+                if context:
+                    context.close()
+                if browser:
+                    browser.close()
+            except Exception:
+                pass
 
 
 class AutoPublishPage(Page):
@@ -5553,151 +6902,873 @@ class AutoPublishPage(Page):
         self.loaded = False
         self.current_task: dict[str, Any] | None = None
         self.task_signals: AutoPublishSignals | None = None
+        self.reauth_signals: AutoPublishSignals | None = None
+        self.offer_meta_rows: list[AutoPublishOfferRow] = []
+        self.miaoshou_shop_options: list[dict[str, Any]] = []
+        self.offer_meta_sync_timer = QTimer(self)
+        self.offer_meta_sync_timer.setSingleShot(True)
+        self.offer_meta_sync_timer.setInterval(120)
+        self.offer_meta_sync_timer.timeout.connect(self.sync_offer_meta_rows)
         self.progress_timer = QTimer(self)
         self.progress_timer.setInterval(1500)
         self.progress_timer.timeout.connect(self.refresh_task_progress)
-        self.layout.setContentsMargins(24, 22, 24, 22)
-        self.layout.setSpacing(14)
-        self.layout.addWidget(make_title("自动上架", "输入 1688 商品链接，抓取商品数据、优化信息、生成妙手模板并导入公用采集箱。"))
+        self.progress_animation_timer = QTimer(self)
+        self.progress_animation_timer.setInterval(80)
+        self.progress_animation_timer.timeout.connect(self.animate_progress_bar)
+        self.progress_target_value = 0
 
-        controls = QFrame()
-        controls.setObjectName("Card")
-        controls_layout = QGridLayout(controls)
-        controls_layout.setContentsMargins(16, 14, 16, 14)
-        controls_layout.setHorizontalSpacing(12)
-        controls_layout.setVerticalSpacing(10)
+        root_layout = self.layout
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+        self.page_scroll = QScrollArea()
+        self.page_scroll.setWidgetResizable(True)
+        self.page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.page_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.page_scroll.setObjectName("ProductScroll")
+        self.page_content = QWidget()
+        self.page_content.setObjectName("AutoPublishSection")
+        self.layout = QVBoxLayout(self.page_content)
+        self.layout.setContentsMargins(22, 20, 22, 20)
+        self.layout.setSpacing(12)
+        self.page_scroll.setWidget(self.page_content)
+        root_layout.addWidget(self.page_scroll)
 
-        self.offer_url_input = QLineEdit()
-        self.offer_url_input.setPlaceholderText("粘贴 1688 商品链接，例如 https://detail.1688.com/offer/xxxx.html")
-        self.erp_input = QLineEdit("https://erp.91miaoshou.com/?ac=1og270")
-        self.miaoshou_user_input = QLineEdit()
-        self.miaoshou_user_input.setPlaceholderText("妙手手机号 / 子账号 / 邮箱")
-        self.miaoshou_password_input = QLineEdit()
-        self.miaoshou_password_input.setPlaceholderText("妙手密码")
-        self.miaoshou_password_input.setEchoMode(QLineEdit.Password)
-        self.dry_run = QCheckBox("仅生成模板")
-        self.dry_run.setChecked(False)
-        self.create_button = QPushButton("上架该产品")
-        self.refresh_button = QPushButton("刷新")
-        self.create_button.clicked.connect(self.create_1688_task)
+        self.layout.addWidget(
+            make_title(
+                "自动上架",
+                "1688 链接进入妙手开放平台采集箱，标题、规格、产品描述、图片翻译与智能抹除均可按需勾选。",
+            )
+        )
+
+        self.offer_url_input = QTextEdit()
+        self.offer_url_input.setObjectName("AutoPublishInput")
+        self.offer_url_input.setPlaceholderText(
+            "粘贴 1688 商品链接，每行一个。\n也可以只粘贴 offerId，例如 123456789012。"
+        )
+        self.offer_url_input.setFixedHeight(112)
+        self.offer_url_input.textChanged.connect(self.schedule_offer_meta_sync)
+
+        self.language_select = QComboBox()
+        self.language_select.addItem("日语", "ja")
+        self.language_select.addItem("英语", "en")
+        self.language_select.currentIndexChanged.connect(self.update_summary_state)
+
+        self.dry_run = QCheckBox("仅保存不发布")
+        self.dry_run.setChecked(True)
+        self.dry_run.toggled.connect(self.update_summary_state)
+
+        self.listing_text_master_checkbox = QCheckBox("妙手文案")
+        self.listing_text_master_checkbox.blockSignals(True)
+        self.listing_text_master_checkbox.setChecked(True)
+        self.listing_text_master_checkbox.blockSignals(False)
+        self.listing_text_master_checkbox.toggled.connect(self.toggle_listing_text_group)
+        self.listing_title_checkbox = QCheckBox("标题")
+        self.listing_title_checkbox.blockSignals(True)
+        self.listing_title_checkbox.setChecked(True)
+        self.listing_title_checkbox.blockSignals(False)
+        self.listing_title_checkbox.toggled.connect(self.sync_listing_text_master_state)
+        self.listing_sku_checkbox = QCheckBox("规格")
+        self.listing_sku_checkbox.blockSignals(True)
+        self.listing_sku_checkbox.setChecked(True)
+        self.listing_sku_checkbox.blockSignals(False)
+        self.listing_sku_checkbox.toggled.connect(self.sync_listing_text_master_state)
+        self.listing_description_checkbox = QCheckBox("产品描述")
+        self.listing_description_checkbox.blockSignals(True)
+        self.listing_description_checkbox.setChecked(True)
+        self.listing_description_checkbox.blockSignals(False)
+        self.listing_description_checkbox.toggled.connect(self.sync_listing_text_master_state)
+
+        self.image_translation_checkbox = QCheckBox("图片翻译")
+        self.image_translation_checkbox.blockSignals(True)
+        self.image_translation_checkbox.setChecked(True)
+        self.image_translation_checkbox.blockSignals(False)
+        self.image_translation_checkbox.toggled.connect(self.update_summary_state)
+        self.image_removal_master_checkbox = QCheckBox("智能抹除")
+        self.image_removal_master_checkbox.blockSignals(True)
+        self.image_removal_master_checkbox.setChecked(True)
+        self.image_removal_master_checkbox.blockSignals(False)
+        self.image_removal_master_checkbox.toggled.connect(self.toggle_image_removal_group)
+        self.remove_logo_checkbox = QCheckBox("去除LOGO")
+        self.remove_logo_checkbox.blockSignals(True)
+        self.remove_logo_checkbox.setChecked(True)
+        self.remove_logo_checkbox.blockSignals(False)
+        self.remove_logo_checkbox.toggled.connect(self.sync_image_removal_master_state)
+        self.remove_transparent_text_checkbox = QCheckBox("去除透明字块")
+        self.remove_transparent_text_checkbox.blockSignals(True)
+        self.remove_transparent_text_checkbox.setChecked(True)
+        self.remove_transparent_text_checkbox.blockSignals(False)
+        self.remove_transparent_text_checkbox.toggled.connect(self.sync_image_removal_master_state)
+        self.remove_text_checkbox = QCheckBox("去除文字")
+        self.remove_text_checkbox.blockSignals(True)
+        self.remove_text_checkbox.setChecked(False)
+        self.remove_text_checkbox.blockSignals(False)
+        self.remove_text_checkbox.toggled.connect(self.sync_image_removal_master_state)
+        self.remove_psoriasis_checkbox = QCheckBox("去除牛皮癣")
+        self.remove_psoriasis_checkbox.blockSignals(True)
+        self.remove_psoriasis_checkbox.setChecked(True)
+        self.remove_psoriasis_checkbox.blockSignals(False)
+        self.remove_psoriasis_checkbox.toggled.connect(self.sync_image_removal_master_state)
+
+        self.listing_text_controls = [
+            self.listing_title_checkbox,
+            self.listing_sku_checkbox,
+            self.listing_description_checkbox,
+        ]
+        self.image_removal_controls = [
+            self.remove_logo_checkbox,
+            self.remove_transparent_text_checkbox,
+            self.remove_text_checkbox,
+            self.remove_psoriasis_checkbox,
+        ]
+
+        self.miaoshou_shop_combo = QComboBox()
+        self.miaoshou_shop_combo.setObjectName("AutoPublishShopCombo")
+        self.miaoshou_shop_combo.setMinimumHeight(30)
+        self.miaoshou_shop_combo.setMinimumWidth(180)
+        self.miaoshou_shop_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.miaoshou_shop_combo.currentIndexChanged.connect(self.update_summary_state)
+        self.miaoshou_app_key_input = QLineEdit()
+        self.miaoshou_app_key_input.setObjectName("AutoPublishMiaoshouAppKey")
+        self.miaoshou_app_key_input.setPlaceholderText("填写妙手 AppKey")
+        self.miaoshou_app_key_input.setMinimumHeight(30)
+        self.miaoshou_app_key_input.setMinimumWidth(180)
+        self.miaoshou_app_secret_input = QLineEdit()
+        self.miaoshou_app_secret_input.setObjectName("AutoPublishMiaoshouAppSecret")
+        self.miaoshou_app_secret_input.setPlaceholderText("填写妙手 AppSecret")
+        self.miaoshou_app_secret_input.setMinimumHeight(30)
+        self.miaoshou_app_secret_input.setMinimumWidth(180)
+        self.miaoshou_app_secret_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.miaoshou_api_base_url_input = QLineEdit()
+        self.miaoshou_api_base_url_input.setObjectName("AutoPublishMiaoshouApiBaseUrl")
+        self.miaoshou_api_base_url_input.setPlaceholderText("https://openapi-erp.91miaoshou.com")
+        self.miaoshou_api_base_url_input.setText("https://openapi-erp.91miaoshou.com")
+        self.miaoshou_api_base_url_input.setMinimumHeight(30)
+        self.miaoshou_api_base_url_input.setMinimumWidth(260)
+        self.miaoshou_shop_refresh_button = QPushButton("刷新店铺")
+        self.miaoshou_shop_refresh_button.setObjectName("AutoPublishShopRefresh")
+        self.miaoshou_shop_refresh_button.setFixedSize(76, 30)
+        self.miaoshou_shop_refresh_button.clicked.connect(self.refresh_miaoshou_shop_options)
+        self.miaoshou_reauth_button = QPushButton("图片空间授权")
+        self.miaoshou_reauth_button.setObjectName("AutoPublishReauth")
+        self.miaoshou_reauth_button.setFixedSize(104, 30)
+        self.miaoshou_reauth_button.clicked.connect(self.reauthorize_miaoshou_picture_space)
+        self.profit_rule_input = QLineEdit()
+        self.profit_rule_input.setObjectName("AutoPublishProfitInput")
+        self.profit_rule_input.setPlaceholderText("20 或 20%")
+        self.profit_rule_input.setFixedSize(86, 30)
+        self.profit_rule_input.textChanged.connect(self.update_summary_state)
+        self.refresh_button = QPushButton("重置")
+        self.refresh_button.setObjectName("AutoPublishSecondaryAction")
+        self.refresh_button.setFixedSize(66, 30)
+        self.create_button = QPushButton("开始上架")
+        self.create_button.setObjectName("AutoPublishPrimaryAction")
+        self.create_button.setFixedSize(96, 30)
         self.refresh_button.clicked.connect(self.refresh)
+        self.create_button.clicked.connect(self.create_1688_task)
 
-        controls_layout.addWidget(QLabel("1688 链接"), 0, 0)
-        controls_layout.addWidget(self.offer_url_input, 0, 1, 1, 5)
-        controls_layout.addWidget(QLabel("ERP 地址"), 1, 0)
-        controls_layout.addWidget(self.erp_input, 1, 1, 1, 5)
-        controls_layout.addWidget(QLabel("妙手账号"), 2, 0)
-        controls_layout.addWidget(self.miaoshou_user_input, 2, 1, 1, 2)
-        controls_layout.addWidget(QLabel("妙手密码"), 2, 3)
-        controls_layout.addWidget(self.miaoshou_password_input, 2, 4, 1, 2)
-        controls_layout.addWidget(self.dry_run, 3, 0, 1, 2)
-        controls_layout.addWidget(self.refresh_button, 3, 4)
-        controls_layout.addWidget(self.create_button, 3, 5)
-        self.layout.addWidget(controls)
+        self.offer_meta_scroll = QScrollArea()
+        self.offer_meta_scroll.setWidgetResizable(True)
+        self.offer_meta_scroll.setFixedHeight(198)
+        self.offer_meta_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.offer_meta_content = QWidget()
+        self.offer_meta_layout = QVBoxLayout(self.offer_meta_content)
+        self.offer_meta_layout.setContentsMargins(0, 0, 0, 0)
+        self.offer_meta_layout.setSpacing(8)
+        meta_empty = QLabel("识别到链接后，这里会出现每个商品的重量和尺寸。默认 500g / 10 x 10 x 40cm。")
+        meta_empty.setObjectName("AutoPublishHint")
+        meta_empty.setWordWrap(True)
+        self.offer_meta_layout.addWidget(meta_empty)
+        self.offer_meta_layout.addStretch(1)
+        self.offer_meta_scroll.setWidget(self.offer_meta_content)
+
+        workspace = QFrame()
+        workspace.setObjectName("AutoPublishCard")
+        workspace_layout = QGridLayout(workspace)
+        workspace_layout.setContentsMargins(18, 16, 18, 16)
+        workspace_layout.setHorizontalSpacing(18)
+        workspace_layout.setVerticalSpacing(12)
+        workspace_layout.setColumnStretch(0, 1)
+
+        source_title = QLabel("1688 商品链接")
+        source_title.setObjectName("CardTitle")
+        self.link_count_label = QLabel("0 条")
+        self.link_count_label.setObjectName("AutoPublishPill")
+        source_head = QHBoxLayout()
+        source_head.addWidget(source_title)
+        source_head.addStretch()
+        source_head.addWidget(self.link_count_label)
+        workspace_layout.addLayout(source_head, 0, 0)
+        workspace_layout.addWidget(self.offer_url_input, 1, 0)
+
+        api_row = QHBoxLayout()
+        api_row.setSpacing(8)
+        api_label = QLabel("妙手 API")
+        api_label.setObjectName("AutoPublishHint")
+        api_row.addWidget(api_label)
+        api_row.addWidget(self.miaoshou_app_key_input)
+        api_row.addWidget(self.miaoshou_app_secret_input)
+        api_row.addWidget(self.miaoshou_api_base_url_input)
+        api_row.addStretch(1)
+        workspace_layout.addLayout(api_row, 2, 0)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+        action_row.addWidget(self.dry_run)
+        action_row.addWidget(self.image_translation_checkbox)
+        action_row.addStretch(1)
+        profit_label = QLabel("目标利润")
+        profit_label.setObjectName("AutoPublishHint")
+        action_row.addWidget(profit_label)
+        action_row.addWidget(self.profit_rule_input)
+        shop_label = QLabel("目标店铺")
+        shop_label.setObjectName("AutoPublishHint")
+        action_row.addWidget(shop_label)
+        action_row.addWidget(self.miaoshou_shop_combo)
+        action_row.addWidget(self.miaoshou_shop_refresh_button)
+        action_row.addWidget(self.miaoshou_reauth_button)
+        action_row.addWidget(self.refresh_button)
+        action_row.addWidget(self.create_button)
+        workspace_layout.addLayout(action_row, 3, 0)
+
+        listing_row = QHBoxLayout()
+        listing_row.setSpacing(8)
+        listing_label = QLabel("文案处理")
+        listing_label.setObjectName("AutoPublishHint")
+        listing_row.addWidget(listing_label)
+        listing_row.addWidget(self.listing_text_master_checkbox)
+        listing_row.addWidget(self.listing_title_checkbox)
+        listing_row.addWidget(self.listing_sku_checkbox)
+        listing_row.addWidget(self.listing_description_checkbox)
+        listing_row.addStretch(1)
+        workspace_layout.addLayout(listing_row, 4, 0)
+
+        removal_row = QHBoxLayout()
+        removal_row.setSpacing(8)
+        removal_label = QLabel("智能抹除")
+        removal_label.setObjectName("AutoPublishHint")
+        removal_row.addWidget(removal_label)
+        removal_row.addWidget(self.image_removal_master_checkbox)
+        removal_row.addWidget(self.remove_logo_checkbox)
+        removal_row.addWidget(self.remove_transparent_text_checkbox)
+        removal_row.addWidget(self.remove_text_checkbox)
+        removal_row.addWidget(self.remove_psoriasis_checkbox)
+        removal_row.addStretch(1)
+        workspace_layout.addLayout(removal_row, 5, 0)
+
+        self.shop_info_label = QLabel("店铺信息：请先在上方填写妙手 AppKey / AppSecret，再刷新店铺。")
+        self.shop_info_label.setObjectName("AutoPublishShopInfo")
+        self.shop_info_label.setWordWrap(True)
+        workspace_layout.addWidget(self.shop_info_label, 6, 0)
+
+        meta_title = QLabel("重量与尺寸")
+        meta_title.setObjectName("CardTitle")
+        workspace_layout.addWidget(meta_title, 7, 0)
+        workspace_layout.addWidget(self.offer_meta_scroll, 8, 0)
+        self.layout.addWidget(workspace)
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(12)
 
         progress_card = QFrame()
-        progress_card.setObjectName("Card")
+        progress_card.setObjectName("AutoPublishCard")
         progress_layout = QVBoxLayout(progress_card)
         progress_layout.setContentsMargins(16, 12, 16, 12)
-        self.progress_label = QLabel("待开始")
+        progress_layout.setSpacing(8)
+        progress_head = QHBoxLayout()
+        progress_title = QLabel("任务进度")
+        progress_title.setObjectName("CardTitle")
+        self.progress_phase = QLabel("待开始")
+        self.progress_phase.setObjectName("AutoPublishPill")
+        progress_head.addWidget(progress_title)
+        progress_head.addStretch()
+        progress_head.addWidget(self.progress_phase)
+        progress_layout.addLayout(progress_head)
+        self.progress_label = QLabel("输入 1688 链接后点击开始执行。")
+        self.progress_label.setObjectName("AutoPublishHint")
+        self.progress_label.setWordWrap(True)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setFixedHeight(12)
         progress_layout.addWidget(self.progress_label)
         progress_layout.addWidget(self.progress_bar)
-        self.layout.addWidget(progress_card)
+        status_row.addWidget(progress_card, 1)
 
-        self.flow_table = table(["步骤", "状态"])
-        fill_table(
-            self.flow_table,
-            [
-                ["1. 调 Oxylabs 抓 1688 数据", "待执行"],
-                ["2. AI 优化标题 / SKU / 描述", "待执行"],
-                ["3. 生成妙手导入模板", "待执行"],
-                ["4. 自动导入妙手公用采集箱", "待执行"],
-            ],
-        )
-        self.layout.addWidget(self.flow_table, 1)
+        usage_card = QFrame()
+        usage_card.setObjectName("AutoPublishCard")
+        usage_layout = QVBoxLayout(usage_card)
+        usage_layout.setContentsMargins(16, 12, 16, 12)
+        usage_layout.setSpacing(8)
+        usage_head = QHBoxLayout()
+        usage_title = QLabel("API 用量统计")
+        usage_title.setObjectName("CardTitle")
+        usage_head.addWidget(usage_title)
+        usage_head.addStretch()
+        self.api_usage_summary = QLabel("等待任务完成后显示调用次数、图片数量和 Token 用量。")
+        self.api_usage_summary.setObjectName("AutoPublishHint")
+        self.api_usage_summary.setWordWrap(True)
+        self.api_usage_detail = QLabel("暂无数据")
+        self.api_usage_detail.setObjectName("ProductMuted")
+        self.api_usage_detail.setWordWrap(True)
+        usage_layout.addLayout(usage_head)
+        usage_layout.addWidget(self.api_usage_summary)
+        usage_layout.addWidget(self.api_usage_detail)
+        status_row.addWidget(usage_card, 1)
+        self.layout.addLayout(status_row)
 
+        result_card = QFrame()
+        result_card.setObjectName("AutoPublishCard")
+        result_layout = QVBoxLayout(result_card)
+        result_layout.setContentsMargins(16, 12, 16, 12)
+        result_layout.setSpacing(8)
+        result_title = QLabel("执行结果")
+        result_title.setObjectName("CardTitle")
         self.result = QTextEdit()
         self.result.setReadOnly(True)
-        self.result.setMinimumHeight(150)
+        self.result.setMinimumHeight(170)
         self.result.setPlaceholderText("任务执行结果会显示在这里。")
-        self.layout.addWidget(self.result)
+        result_layout.addWidget(result_title)
+        result_layout.addWidget(self.result)
+        self.layout.addWidget(result_card, 1)
+        self.update_summary_state()
+        self.refresh_miaoshou_shop_options(silent=True)
 
     def activate(self) -> None:
         if not self.loaded:
-            self.result.setPlaceholderText("粘贴 1688 商品链接后点击上架。长任务会在后台执行，窗口不会卡住。")
+            self.result.setPlaceholderText("粘贴 1688 商品链接后点击开始上架。长任务会在后台执行，窗口不会卡住。")
             self.loaded = True
+        self.update_summary_state()
+        if not self.miaoshou_shop_options:
+            self.refresh_miaoshou_shop_options(silent=True)
 
     def refresh(self) -> None:
+        self.current_task = None
+        self.progress_timer.stop()
         self.reset_flow()
         self.result.clear()
+        self.update_miaoshou_shop_summary()
+        self.update_summary_state()
 
-    def create_task(self) -> None:
-        if self.candidate_select.currentData() is None:
-            QMessageBox.information(self, "暂无候选", "请先让老师通过至少一个衍生品。")
-            return
-        payload = {
-            "derived_id": int(self.candidate_select.currentData()),
-            "publish_count": 1,
-            "target_channel": "TikTok Shop Japan",
-            "erp_url": self.erp_input.text().strip() or "https://erp.91miaoshou.com/?ac=1og270",
-            "dry_run": self.dry_run.isChecked(),
-        }
+    def update_summary_state(self, *_args: Any) -> None:
+        offer_count = len(self.extract_offer_urls(self.offer_url_input.toPlainText()))
+        self.link_count_label.setText(f"{offer_count} 条")
+        self.update_miaoshou_shop_summary()
+
+    def current_shop_option(self) -> dict[str, Any] | None:
+        index = self.miaoshou_shop_combo.currentIndex()
+        if index < 0:
+            return None
+        data = self.miaoshou_shop_combo.currentData()
+        if isinstance(data, dict):
+            return data
+        return None
+
+    def current_shop_id(self) -> int | None:
+        option = self.current_shop_option()
+        if not option:
+            return None
+        shop_id = option.get("shop_id")
+        if isinstance(shop_id, int):
+            return shop_id
+        if isinstance(shop_id, str) and shop_id.isdigit():
+            return int(shop_id)
+        return None
+
+    def current_shop_label(self) -> str:
+        option = self.current_shop_option()
+        if not option:
+            return "未选择店铺"
+        shop_name = str(option.get("shop_name") or "").strip()
+        shop_id = option.get("shop_id")
+        if shop_name and shop_id is not None:
+            return f"{shop_name}（{shop_id}）"
+        if shop_name:
+            return shop_name
+        if shop_id is not None:
+            return f"店铺ID {shop_id}"
+        return "未命名店铺"
+
+    def toggle_listing_text_group(self, checked: bool) -> None:
+        for control in self.listing_text_controls:
+            control.blockSignals(True)
+            control.setChecked(checked)
+            control.blockSignals(False)
+        self.update_summary_state()
+
+    def sync_listing_text_master_state(self, *_args: Any) -> None:
+        all_checked = all(control.isChecked() for control in self.listing_text_controls)
+        self.listing_text_master_checkbox.blockSignals(True)
+        self.listing_text_master_checkbox.setChecked(all_checked)
+        self.listing_text_master_checkbox.blockSignals(False)
+        self.update_summary_state()
+
+    def toggle_image_removal_group(self, checked: bool) -> None:
+        for control in self.image_removal_controls:
+            control.blockSignals(True)
+            control.setChecked(checked)
+            control.blockSignals(False)
+        self.update_summary_state()
+
+    def sync_image_removal_master_state(self, *_args: Any) -> None:
+        all_checked = all(control.isChecked() for control in self.image_removal_controls)
+        self.image_removal_master_checkbox.blockSignals(True)
+        self.image_removal_master_checkbox.setChecked(all_checked)
+        self.image_removal_master_checkbox.blockSignals(False)
+        self.update_summary_state()
+
+    def image_translation_enabled(self) -> bool:
+        return self.image_translation_checkbox.isChecked()
+
+    def image_removal_enabled(self) -> bool:
+        return self.image_removal_master_checkbox.isChecked()
+
+    def listing_title_enabled(self) -> bool:
+        return self.listing_title_checkbox.isChecked()
+
+    def listing_sku_enabled(self) -> bool:
+        return self.listing_sku_checkbox.isChecked()
+
+    def listing_description_enabled(self) -> bool:
+        return self.listing_description_checkbox.isChecked()
+
+    def smart_removal_remove_logo_enabled(self) -> bool:
+        return self.remove_logo_checkbox.isChecked()
+
+    def smart_removal_remove_transparent_text_enabled(self) -> bool:
+        return self.remove_transparent_text_checkbox.isChecked()
+
+    def smart_removal_remove_text_enabled(self) -> bool:
+        return self.remove_text_checkbox.isChecked()
+
+    def smart_removal_remove_psoriasis_enabled(self) -> bool:
+        return self.remove_psoriasis_checkbox.isChecked()
+
+    def update_miaoshou_shop_summary(self) -> None:
+        count = len(self.miaoshou_shop_options)
+        if count:
+            self.shop_info_label.setText(f"店铺信息：已加载 {count} 个店铺，当前选择 {self.current_shop_label()}。")
+            self.miaoshou_shop_combo.setEnabled(True)
+        else:
+            self.shop_info_label.setText("店铺信息：请先在页面顶部填写妙手 AppKey / AppSecret，再刷新店铺。")
+            self.miaoshou_shop_combo.setEnabled(False)
+
+    @staticmethod
+    def _first_nonempty(*values: Any) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _miaoshou_sign(app_secret: str, path: str, timestamp: int, app_key: str, body_json: str) -> str:
+        content = f"{app_secret}{path}{timestamp}{app_key}{body_json}{app_secret}"
+        return hmac.new(app_secret.encode("utf-8"), content.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _collect_miaoshou_credentials_from_inputs(self) -> dict[str, str]:
+        app_key = self._first_nonempty(self.miaoshou_app_key_input.text())
+        app_secret = self._first_nonempty(self.miaoshou_app_secret_input.text())
+        base_url = self._first_nonempty(self.miaoshou_api_base_url_input.text(), "https://openapi-erp.91miaoshou.com")
+        if app_key and app_secret:
+            return {
+                "app_key": app_key,
+                "app_secret": app_secret,
+                "base_url": base_url.rstrip("/"),
+            }
+        return {}
+
+    def _find_miaoshou_credentials(self) -> dict[str, str]:
+        direct_credentials = self._collect_miaoshou_credentials_from_inputs()
+        if direct_credentials:
+            return direct_credentials
+        for config in self.gateway.third_party_configs():
+            if str(config.get("service_type") or "").strip() != "miaoshou_api":
+                continue
+            if int(config.get("status") or 0) != 1:
+                continue
+            app_key = self._first_nonempty(config.get("access_key_encrypted"))
+            app_secret = self._first_nonempty(config.get("secret_key_encrypted"))
+            base_url = self._first_nonempty(config.get("api_base_url"), "https://openapi-erp.91miaoshou.com")
+            if app_key and app_secret:
+                return {
+                    "app_key": app_key,
+                    "app_secret": app_secret,
+                    "base_url": base_url.rstrip("/"),
+                }
+        return {}
+
+    def _load_miaoshou_shop_options_direct(self, target_site: str = "JP") -> list[dict[str, Any]]:
+        credentials = self._find_miaoshou_credentials()
+        if not credentials:
+            raise ApiError("请先在页面顶部填写妙手 AppKey / AppSecret。")
+        path = "/open/v1/product/shop/shop/get_shop_list"
+        payload = {"platform": "tiktok", "site": target_site, "pageNo": 1, "pageSize": 100}
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        timestamp = int(time.time())
+        sign = self._miaoshou_sign(credentials["app_secret"], path, timestamp, credentials["app_key"], body)
+        session = requests.Session()
+        session.trust_env = False
+        response = session.post(
+            f"{credentials['base_url']}{path}",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "x-app-key": credentials["app_key"],
+                "x-timestamp": str(timestamp),
+                "x-sign": sign,
+            },
+            timeout=60,
+        )
         try:
-            self.current_task = self.gateway.create_auto_publish_task(payload)
-            self.render_result(self.current_task)
-            QMessageBox.information(self, "任务已创建", "自动上架任务已创建。")
-        except ApiError as exc:
-            QMessageBox.warning(self, "创建失败", str(exc))
+            data = response.json()
+        except ValueError as exc:
+            raise ApiError(f"妙手店铺接口返回了非 JSON 响应：{response.text[:200]}") from exc
+        if response.status_code >= 400:
+            message = ""
+            if isinstance(data, dict):
+                message = str(data.get("message") or data.get("msg") or "")
+            raise ApiError(message or f"HTTP {response.status_code}: 拉取店铺失败")
+        if not isinstance(data, dict) or str(data.get("result") or "").lower() not in {"success", "ok"}:
+            message = ""
+            if isinstance(data, dict):
+                message = str(data.get("message") or data.get("msg") or data.get("code") or "")
+            raise ApiError(message or "妙手店铺接口返回失败")
+        shop_list = (((data.get("data") or {}) if isinstance(data, dict) else {}) or {}).get("shopList") if isinstance(data, dict) else []
+        options: list[dict[str, Any]] = []
+        if isinstance(shop_list, list):
+            for shop in shop_list:
+                if not isinstance(shop, dict):
+                    continue
+                if str(shop.get("platform") or "").lower() != "tiktok":
+                    continue
+                if target_site and str(shop.get("site") or "").upper() != target_site.upper():
+                    continue
+                shop_id = shop.get("shopId")
+                if isinstance(shop_id, str) and shop_id.isdigit():
+                    shop_id = int(shop_id)
+                if not isinstance(shop_id, int):
+                    continue
+                options.append(
+                    {
+                        "shop_id": shop_id,
+                        "shop_name": self._first_nonempty(
+                            shop.get("shopName"),
+                            shop.get("shop_name"),
+                            shop.get("name"),
+                            shop.get("nick"),
+                            shop.get("storeName"),
+                            shop.get("store_name"),
+                            f"店铺 {shop_id}",
+                        ),
+                        "platform": str(shop.get("platform") or "tiktok"),
+                        "site": str(shop.get("site") or target_site or ""),
+                    }
+                )
+
+        shop_ids = [int(item["shop_id"]) for item in options if isinstance(item.get("shop_id"), int)]
+        name_map: dict[int, str] = {}
+        if shop_ids:
+            warehouse_path = "/open/v1/product/collect_box/tiktok/collect_box/get_shop_warehouse_list"
+            warehouse_payload = {"shopIds": shop_ids}
+            warehouse_body = json.dumps(warehouse_payload, ensure_ascii=False, separators=(",", ":"))
+            warehouse_timestamp = int(time.time())
+            warehouse_sign = self._miaoshou_sign(
+                credentials["app_secret"],
+                warehouse_path,
+                warehouse_timestamp,
+                credentials["app_key"],
+                warehouse_body,
+            )
+            warehouse_response = session.post(
+                f"{credentials['base_url']}{warehouse_path}",
+                data=warehouse_body,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-app-key": credentials["app_key"],
+                    "x-timestamp": str(warehouse_timestamp),
+                    "x-sign": warehouse_sign,
+                },
+                timeout=60,
+            )
+            try:
+                warehouse_data = warehouse_response.json()
+            except ValueError:
+                warehouse_data = {}
+            if (
+                warehouse_response.status_code < 400
+                and isinstance(warehouse_data, dict)
+                and str(warehouse_data.get("result") or "").lower() in {"success", "ok"}
+            ):
+                warehouse_list = (((warehouse_data.get("data") or {}) if isinstance(warehouse_data, dict) else {}) or {}).get("shopWarehouseList")
+                if isinstance(warehouse_list, list):
+                    for warehouse in warehouse_list:
+                        if not isinstance(warehouse, dict):
+                            continue
+                        shop_id = warehouse.get("shopId")
+                        if isinstance(shop_id, str) and shop_id.isdigit():
+                            shop_id = int(shop_id)
+                        if not isinstance(shop_id, int):
+                            continue
+                        shop_name = self._first_nonempty(
+                            warehouse.get("shopName"),
+                            warehouse.get("shop_name"),
+                            warehouse.get("name"),
+                        )
+                        if shop_name:
+                            name_map[shop_id] = shop_name
+
+        if name_map:
+            for item in options:
+                shop_id = item.get("shop_id")
+                if not isinstance(shop_id, int):
+                    continue
+                current_name = self._first_nonempty(item.get("shop_name"))
+                fallback_name = f"店铺 {shop_id}"
+                mapped_name = name_map.get(shop_id, "")
+                if not current_name or current_name == fallback_name:
+                    item["shop_name"] = mapped_name or current_name or fallback_name
+
+        deduped: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        for item in options:
+            shop_id = int(item["shop_id"])
+            if shop_id in seen_ids:
+                continue
+            seen_ids.add(shop_id)
+            deduped.append(item)
+        return deduped
+
+    def refresh_miaoshou_shop_options(self, silent: bool = False) -> None:
+        self.miaoshou_shop_refresh_button.setEnabled(False)
+        self.miaoshou_shop_refresh_button.setText("加载中...")
+        try:
+            options = self._load_miaoshou_shop_options_direct("JP")
+        except Exception as exc:
+            if not silent:
+                parent = self.window()
+                if self.gateway.is_invalid_token_error(exc) and hasattr(parent, "clear_invalid_session"):
+                    parent.clear_invalid_session()
+                QMessageBox.warning(self, "拉取店铺失败", str(exc))
+            self.miaoshou_shop_options = []
+            self.miaoshou_shop_combo.blockSignals(True)
+            self.miaoshou_shop_combo.clear()
+            self.miaoshou_shop_combo.blockSignals(False)
+            self.update_miaoshou_shop_summary()
+            return
+        finally:
+            self.miaoshou_shop_refresh_button.setEnabled(True)
+            self.miaoshou_shop_refresh_button.setText("刷新店铺")
+        previous_shop_id = self.current_shop_id()
+        self.miaoshou_shop_options = options
+        self.miaoshou_shop_combo.blockSignals(True)
+        self.miaoshou_shop_combo.clear()
+        for option in options:
+            shop_id = option.get("shop_id")
+            shop_name = str(option.get("shop_name") or "").strip()
+            label = f"{shop_name}（{shop_id}）" if shop_name else f"店铺ID {shop_id}"
+            self.miaoshou_shop_combo.addItem(label, option)
+        if options:
+            selected_index = 0
+            if previous_shop_id is not None:
+                for index, option in enumerate(options):
+                    if int(option.get("shop_id") or 0) == int(previous_shop_id):
+                        selected_index = index
+                        break
+            self.miaoshou_shop_combo.setCurrentIndex(selected_index)
+        self.miaoshou_shop_combo.blockSignals(False)
+        self.update_miaoshou_shop_summary()
+
+    def reauthorize_miaoshou_picture_space(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "重新授权妙手图片空间",
+            "软件会打开一个妙手登录窗口。\n请在窗口里完成登录/验证码，登录成功后授权会自动保存到服务器。\n确认继续吗？",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.miaoshou_reauth_button.setEnabled(False)
+        self.miaoshou_reauth_button.setText("授权中")
+        self.shop_info_label.setText("店铺信息：已打开妙手授权窗口，请完成登录/验证码；成功后会自动保存到服务器。")
+        self.reauth_signals = AutoPublishSignals()
+        self.reauth_signals.finished.connect(self.on_miaoshou_reauth_finished)
+        self.reauth_signals.failed.connect(self.on_miaoshou_reauth_failed)
+        IMAGE_THREAD_POOL.start(MiaoshouPictureSpaceAuthTask(self.gateway, self.reauth_signals))
+
+    def on_miaoshou_reauth_finished(self, result: dict) -> None:
+        self.miaoshou_reauth_button.setEnabled(True)
+        self.miaoshou_reauth_button.setText("图片空间授权")
+        message = str(result.get("message") or "妙手图片空间授权已保存到服务器。")
+        self.shop_info_label.setText(f"店铺信息：{message}")
+        QMessageBox.information(self, "授权完成", message)
+        self.refresh_miaoshou_shop_options(silent=True)
+
+    def on_miaoshou_reauth_failed(self, error: str) -> None:
+        self.miaoshou_reauth_button.setEnabled(True)
+        self.miaoshou_reauth_button.setText("图片空间授权")
+        self.shop_info_label.setText(f"店铺信息：妙手图片空间授权失败：{error}")
+        parent = self.window()
+        if self.gateway.is_invalid_token_error(error) and hasattr(parent, "clear_invalid_session"):
+            parent.clear_invalid_session()
+            return
+        show_error_details(self, "重新授权失败", error)
+
+    def schedule_offer_meta_sync(self) -> None:
+        self.offer_meta_sync_timer.start()
+
+    def clear_offer_meta_rows(self) -> None:
+        while self.offer_meta_layout.count():
+            item = self.offer_meta_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+        self.offer_meta_rows = []
+
+    def sync_offer_meta_rows(self) -> None:
+        offer_urls = self.extract_offer_urls(self.offer_url_input.toPlainText())
+        previous_values = {row.offer_url: row.collect_payload() for row in self.offer_meta_rows}
+        self.clear_offer_meta_rows()
+        if not offer_urls:
+            empty_hint = QLabel("暂未识别到 1688 链接。")
+            empty_hint.setObjectName("AutoPublishHint")
+            self.offer_meta_layout.addWidget(empty_hint)
+            self.offer_meta_layout.addStretch(1)
+            self.update_summary_state()
+            return
+        for index, offer_url in enumerate(offer_urls, start=1):
+            row = AutoPublishOfferRow(offer_url, index, self.offer_meta_content)
+            row.restore_from(previous_values.get(offer_url, {}))
+            self.offer_meta_layout.addWidget(row)
+            self.offer_meta_rows.append(row)
+        self.offer_meta_layout.addStretch(1)
+        self.update_summary_state()
+
+    def collect_offer_payloads(self) -> list[dict[str, Any]]:
+        self.sync_offer_meta_rows()
+        if not self.current_shop_id():
+            QMessageBox.information(self, "请选择店铺", "请先拉取妙手店铺并选择目标店铺。")
+            return []
+        if len(self.offer_meta_rows) > AUTO_PUBLISH_LINK_LIMIT:
+            QMessageBox.warning(
+                self,
+                "链接超限",
+                f"单次最多支持 {AUTO_PUBLISH_LINK_LIMIT} 条 1688 链接，请拆分后再提交。",
+            )
+            return []
+        offer_payloads: list[dict[str, Any]] = []
+        for row in self.offer_meta_rows:
+            offer_payloads.append(
+                {
+                    **row.collect_payload(),
+                    "publish_count": 1,
+                    "target_channel": "TikTok Shop Japan",
+                    "target_language": self.language_select.currentData() or "ja",
+                    "dry_run": self.dry_run.isChecked(),
+                    "enable_image_translation": self.image_translation_enabled(),
+                    "enable_image_removal": self.image_removal_enabled(),
+                    "enable_title_optimization": self.listing_title_enabled(),
+                    "enable_sku_optimization": self.listing_sku_enabled(),
+                    "enable_description_optimization": self.listing_description_enabled(),
+                    "remove_logo": self.smart_removal_remove_logo_enabled(),
+                    "remove_transparent_text": self.smart_removal_remove_transparent_text_enabled(),
+                    "remove_text": self.smart_removal_remove_text_enabled(),
+                    "remove_psoriasis": self.smart_removal_remove_psoriasis_enabled(),
+                    "profit_rule": self.profit_rule_input.text().strip(),
+                    "pricing_currency": "JPY",
+                    "target_site": "JP",
+                    "target_shop_id": self.current_shop_id(),
+                }
+            )
+        return offer_payloads
 
     def create_1688_task(self) -> None:
-        offer_url = self.offer_url_input.text().strip()
-        if not offer_url:
+        payloads = self.collect_offer_payloads()
+        if not payloads:
             QMessageBox.information(self, "请输入链接", "请先粘贴 1688 商品链接。")
             return
-        payload = {
-            "offer_url": offer_url,
-            "publish_count": 1,
-            "target_channel": "TikTok Shop Japan",
-            "erp_url": self.erp_input.text().strip() or "https://erp.91miaoshou.com/?ac=1og270",
-            "dry_run": self.dry_run.isChecked(),
-            "miaoshou_username": self.miaoshou_user_input.text().strip(),
-            "miaoshou_password": self.miaoshou_password_input.text().strip(),
-        }
-        self.start_background_task(payload)
+        if len(payloads) == 1:
+            self.start_background_task(payloads[0])
+        else:
+            self.start_batch_background_task(payloads)
+
+    def extract_offer_urls(self, text: str) -> list[str]:
+        urls: list[str] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            matches = re.findall(r"https?://detail\.1688\.com/offer/\d+\.html?(?:\?[^\s|$，,；;]*)?", line, flags=re.IGNORECASE)
+            if matches:
+                urls.extend(matches)
+            elif re.fullmatch(r"\d{8,}", line):
+                urls.append(f"https://detail.1688.com/offer/{line}.html")
+        result: list[str] = []
+        seen: set[str] = set()
+        for url in urls:
+            if url not in seen:
+                seen.add(url)
+                result.append(url)
+        return result
 
     def start_background_task(self, payload: dict[str, Any]) -> None:
         self.create_button.setEnabled(False)
         self.create_button.setText("处理中...")
         self.progress_timer.stop()
         self.progress_bar.setValue(0)
+        self.progress_phase.setText("创建中")
         self.progress_label.setText("正在创建任务")
-        self.result.setPlainText(
-            "任务已开始，正在后台执行。\n\n"
-            "这一步会调用 Oxylabs、百度图片翻译、必要时豆包补图、模板生成和妙手导入。\n"
-            "如果弹出妙手浏览器，请在 10 分钟内手动输入验证码并登录。"
-        )
-        fill_table(
-            self.flow_table,
-            [
-                ["1. 调 Oxylabs 抓 1688 数据", "处理中"],
-                ["2. AI 优化标题 / SKU / 描述", "等待"],
-                ["3. 生成妙手导入模板", "等待"],
-                ["4. 自动导入妙手公用采集箱", "等待"],
-            ],
-        )
+        self.reset_api_usage_panel("任务已开始，正在等待进度回传。")
+        self.result.setPlainText("任务已提交，正在后台处理。完成后会自动弹出提示。")
         self.task_signals = AutoPublishSignals()
         self.task_signals.created.connect(self.on_task_created)
         self.task_signals.finished.connect(self.on_task_finished)
         self.task_signals.failed.connect(self.on_task_failed)
         IMAGE_THREAD_POOL.start(AutoPublishTask(self.gateway, payload, self.task_signals))
 
+    def start_batch_background_task(self, payloads: list[dict[str, Any]]) -> None:
+        self.create_button.setEnabled(False)
+        self.create_button.setText("批量处理中...")
+        self.progress_timer.stop()
+        self.current_task = None
+        self.progress_bar.setValue(0)
+        self.progress_phase.setText("创建中")
+        self.progress_label.setText(f"批量任务已开始：{len(payloads)} 个链接")
+        self.reset_api_usage_panel(f"批量任务已开始：{len(payloads)} 个链接，正在等待进度回传。")
+        self.result.setPlainText(
+            f"批量任务已提交，共 {len(payloads)} 条链接。完成后会自动弹出提示。"
+        )
+        self.task_signals = AutoPublishSignals()
+        self.task_signals.created.connect(self.on_task_created)
+        self.task_signals.finished.connect(self.on_task_finished)
+        self.task_signals.failed.connect(self.on_task_failed)
+        IMAGE_THREAD_POOL.start(AutoPublishBatchTask(self.gateway, payloads, self.task_signals))
+
     def on_task_created(self, task: dict[str, Any]) -> None:
         self.current_task = task
         self.apply_progress(task)
         self.progress_timer.start()
+
+    def animate_progress_bar(self) -> None:
+        if not hasattr(self, "progress_bar"):
+            return
+        current_value = int(self.progress_bar.value())
+        target_value = max(0, min(int(self.progress_target_value or 0), 100))
+        if current_value >= target_value:
+            if target_value >= 100:
+                self.progress_animation_timer.stop()
+            return
+        diff = target_value - current_value
+        if diff >= 30:
+            step = 6
+        elif diff >= 12:
+            step = 3
+        elif diff >= 4:
+            step = 2
+        else:
+            step = 1
+        next_value = min(current_value + step, target_value)
+        self.progress_bar.setValue(next_value)
+        if next_value >= target_value and target_value >= 100:
+            self.progress_animation_timer.stop()
 
     def refresh_task_progress(self) -> None:
         if not self.current_task:
@@ -5707,7 +7778,13 @@ class AutoPublishPage(Page):
             return
         try:
             latest = self.gateway.get_auto_publish_task(task_id)
-        except ApiError:
+        except ApiError as exc:
+            if self.gateway.is_invalid_token_error(exc):
+                parent = self.window()
+                if hasattr(parent, "clear_invalid_session"):
+                    parent.clear_invalid_session()
+                self.progress_timer.stop()
+                self.progress_label.setText("登录已失效，请重新登录")
             return
         self.current_task = latest
         self.apply_progress(latest)
@@ -5715,93 +7792,136 @@ class AutoPublishPage(Page):
     def apply_progress(self, result: dict[str, Any]) -> None:
         progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
         percent = int(progress.get("percent") or 0)
-        self.progress_bar.setValue(max(0, min(percent, 100)))
+        self.progress_target_value = max(0, min(percent, 100))
+        if self.progress_bar.value() > self.progress_target_value:
+            self.progress_bar.setValue(self.progress_target_value)
+        if self.progress_target_value > self.progress_bar.value() or self.progress_target_value >= 100:
+            self.progress_animation_timer.start()
+        else:
+            self.progress_animation_timer.stop()
         message = str(progress.get("message") or result.get("message") or "任务处理中")
+        stage = str(progress.get("stage") or result.get("status") or "processing").strip().lower()
+        stage_map = {
+            "pending": "等待",
+            "collecting": "采集",
+            "scanning": "采集",
+            "translating": "翻译",
+            "image": "图片",
+            "images": "图片",
+            "publishing": "发布",
+            "imported": "完成",
+            "done": "完成",
+            "failed": "失败",
+        }
+        self.progress_phase.setText("完成" if percent >= 100 else stage_map.get(stage, "处理中"))
         current = progress.get("current")
         total = progress.get("total")
         if current is not None and total is not None and str(progress.get("stage") or "") == "images":
             message = f"{message}"
         self.progress_label.setText(message)
-        stage = str(progress.get("stage") or "")
-        if stage == "fetch":
-            rows = [["1. 抓取 1688 数据", "处理中"], ["2. 优化标题 / SKU / 描述", "等待"], ["3. 生成图片 / 模板", "等待"], ["4. 导入妙手公用采集箱", "等待"]]
-        elif stage == "copy":
-            rows = [["1. 抓取 1688 数据", "完成"], ["2. 优化标题 / SKU / 描述", "处理中"], ["3. 生成图片 / 模板", "等待"], ["4. 导入妙手公用采集箱", "等待"]]
-        elif stage in {"images", "template"}:
-            rows = [["1. 抓取 1688 数据", "完成"], ["2. 优化标题 / SKU / 描述", "完成"], ["3. 生成图片 / 模板", "处理中"], ["4. 导入妙手公用采集箱", "等待"]]
-        elif stage == "miaoshou":
-            rows = [["1. 抓取 1688 数据", "完成"], ["2. 优化标题 / SKU / 描述", "完成"], ["3. 生成图片 / 模板", "完成"], ["4. 导入妙手公用采集箱", "处理中"]]
-        elif stage == "done":
-            rows = [["1. 抓取 1688 数据", "完成"], ["2. 优化标题 / SKU / 描述", "完成"], ["3. 生成图片 / 模板", "完成"], ["4. 导入妙手公用采集箱", "完成"]]
-        else:
-            rows = [["1. 抓取 1688 数据", "等待"], ["2. 优化标题 / SKU / 描述", "等待"], ["3. 生成图片 / 模板", "等待"], ["4. 导入妙手公用采集箱", "等待"]]
-        fill_table(self.flow_table, rows)
+        self.update_api_usage_panel(result)
 
     def on_task_finished(self, result: dict[str, Any]) -> None:
         self.progress_timer.stop()
         self.current_task = result
         self.apply_progress(result)
+        self.progress_target_value = 100
+        if not self.progress_animation_timer.isActive():
+            self.progress_animation_timer.start()
         self.render_result(result)
         self.create_button.setEnabled(True)
-        self.create_button.setText("上架该产品")
-        QMessageBox.information(self, "处理完成", result.get("message", "自动上架任务已执行。"))
+        self.create_button.setText("开始上架")
+        self.progress_phase.setText("完成")
+        QMessageBox.information(self, "处理完成", result.get("message", "任务已执行。"))
 
     def on_task_failed(self, message: str) -> None:
         self.progress_timer.stop()
         self.progress_label.setText("任务失败")
+        self.progress_phase.setText("失败")
         self.create_button.setEnabled(True)
-        self.create_button.setText("上架该产品")
-        QMessageBox.warning(self, "上架失败", message)
+        self.create_button.setText("开始上架")
+        if self.gateway.is_invalid_token_error(ApiError(message)):
+            parent = self.window()
+            if hasattr(parent, "clear_invalid_session"):
+                parent.clear_invalid_session()
+            QMessageBox.warning(self, "登录已失效", "登录已失效，请重新登录后再执行。")
+            return
+        QMessageBox.warning(self, "执行失败", message)
 
     def reset_flow(self) -> None:
         self.progress_timer.stop()
+        self.progress_animation_timer.stop()
+        self.progress_target_value = 0
         self.progress_bar.setValue(0)
-        self.progress_label.setText("待开始")
-        fill_table(
-            self.flow_table,
-            [
-                ["1. 调 Oxylabs 抓 1688 数据", "待执行"],
-                ["2. AI 优化标题 / SKU / 描述", "待执行"],
-                ["3. 生成妙手导入模板", "待执行"],
-                ["4. 自动导入妙手公用采集箱", "待执行"],
-            ],
-        )
+        self.progress_label.setText("待开始，输入 1688 链接后点击开始执行。")
+        self.progress_phase.setText("待开始")
+        self.reset_api_usage_panel()
+        self.update_miaoshou_shop_summary()
 
-    def run_task(self) -> None:
-        if not self.current_task:
-            QMessageBox.information(self, "请先创建任务", "请选择候选衍生品并创建任务。")
-            return
-        try:
-            result = self.gateway.run_auto_publish_task(str(self.current_task["task_id"]))
-            self.current_task = result
-            self.render_result(result)
-            QMessageBox.information(self, "执行完成", result.get("message", "任务执行完成。"))
-        except ApiError as exc:
-            QMessageBox.warning(self, "执行失败", str(exc))
+    @staticmethod
+    def format_shop_summary(result: dict[str, Any]) -> str:
+        def format_item(item: dict[str, Any]) -> str:
+            shop_id = item.get("shop_id")
+            shop_name = str(item.get("shop_name") or "").strip()
+            if shop_name and shop_id is not None:
+                return f"{shop_name}（{shop_id}）"
+            if shop_name:
+                return shop_name
+            if shop_id is not None:
+                return f"店铺ID {shop_id}"
+            return "未命名店铺"
+
+        available = [item for item in (result.get("available_shops") or []) if isinstance(item, dict)]
+        selected = [item for item in (result.get("selected_shops") or []) if isinstance(item, dict)]
+        selected_shop_ids = [str(item.get("shop_id") or "") for item in selected if item.get("shop_id") is not None]
+        if available:
+            available_text = "、".join(format_item(item) for item in available[:6])
+            if len(available) > 6:
+                available_text += f" 等 {len(available)} 个"
+            selected_text = "、".join(format_item(item) for item in selected[:6]) if selected else "未明确"
+            return f"店铺信息：账号内共 {len(available)} 个店铺，{available_text}；本次选中：{selected_text}。"
+        if selected:
+            selected_text = "、".join(format_item(item) for item in selected[:6])
+            return f"店铺信息：本次选中 {selected_text}。"
+        shop_ids = [str(item) for item in (result.get("shop_ids") or []) if str(item).strip()]
+        if shop_ids:
+            return f"店铺信息：已选店铺ID {', '.join(shop_ids)}。"
+        return "店铺信息：未获取到店铺列表。"
 
     def render_result(self, result: dict[str, Any]) -> None:
-        flow_rows = [
-            ["1. 调 Oxylabs 抓 1688 数据", "完成" if any("Oxylabs" in step or "1688" in step for step in result.get("steps", [])) else "待执行"],
-            ["2. AI 优化标题 / SKU / 描述", "完成" if any("优化" in step for step in result.get("steps", [])) else "待执行"],
-            ["3. 生成妙手导入模板", "完成" if result.get("template_path") else "待执行"],
-            ["4. 自动导入妙手公用采集箱", "完成" if result.get("status") == "imported" else ("失败" if result.get("status") == "import_failed" else "待执行")],
-        ]
-        fill_table(self.flow_table, flow_rows)
+        if isinstance(result.get("batch_results"), list):
+            self.render_batch_result(result)
+            return
+        self.update_api_usage_panel(result)
+        self.shop_info_label.setText(self.format_shop_summary(result))
+        progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
+        progress_text = str(progress.get("message") or result.get("message") or "-")
         lines = [
             f"状态：{result.get('status', '-')}",
             f"消息：{result.get('message', '-')}",
+            f"店铺：{self.format_shop_summary(result).replace('店铺信息：', '')}",
+            f"进度：{progress_text}",
             "",
-            "步骤：",
+            f"结果：{('成功' if result.get('ok') else '失败')}",
         ]
-        lines.extend([f"- {step}" for step in result.get("steps", [])])
         errors = result.get("errors") or []
         if errors:
             lines.append("")
             lines.append("错误：")
-            lines.extend([f"- {error}" for error in errors])
+            lines.extend([f"- {error}" for error in errors[:3]])
+        product_infos = result.get("product_infos") or []
+        if len(product_infos) > 1:
+            lines.append("")
+            lines.append(f"商品数：{len(product_infos)}")
+            for index, product in enumerate(product_infos, start=1):
+                title = str(product.get("optimized_title") or product.get("title") or product.get("offer_url") or "-")
+                offer_id = str(product.get("offer_id") or "-")
+                sku_count = len(product.get("optimized_skus") or product.get("skus") or [])
+                lines.append(f"- {index}. {title}（货源ID：{offer_id}，SKU：{sku_count} 个）")
         if result.get("template_path"):
             lines.append("")
             lines.append(f"模板文件：{result.get('template_path')}")
+        self.append_api_usage_lines(lines, result)
         import_result = result.get("import_result") or {}
         screenshots = import_result.get("screenshots") or []
         if screenshots:
@@ -5809,6 +7929,144 @@ class AutoPublishPage(Page):
             lines.append("失败截图：")
             lines.extend([f"- {path}" for path in screenshots])
         self.result.setPlainText("\n".join(lines))
+
+    def render_batch_result(self, result: dict[str, Any]) -> None:
+        batch_results = [item for item in result.get("batch_results", []) if isinstance(item, dict)]
+        ok_count = sum(1 for item in batch_results if item.get("ok"))
+        failed_count = len(batch_results) - ok_count
+        self.update_api_usage_panel(result)
+        self.shop_info_label.setText(self.format_shop_summary(result))
+        progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
+        progress_text = str(progress.get("message") or result.get("message") or "-")
+        lines = [
+            f"状态：{result.get('status', '-')}",
+            f"消息：{result.get('message', '-')}",
+            f"店铺：{self.format_shop_summary(result).replace('店铺信息：', '')}",
+            f"进度：{progress_text}",
+            "",
+            f"汇总：成功 {ok_count} 个，失败 {failed_count} 个。",
+            "",
+            "说明：批量任务只显示总览，不展开每一步。",
+        ]
+        self.append_api_usage_lines(lines, result)
+        self.result.setPlainText("\n".join(lines).strip())
+
+    def reset_api_usage_panel(self, message: str | None = None) -> None:
+        self.api_usage_summary.setText(message or "等待任务完成后显示调用次数、图片数量、Token 用量和预估费用。")
+        self.api_usage_detail.setText("暂无数据")
+
+    @staticmethod
+    def format_cost_cny(value: Any) -> str:
+        cost = float(value or 0)
+        if cost <= 0:
+            return "¥0"
+        if cost < 0.01:
+            return f"¥{cost:.4f}"
+        return f"¥{cost:.2f}"
+
+    def update_api_usage_panel(self, result: dict[str, Any]) -> None:
+        usage = result.get("api_usage") if isinstance(result.get("api_usage"), dict) else {}
+        totals = usage.get("totals") if isinstance(usage.get("totals"), dict) else {}
+        if not totals:
+            return
+        request_count = int(totals.get("request_count") or 0)
+        image_count = int(totals.get("image_count") or 0)
+        total_tokens = int(totals.get("total_tokens") or 0)
+        prompt_tokens = int(totals.get("prompt_tokens") or 0)
+        completion_tokens = int(totals.get("completion_tokens") or 0)
+        success_count = int(totals.get("success_count") or 0)
+        failure_count = int(totals.get("failure_count") or 0)
+        estimated_cost = self.format_cost_cny(totals.get("estimated_cost_cny"))
+        self.api_usage_summary.setText(
+            f"总计：请求 {request_count} 次，图片 {image_count} 张，Token {total_tokens} "
+            f"（输入 {prompt_tokens}，输出 {completion_tokens}），预估费用 {estimated_cost}，"
+            f"成功 {success_count}，失败 {failure_count}"
+        )
+        by_key = usage.get("by_key") if isinstance(usage.get("by_key"), dict) else {}
+        by_provider = usage.get("by_provider") if isinstance(usage.get("by_provider"), dict) else {}
+        detail_lines: list[str] = []
+        detail_source = by_key if by_key else by_provider
+        for name, bucket in sorted(detail_source.items()):
+            if not isinstance(bucket, dict):
+                continue
+            if name == "unknown":
+                continue
+            detail_lines.append(
+                f"{name}：请求 {int(bucket.get('request_count') or 0)} 次，"
+                f"图片 {int(bucket.get('image_count') or 0)} 张，"
+                f"Token {int(bucket.get('total_tokens') or 0)}，"
+                f"费用 {self.format_cost_cny(bucket.get('estimated_cost_cny'))}，"
+                f"成功 {int(bucket.get('success_count') or 0)}，失败 {int(bucket.get('failure_count') or 0)}"
+            )
+        self.api_usage_detail.setText("；".join(detail_lines) if detail_lines else "暂无分 Key 统计")
+
+    def append_api_usage_lines(self, lines: list[str], result: dict[str, Any]) -> None:
+        usage = result.get("api_usage") if isinstance(result.get("api_usage"), dict) else {}
+        totals = usage.get("totals") if isinstance(usage.get("totals"), dict) else {}
+        if not totals:
+            return
+        lines.append("")
+        lines.append("API 用量：")
+        lines.append(
+            "总计："
+            f"请求 {int(totals.get('request_count') or 0)} 次，"
+            f"图片 {int(totals.get('image_count') or 0)} 张，"
+            f"Token {int(totals.get('total_tokens') or 0)} "
+            f"（输入 {int(totals.get('prompt_tokens') or 0)}，输出 {int(totals.get('completion_tokens') or 0)}），"
+            f"预估费用 {self.format_cost_cny(totals.get('estimated_cost_cny'))}"
+        )
+        by_provider = usage.get("by_provider") if isinstance(usage.get("by_provider"), dict) else {}
+        if by_provider:
+            lines.append("按服务：")
+            for name, bucket in sorted(by_provider.items()):
+                if not isinstance(bucket, dict):
+                    continue
+                lines.append(
+                    f"- {name}：请求 {int(bucket.get('request_count') or 0)} 次，"
+                    f"图片 {int(bucket.get('image_count') or 0)} 张，"
+                    f"Token {int(bucket.get('total_tokens') or 0)}，"
+                    f"费用 {self.format_cost_cny(bucket.get('estimated_cost_cny'))}，"
+                    f"成功 {int(bucket.get('success_count') or 0)}，失败 {int(bucket.get('failure_count') or 0)}"
+                )
+        by_key = usage.get("by_key") if isinstance(usage.get("by_key"), dict) else {}
+        if by_key:
+            lines.append("按 Key：")
+            for name, bucket in sorted(by_key.items()):
+                if not isinstance(bucket, dict) or name == "unknown":
+                    continue
+                lines.append(
+                    f"- {name}：请求 {int(bucket.get('request_count') or 0)} 次，"
+                    f"图片 {int(bucket.get('image_count') or 0)} 张，"
+                    f"Token {int(bucket.get('total_tokens') or 0)}，"
+                    f"费用 {self.format_cost_cny(bucket.get('estimated_cost_cny'))}，"
+                    f"成功 {int(bucket.get('success_count') or 0)}，失败 {int(bucket.get('failure_count') or 0)}"
+                )
+        by_purpose = usage.get("by_purpose") if isinstance(usage.get("by_purpose"), dict) else {}
+        if by_purpose:
+            lines.append("按用途：")
+            for name, bucket in sorted(by_purpose.items()):
+                if not isinstance(bucket, dict):
+                    continue
+                lines.append(
+                    f"- {name}：请求 {int(bucket.get('request_count') or 0)} 次，"
+                    f"图片 {int(bucket.get('image_count') or 0)} 张，"
+                    f"Token {int(bucket.get('total_tokens') or 0)}，"
+                    f"费用 {self.format_cost_cny(bucket.get('estimated_cost_cny'))}，"
+                    f"成功 {int(bucket.get('success_count') or 0)}，失败 {int(bucket.get('failure_count') or 0)}"
+                )
+        by_model = usage.get("by_model") if isinstance(usage.get("by_model"), dict) else {}
+        if by_model:
+            lines.append("按模型/API：")
+            for name, bucket in sorted(by_model.items()):
+                if not isinstance(bucket, dict):
+                    continue
+                lines.append(
+                    f"- {name}：请求 {int(bucket.get('request_count') or 0)} 次，"
+                    f"图片 {int(bucket.get('image_count') or 0)} 张，"
+                    f"Token {int(bucket.get('total_tokens') or 0)}，"
+                    f"费用 {self.format_cost_cny(bucket.get('estimated_cost_cny'))}，"
+                    f"成功 {int(bucket.get('success_count') or 0)}，失败 {int(bucket.get('failure_count') or 0)}"
+                )
 
 
 class TeacherDashboardPage(Page):
@@ -6729,6 +8987,152 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         }
         #PersonalValue { background: transparent; color: $text; font-size: 15px; font-weight: 800; }
         #CardTitle { background: transparent; color: $text; font-size: 16px; font-weight: 800; }
+        #AutoPublishSection {
+            background: linear-gradient(180deg, #f7fbfa 0%, #f4f8fb 100%);
+            border-radius: 18px;
+        }
+        #AutoPublishCard {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 $panel, stop:1 $panel2);
+            border: 1px solid $border;
+            border-radius: 16px;
+        }
+        #AutoPublishSidePanel {
+            background: $panel; border: 1px solid $border; border-radius: 14px;
+        }
+        #AutoPublishOfferCard {
+            background: $panel2; border: 1px solid $border; border-radius: 12px;
+        }
+        #AutoPublishIndex {
+            background: $tag; color: $accent; border: 1px solid $border; border-radius: 18px;
+            font-size: 12px; font-weight: 900;
+        }
+        #AutoPublishUrl {
+            background: transparent; color: $text; font-size: 13px; font-weight: 700;
+        }
+        #AutoPublishHint {
+            background: transparent; color: $muted; font-size: 12px; line-height: 1.35;
+        }
+        #AutoPublishShopInfo {
+            background: #f3faf8;
+            color: $text;
+            border: 1px solid rgba(22, 160, 133, 0.18);
+            border-radius: 12px;
+            padding: 8px 12px;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+        #AutoPublishShopCombo {
+            background: $input;
+            color: $text;
+            border: 1px solid $border;
+            border-radius: 12px;
+            padding: 6px 12px;
+            font-size: 13px;
+            min-height: 34px;
+        }
+        #AutoPublishShopCombo:hover {
+            border-color: $accent;
+        }
+        #AutoPublishShopCombo:disabled {
+            background: $panel2;
+            color: $muted;
+        }
+        #AutoPublishShopRefresh {
+            background: $tag;
+            color: $tag_text;
+            border: 1px solid rgba(22, 160, 133, 0.18);
+            border-radius: 10px;
+            min-height: 30px;
+            min-width: 76px;
+            font-weight: 800;
+            font-size: 12px;
+        }
+        #AutoPublishShopRefresh:hover {
+            background: $accent;
+            color: #ffffff;
+        }
+        #AutoPublishShopRefresh:disabled {
+            color: $muted;
+            background: $metric;
+        }
+        #AutoPublishReauth {
+            background: $tag;
+            color: $tag_text;
+            border: 1px solid rgba(22, 160, 133, 0.18);
+            border-radius: 10px;
+            min-height: 30px;
+            min-width: 104px;
+            font-size: 12px;
+            font-weight: 800;
+        }
+        #AutoPublishReauth:hover {
+            background: $accent;
+            color: #ffffff;
+        }
+        #AutoPublishReauth:disabled {
+            color: $muted;
+            background: $metric;
+        }
+        #AutoPublishPrimaryAction {
+            background: $accent;
+            color: #ffffff;
+            border: 1px solid $accent;
+            border-radius: 10px;
+            min-height: 30px;
+            min-width: 96px;
+            font-size: 12px;
+            font-weight: 900;
+        }
+        #AutoPublishPrimaryAction:hover { background: $accent_hover; }
+        #AutoPublishPrimaryAction:disabled {
+            color: $muted;
+            background: $metric;
+            border-color: $border;
+        }
+        #AutoPublishSecondaryAction {
+            background: $panel;
+            color: $accent;
+            border: 1px solid $accent;
+            border-radius: 10px;
+            min-height: 30px;
+            min-width: 66px;
+            font-size: 12px;
+            font-weight: 800;
+        }
+        #AutoPublishSecondaryAction:hover { background: $tag; }
+        #AutoPublishPill {
+            background: $tag; color: $accent; border: 1px solid $border;
+            border-radius: 999px; padding: 5px 11px; font-size: 11px; font-weight: 800;
+        }
+        #AutoPublishInput {
+            background: $input; color: $text; border: 1px solid $border; border-radius: 12px;
+            padding: 12px 14px; font-size: 14px;
+        }
+        #AutoPublishSpecBox {
+            background: $input; border: 1px solid $border; border-radius: 10px;
+        }
+        #AutoPublishSpecBox QSpinBox {
+            background: $input; color: $text; border: 1px solid $border; border-radius: 9px;
+            padding: 2px 6px; min-height: 24px; selection-background-color: $accent;
+        }
+        #AutoPublishSpecBox QSpinBox:focus {
+            border: 1px solid $accent;
+        }
+        #AutoPublishSpecBox QSpinBox::up-button,
+        #AutoPublishSpecBox QSpinBox::down-button {
+            width: 0; border: 0; background: transparent;
+        }
+        #AutoPublishSpecBox QSpinBox::up-arrow,
+        #AutoPublishSpecBox QSpinBox::down-arrow {
+            width: 0; height: 0;
+        }
+        QProgressBar {
+            background: $input; color: $text; border: 1px solid $border; border-radius: 6px;
+            text-align: center; font-size: 11px;
+        }
+        QProgressBar::chunk {
+            background: $accent; border-radius: 6px;
+        }
         #Chip {
             background: $tag; color: $tag_text; border: 1px solid $border;
             border-radius: 8px; padding: 6px 10px;

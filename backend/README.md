@@ -17,7 +17,7 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+本地后端启动已禁用。请使用服务器后端：http://120.26.207.89
 ```
 
 ## Demo Accounts

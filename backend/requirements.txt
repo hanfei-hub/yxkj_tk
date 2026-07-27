@@ -11,3 +11,4 @@ PyMySQL>=1.1.1
 pillow>=12.3.0
 alibabacloud_dysmsapi20170525>=3.0.0
 alibabacloud_tea_openapi>=0.3.0
+playwright>=1.55.0

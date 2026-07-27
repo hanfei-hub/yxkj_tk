@@ -1,18 +1,24 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from typing import Any
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_role
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.services.auto_publish_service import (
+    create_1688_batch_publish_task,
     create_1688_publish_task,
     create_task,
+    list_miaoshou_shop_options,
     get_task_result,
     get_latest_result,
     list_history,
     list_publish_candidates,
+    save_miaoshou_picture_space_storage_state,
+    mark_task_runtime_failure,
     run_1688_publish_task,
     run_task,
 )
@@ -25,23 +31,99 @@ router = APIRouter(
 )
 
 
+def user_id_and_role(user: dict) -> tuple[int, str]:
+    return int(user.get("id") or 0), str(user.get("role") or "")
+
+
+def run_auto_publish_task_in_background(task_id: str) -> None:
+    db = SessionLocal()
+    try:
+        run_1688_publish_task(db, task_id)
+    except Exception as exc:
+        mark_task_runtime_failure(task_id, str(exc))
+    finally:
+        db.close()
+
+
 class AutoPublishTaskRequest(BaseModel):
     derived_id: int
     publish_count: int = 1
     target_channel: str = "TikTok Shop Japan"
-    erp_url: str = "https://erp.91miaoshou.com/?ac=1og270"
     dry_run: bool = True
+
+
+class AutoPublish1688ItemRequest(BaseModel):
+    offer_url: str
+    package_weight_g: float = 500
+    package_length_cm: float = 10
+    package_width_cm: float = 10
+    package_height_cm: float = 40
+    profit_rule: str = ""
+    pricing_currency: str = "CNY"
 
 
 class AutoPublish1688Request(BaseModel):
     offer_url: str
     publish_count: int = 1
     target_channel: str = "TikTok Shop Japan"
-    erp_url: str = "https://erp.91miaoshou.com/?ac=1og270"
+    target_language: str = "ja"
+    target_site: str = "JP"
+    target_shop_id: int | None = None
+    miaoshou_app_key: str = ""
+    miaoshou_app_secret: str = ""
+    miaoshou_api_base_url: str = ""
+    enable_image_translation: bool = True
+    enable_image_removal: bool = True
+    enable_title_optimization: bool = True
+    enable_sku_optimization: bool = True
+    enable_description_optimization: bool = True
+    remove_logo: bool = True
+    remove_transparent_text: bool = True
+    remove_text: bool = False
+    remove_psoriasis: bool = True
+    package_weight_g: float = 500
+    package_length_cm: float = 10
+    package_width_cm: float = 10
+    package_height_cm: float = 40
+    profit_rule: str = ""
+    pricing_currency: str = "CNY"
     dry_run: bool = False
-    image_mode: str = "fast"
-    miaoshou_username: str = ""
-    miaoshou_password: str = ""
+
+
+class AutoPublish1688BatchRequest(BaseModel):
+    offer_urls: list[str]
+    items: list[AutoPublish1688ItemRequest] = Field(default_factory=list)
+    publish_count: int = 1
+    target_channel: str = "TikTok Shop Japan"
+    target_language: str = "ja"
+    target_site: str = "JP"
+    target_shop_id: int | None = None
+    miaoshou_app_key: str = ""
+    miaoshou_app_secret: str = ""
+    miaoshou_api_base_url: str = ""
+    enable_image_translation: bool = True
+    enable_image_removal: bool = True
+    enable_title_optimization: bool = True
+    enable_sku_optimization: bool = True
+    enable_description_optimization: bool = True
+    remove_logo: bool = True
+    remove_transparent_text: bool = True
+    remove_text: bool = False
+    remove_psoriasis: bool = True
+    profit_rule: str = ""
+    pricing_currency: str = "CNY"
+    dry_run: bool = False
+
+
+class MiaoshouShopListRequest(BaseModel):
+    target_site: str = "JP"
+    miaoshou_app_key: str = ""
+    miaoshou_app_secret: str = ""
+    miaoshou_api_base_url: str = ""
+
+
+class MiaoshouReauthorizeRequest(BaseModel):
+    storage_state: dict[str, Any]
 
 
 @router.get("/candidates")
@@ -50,20 +132,47 @@ def candidates(limit: int = Query(50, ge=1, le=100), db: Session = Depends(get_d
 
 
 @router.get("/latest")
-def latest():
-    return get_latest_result()
+def latest(user: dict = Depends(require_role("admin", "teacher"))):
+    user_id, role = user_id_and_role(user)
+    return get_latest_result(user_id=user_id, role=role)
 
 
 @router.get("/history")
-def history():
-    return list_history()
+def history(user: dict = Depends(require_role("admin", "teacher"))):
+    user_id, role = user_id_and_role(user)
+    return list_history(user_id=user_id, role=role)
+
+
+@router.post("/miaoshou/shop-list")
+def miaoshou_shop_list(
+    payload: MiaoshouShopListRequest,
+    user: dict = Depends(require_role("admin", "teacher")),
+    db: Session = Depends(get_db),
+):
+    try:
+        return list_miaoshou_shop_options(db, payload.model_dump())
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/miaoshou/reauthorize-picture-space")
+def miaoshou_reauthorize_picture_space(
+    payload: MiaoshouReauthorizeRequest,
+    user: dict = Depends(require_role("admin", "teacher")),
+    db: Session = Depends(get_db),
+):
+    try:
+        return save_miaoshou_picture_space_storage_state(db, payload.storage_state)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/tasks/{task_id}")
-def get_auto_publish_task(task_id: str):
-    result = get_task_result(task_id)
+def get_auto_publish_task(task_id: str, user: dict = Depends(require_role("admin", "teacher"))):
+    user_id, role = user_id_and_role(user)
+    result = get_task_result(task_id, user_id=user_id, role=role)
     if not result:
-        raise HTTPException(status_code=404, detail="自动上架任务不存在。")
+        raise HTTPException(status_code=404, detail="Auto publish task not found.")
     return result
 
 
@@ -80,11 +189,44 @@ def create_auto_publish_task(
 
 
 @router.post("/tasks/{task_id}/run")
-def run_auto_publish_task(task_id: str, db: Session = Depends(get_db)):
+def run_auto_publish_task(
+    task_id: str,
+    user: dict = Depends(require_role("admin", "teacher")),
+    db: Session = Depends(get_db),
+):
+    user_id, role = user_id_and_role(user)
+    if not get_task_result(task_id, user_id=user_id, role=role):
+        raise HTTPException(status_code=404, detail="Auto publish task not found.")
     try:
         return run_1688_publish_task(db, task_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Auto publish task failed: {exc}") from exc
+
+
+@router.post("/tasks/{task_id}/run-async")
+def run_auto_publish_task_async(
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(require_role("admin", "teacher")),
+):
+    user_id, role = user_id_and_role(user)
+    existing = get_task_result(task_id, user_id=user_id, role=role)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Auto publish task not found.")
+    background_tasks.add_task(run_auto_publish_task_in_background, task_id)
+    return existing | {
+        "status": "running",
+        "message": "自动上架任务已进入后台执行，桌面端会继续刷新进度。",
+        "progress": {
+            "stage": "fetch",
+            "current": 0,
+            "total": len(existing.get("offer_urls") or [existing.get("offer_url")]),
+            "message": "后台任务已启动",
+            "percent": 1,
+        },
+    }
 
 
 @router.post("/1688/tasks")
@@ -97,3 +239,19 @@ def create_1688_task(
         return create_1688_publish_task(db, payload.model_dump(), user_id=user.get("id"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Auto publish task creation failed: {exc}") from exc
+
+
+@router.post("/1688/batch-tasks")
+def create_1688_batch_task(
+    payload: AutoPublish1688BatchRequest,
+    user: dict = Depends(require_role("admin", "teacher")),
+    db: Session = Depends(get_db),
+):
+    try:
+        return create_1688_batch_publish_task(db, payload.model_dump(), user_id=user.get("id"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Auto publish batch task creation failed: {exc}") from exc

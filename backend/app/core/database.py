@@ -6,13 +6,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
+BASE_DIR = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.getenv("DATABASE_URL")
 BASE_DIR = Path(__file__).resolve().parents[2]
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is required. Configure the server MySQL connection before starting backend.")
-
+    raise RuntimeError("DATABASE_URL is required. Configure the server MySQL connection before starting the backend.")
 if DATABASE_URL.startswith("sqlite"):
-    raise RuntimeError("SQLite is no longer supported for this project. Use the server MySQL DATABASE_URL.")
+    raise RuntimeError("SQLite is disabled. Use the server MySQL DATABASE_URL.")
 
 engine_options = {
     "pool_pre_ping": True,

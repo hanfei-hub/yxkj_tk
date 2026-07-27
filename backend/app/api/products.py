@@ -154,6 +154,7 @@ def sync_fastmoss_products(
     background_tasks: BackgroundTasks,
     page: int = Query(1, ge=1),
     pagesize: int | None = Query(None, ge=1, le=100),
+    derive_limit: int | None = Query(None, ge=0, le=100),
     region: str = Query("JP"),
     list_type: str = Query("new"),
     db: Session = Depends(get_db),
@@ -188,7 +189,7 @@ def sync_fastmoss_products(
                 select(FmProduct.id)
                 .where(FmProduct.platform == "TikTok", FmProduct.list_type == "new", FmProduct.data_date == request_date)
                 .order_by(FmProduct.rank_no, FmProduct.id)
-                .limit(pagesize)
+                .limit(derive_limit if derive_limit is not None else pagesize)
                 ).all()
             )
             if synced_product_ids:
