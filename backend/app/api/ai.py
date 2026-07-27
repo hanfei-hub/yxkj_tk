@@ -21,11 +21,11 @@ from app.services.execution_log_service import create_task, elapsed_ms, finish_t
 from app.services.serializers import derived_to_dict
 
 router = APIRouter(prefix="/api/ai", tags=["ai"], dependencies=[Depends(require_role("admin", "teacher", "student"))])
-ALLOWED_SELECTION_COUNTS = {5, 10, 20}
+ALLOWED_SELECTION_COUNTS = {10, 15, 20}
 
 
 def selection_credit_cost(count: int) -> int:
-    return 10
+    return count
 
 
 class ChatSelectionRequest(BaseModel):
@@ -48,7 +48,7 @@ def chat_selection(
     if not message:
         raise HTTPException(status_code=400, detail="消息不能为空")
     if payload.count not in ALLOWED_SELECTION_COUNTS:
-        raise HTTPException(status_code=400, detail="推荐条数只能选择 5、10 或 20 条")
+        raise HTTPException(status_code=400, detail="推荐条数只能选择 10、15 或 20 条")
     requested_count = int(payload.count)
     credit_cost = selection_credit_cost(requested_count)
     user_id = int(user.get("id") or 0)

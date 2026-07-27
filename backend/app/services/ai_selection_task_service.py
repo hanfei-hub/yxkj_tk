@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta
 import json
+import re
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -100,11 +101,85 @@ def build_prompt(db: Session, template: AiPromptTemplate, user_message: str, req
         content = f"{content}\n\n{constants}"
     return (
         f"{content}\n\n"
-        f"本次必须生成 {requested_count} 个商品，items 数组最多保留 {requested_count} 个商品。\n"
-        "请严格输出纯 JSON，不要输出 markdown、解释或多余文字。\n"
-        "如果没有真实可访问的商品图片 URL，image_url 必须输出空字符串，不要编造 example.com 或占位图片。\n"
-        f"JSON 结构必须符合：{template.output_schema}"
+        f"本次必须生成 {requested_count} 个商品。请严格输出纯文本，不要输出 JSON、Markdown、解释或多余文字。\n"
+        "如果没有真实可访问的商品图片地址，图片：必须留空，不要编造 example.com 或占位图片。\n"
+        "每个商品严格使用以下格式，并用 [商品] 和 [/商品] 包裹：\n"
+        "[商品]\n"
+        "名称：中文商品名称\n"
+        "推荐理由：推荐理由摘要\n"
+        "价格：0\n"
+        "销量：0\n"
+        "图片：真实商品图片URL，没有则留空\n"
+        "维度1-使用场景：等级=判定等级；内容=客观分析内容\n"
+        "维度2-商品周期性：等级=判定等级；内容=客观分析内容\n"
+        "维度3-目标群体：等级=判定等级；内容=客观分析内容\n"
+        "维度4-短视频流量种草适配能力：等级=判定等级；内容=客观分析内容\n"
+        "维度5-日本市场偏好：等级=判定等级；内容=客观分析内容\n"
+        "维度6-是否属于新奇特商品：等级=判定等级；内容=客观分析内容\n"
+        "维度7-复购属性：等级=判定等级；内容=客观分析内容\n"
+        "维度8-竞品属性：等级=判定等级；内容=客观分析内容\n"
+        "[/商品]"
     )
+
+
+def normalize_plain_text_items(answer: str, requested_count: int = 10) -> list[dict[str, Any]]:
+    """Parse the tagged natural-language format used by derivation prompts."""
+    blocks = re.findall(
+        r"\[商品(?:\s*\d+)?\](.*?)(?:\[/商品\]|(?=\[商品(?:\s*\d+)?\]|$))",
+        answer or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not blocks:
+        return []
+
+    items: list[dict[str, Any]] = []
+    for block in blocks[:requested_count]:
+        fields: dict[str, str] = {}
+        report: dict[str, dict[str, str]] = {}
+        for raw_line in block.splitlines():
+            line = raw_line.strip().strip("-•")
+            if not line:
+                continue
+            dimension_match = re.match(
+                r"维度\s*(\d+)\s*[-—－、.]?\s*([^：:]+)[：:]\s*等级\s*[=：:]\s*(.*?)[；;]\s*内容\s*[=：:]\s*(.*)$",
+                line,
+                flags=re.IGNORECASE,
+            )
+            if dimension_match:
+                number = int(dimension_match.group(1))
+                code = f"dimension_{number}"
+                report[code] = {
+                    "dimension_name": dimension_match.group(2).strip(),
+                    "rating_level": dimension_match.group(3).strip(),
+                    "analysis_content": dimension_match.group(4).strip(),
+                }
+                continue
+            field_match = re.match(r"([^：:]+)[：:]\s*(.*)$", line)
+            if field_match:
+                fields[field_match.group(1).strip()] = field_match.group(2).strip()
+
+        title = fields.get("名称") or fields.get("商品名称") or ""
+        if not title:
+            continue
+        price_match = re.search(r"-?\d+(?:\.\d+)?", fields.get("价格", "0"))
+        sales_match = re.search(r"\d+(?:\.\d+)?", fields.get("销量", "0"))
+        image_url = fields.get("图片") or fields.get("图片地址") or fields.get("image_url") or ""
+        if "example.com" in image_url.lower():
+            image_url = ""
+        reason = fields.get("推荐理由") or fields.get("理由") or ""
+        if not reason and report:
+            reason = "；".join(str(value.get("analysis_content") or "") for value in report.values())[:600]
+        items.append(
+            {
+                "title": title[:255],
+                "image_url": image_url.strip(),
+                "price": float(price_match.group(0)) if price_match else 0,
+                "sales_count": int(float(sales_match.group(0))) if sales_match else 0,
+                "reason_summary": reason,
+                "analysis_report": report,
+            }
+        )
+    return items
 
 
 def normalize_items(raw: Any, requested_count: int = 10) -> list[dict[str, Any]]:
@@ -219,7 +294,7 @@ def run_ai_selection_task(task_id: int, user_message: str, user_id: int, credit_
             answer = chat_completion(
                 db,
                 [
-                    {"role": "system", "content": "你是 TikTok 日本站跨境专业选品分析师，只输出合法 JSON。"},
+                    {"role": "system", "content": "你是 TikTok 日本站跨境专业选品分析师，只输出规定格式的纯文本。"},
                     {"role": "user", "content": prompt},
                 ],
                 model_type=MODEL_TYPE_PRODUCT_VISION,
@@ -229,7 +304,14 @@ def run_ai_selection_task(task_id: int, user_message: str, user_id: int, credit_
             )
 
             update_task_progress(db, task, processed_count=3, stage="saving_results", message="正在保存本次搜索结果")
-            items = normalize_items(extract_json_object(answer), requested_count)
+            items = normalize_plain_text_items(answer, requested_count)
+            if not items:
+                # Keep compatibility with older model configurations that still
+                # follow the previous JSON-only prompt.
+                try:
+                    items = normalize_items(extract_json_object(answer), requested_count)
+                except ModelCallError:
+                    items = []
             if not items:
                 raise ModelCallError("大模型未返回可入库的商品列表")
             save_user_search_recommendations(db, user_id=user_id, task_id=task.id, search_query=user_message, items=items)

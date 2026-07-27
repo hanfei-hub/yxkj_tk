@@ -136,6 +136,10 @@ def external_link_button(text: str, url: str, parent: QWidget | None = None) -> 
     button = QPushButton(text)
     button.setObjectName("CollectionLink")
     button.setFlat(True)
+    button.setMinimumHeight(0)
+    link_font = button.font()
+    link_font.setUnderline(True)
+    button.setFont(link_font)
     button.setCursor(Qt.PointingHandCursor)
     button.clicked.connect(lambda checked=False, target=url: open_external_url(target, parent))
     return button
@@ -259,22 +263,26 @@ class PromptEditorFrame(QFrame):
         self.count_label.setObjectName("StudioPromptCount")
         self.analyze_button = QPushButton("智能选品", self)
         self.analyze_button.setObjectName("StudioAnalyze")
-        self.analyze_button.setFixedSize(126, 38)
-        self.credit_hint = QLabel("消耗 10 积分", self)
-        self.credit_hint.setObjectName("CreditHint")
-        self.credit_hint.setAlignment(Qt.AlignCenter)
+        self.analyze_button.setFixedSize(96, 38)
+        self.credit_label = QLabel("10积分", self)
+        self.credit_label.setObjectName("CreditHint")
+        self.credit_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+    def set_credit_cost(self, cost: int) -> None:
+        self.credit_label.setText(f"{int(cost)}积分")
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         margin = 10
         button_width = self.analyze_button.width()
-        self.analyze_button.move(self.width() - button_width - margin, self.height() - self.analyze_button.height() - margin)
+        self.credit_label.adjustSize()
+        action_width = button_width + 7 + self.credit_label.width()
+        self.analyze_button.move(self.width() - action_width - margin, self.height() - self.analyze_button.height() - margin)
         self.count_label.adjustSize()
         self.count_label.move(self.analyze_button.x() - self.count_label.width() - 14, self.height() - self.count_label.height() - 21)
-        self.credit_hint.adjustSize()
-        self.credit_hint.move(
-            self.analyze_button.x() + (self.analyze_button.width() - self.credit_hint.width()) // 2,
-            self.analyze_button.y() - self.credit_hint.height() - 2,
+        self.credit_label.move(
+            self.analyze_button.x() + self.analyze_button.width() + 7,
+            self.analyze_button.y() + (self.analyze_button.height() - self.credit_label.height()) // 2,
         )
 
 
@@ -1681,7 +1689,9 @@ class PersonalCenterPage(Page):
         password_layout = QVBoxLayout(password_panel)
         password_layout.setContentsMargins(18, 16, 18, 18)
         password_layout.setSpacing(10)
-        password_layout.addWidget(QLabel("修改密码"))
+        password_title = QLabel("修改密码")
+        password_title.setObjectName("CardTitle")
+        password_layout.addWidget(password_title)
         self.old_password = QLineEdit()
         self.old_password.setPlaceholderText("输入当前密码")
         self.old_password.setEchoMode(QLineEdit.Password)
@@ -1697,7 +1707,6 @@ class PersonalCenterPage(Page):
         password_button = QPushButton("保存新密码")
         password_button.clicked.connect(self.save_password)
         password_layout.addWidget(password_button)
-        password_layout.addWidget(ThemeSettingsPanel(on_theme_change or (lambda _: None), on_font_change))
         password_layout.addStretch()
         body.addWidget(password_panel, 1)
 
@@ -1706,7 +1715,9 @@ class PersonalCenterPage(Page):
         recharge_layout = QVBoxLayout(recharge_panel)
         recharge_layout.setContentsMargins(18, 16, 18, 18)
         recharge_layout.setSpacing(10)
-        recharge_layout.addWidget(QLabel("积分充值"))
+        recharge_title = QLabel("积分充值")
+        recharge_title.setObjectName("CardTitle")
+        recharge_layout.addWidget(recharge_title)
         recharge_hint = QLabel("扫码添加管理员好友，发送充值金额和账号。充值到账后积分会自动显示在这里。")
         recharge_hint.setObjectName("Muted")
         recharge_hint.setWordWrap(True)
@@ -1721,7 +1732,10 @@ class PersonalCenterPage(Page):
         recharge_layout.addWidget(record_hint)
         recharge_layout.addStretch()
         body.addWidget(recharge_panel, 1)
-        self.layout.addLayout(body, 1)
+        self.layout.addLayout(body)
+        settings_panel = ThemeSettingsPanel(on_theme_change or (lambda _: None), on_font_change)
+        self.layout.addWidget(settings_panel)
+        self.layout.addStretch(1)
         self.refresh_profile()
 
     def activate(self) -> None:
@@ -3325,9 +3339,9 @@ class StudentSelectionPage(Page):
         count_row = QHBoxLayout()
         count_row.addWidget(QLabel("推荐条数"))
         self.count_select = QComboBox()
-        for label, value in (("5 条 · 10 积分", 5), ("10 条 · 10 积分", 10), ("20 条 · 10 积分", 20)):
+        for label, value in (("10 条 · 10 积分", 10), ("15 条 · 15 积分", 15), ("20 条 · 20 积分", 20)):
             self.count_select.addItem(label, value)
-        self.count_select.setCurrentIndex(1)
+        self.count_select.setCurrentIndex(0)
         self.count_select.setObjectName("StudioModeCombo")
         count_row.addWidget(self.count_select)
         count_row.addStretch()
@@ -3729,12 +3743,16 @@ class SelectionStudioPage(Page):
         count_label.setObjectName("StudioMarket")
         count_row.addWidget(count_label)
         self.count_select = QComboBox()
-        for label, value in (("5 条 · 10 积分", 5), ("10 条 · 10 积分", 10), ("20 条 · 10 积分", 20)):
+        for label, value in (("10 条 · 10 积分", 10), ("15 条 · 15 积分", 15), ("20 条 · 20 积分", 20)):
             self.count_select.addItem(label, value)
-        self.count_select.setCurrentIndex(1)
+        self.count_select.setCurrentIndex(0)
         self.count_select.setObjectName("StudioModeCombo")
+        self.count_select.currentIndexChanged.connect(
+            lambda: prompt_editor.set_credit_cost(int(self.count_select.currentData() or 10))
+        )
+        prompt_editor.set_credit_cost(int(self.count_select.currentData() or 10))
         count_row.addWidget(self.count_select)
-        count_hint = QLabel("每次选品固定消耗 10 积分")
+        count_hint = QLabel("积分按推荐条数扣除")
         count_hint.setObjectName("StudioMarket")
         count_row.addWidget(count_hint)
         count_row.addStretch()
@@ -5071,7 +5089,7 @@ class StudioSelectionPage(Page):
         self.chat_input = QLineEdit()
         self.chat_input.setPlaceholderText("帮我找适合日本学生、轻小件、1000円以内的桌面收纳商品")
         self.chat_input.returnPressed.connect(self.send_chat)
-        self.send_button = QPushButton("开始选品")
+        self.send_button = QPushButton("开始选品 10积分")
         self.send_button.setObjectName("StudioPrimary")
         self.send_button.clicked.connect(self.send_chat)
         prompt_row.addWidget(self.chat_input, 1)
@@ -5939,9 +5957,6 @@ class DerivedDialog(QDialog):
         self.generate_button = QPushButton("开始衍生")
         self.generate_button.setObjectName("PrimaryAction")
         self.generate_button.clicked.connect(self.start_generation)
-        self.credit_hint = QLabel("消耗 10 积分")
-        self.credit_hint.setObjectName("CreditHint")
-        self.credit_hint.setAlignment(Qt.AlignCenter)
         if not self.review_mode:
             self.collection_items: list[dict[str, Any]] = []
             self.load_collection_items()
@@ -5953,13 +5968,14 @@ class DerivedDialog(QDialog):
         footer_layout.addWidget(self.product_progress)
         footer_layout.addStretch()
         footer_layout.addWidget(self.generation_progress)
-        credit_action = QWidget()
-        credit_action_layout = QVBoxLayout(credit_action)
-        credit_action_layout.setContentsMargins(0, 0, 0, 0)
-        credit_action_layout.setSpacing(2)
-        credit_action_layout.addWidget(self.credit_hint)
-        credit_action_layout.addWidget(self.generate_button)
-        footer_layout.addWidget(credit_action)
+        credit_action = QHBoxLayout()
+        credit_action.setContentsMargins(0, 0, 0, 0)
+        credit_action.setSpacing(7)
+        credit_action.addWidget(self.generate_button)
+        self.credit_label = QLabel("10积分")
+        self.credit_label.setObjectName("CreditHint")
+        credit_action.addWidget(self.credit_label)
+        footer_layout.addLayout(credit_action)
         if next_button is not None:
             footer_layout.addWidget(next_button)
         layout.addWidget(footer)
@@ -6395,11 +6411,14 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         }
         QLineEdit::placeholder { color: $muted; }
         QPushButton {
-            background: $accent; color: white; border: 0; border-radius: 8px;
+            background: rgba(21, 152, 120, 38); color: #17846e;
+            border: 1px solid rgba(21, 152, 120, 70); border-radius: 8px;
             padding: 9px 16px; min-height: 34px; font-weight: 700; outline: 0;
         }
         QPushButton:focus { outline: 0; }
-        QPushButton:hover { background: $accent_hover; }
+        QPushButton:hover { background: rgba(21, 152, 120, 58); }
+        QPushButton:pressed { background: rgba(21, 152, 120, 78); }
+        QPushButton:disabled { background: rgba(148, 163, 184, 32); color: $muted; border-color: $border; }
         QTableWidget {
             background: $panel; alternate-background-color: $panel2; color: $text;
             border: 1px solid $border; border-radius: 8px; gridline-color: $border;
@@ -6414,7 +6433,8 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #CollectionTitle { background: transparent; color: $text; font-size: 13px; font-weight: 700; }
         #CollectionText { background: transparent; color: $muted; font-size: 13px; }
         #CollectionPrice { background: transparent; color: #ef6461; font-size: 15px; font-weight: 900; }
-        #CollectionLink { background: transparent; color: $accent; font-size: 12px; }
+        #CollectionLink { background: transparent; color: $accent; border: 0; padding: 0; min-height: 0; font-size: 12px; }
+        #CollectionLink:hover { background: transparent; color: #0f6f5b; }
         #CollectionReference { background: transparent; color: $muted; font-size: 12px; }
         #CollectionAction { min-height: 28px; padding: 5px 10px; font-size: 12px; }
         QHeaderView::section {
@@ -6487,12 +6507,12 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             background: $input; color: $text; border: 1px solid $border; border-radius: 8px;
             padding: 8px 12px; margin-top: 2px; font-weight: 700;
         }
-        #SideLoginButton:hover { background: $accent_hover; color: #ffffff; }
+        #SideLoginButton:hover { background: rgba(21, 152, 120, 58); color: #17846e; }
         #IconButton {
-            background: $panel; color: $accent; border: 1px solid $border;
+            background: rgba(21, 152, 120, 38); color: #17846e; border: 1px solid rgba(21, 152, 120, 70);
             border-radius: 8px; font-size: 13px; font-weight: 800;
         }
-        #IconButton:hover { background: $accent; color: #ffffff; }
+        #IconButton:hover { background: rgba(21, 152, 120, 58); color: #17846e; }
         #Page { background: $bg; }
         #StudioHeader { background: transparent; }
         #StudioTitle { background: transparent; color: $text; font-size: 26px; font-weight: 900; }
@@ -6543,15 +6563,15 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #StudioPromptTitle { background: transparent; color: $text; font-size: 16px; font-weight: 800; }
         #StudioPromptHint { background: transparent; color: $muted; font-size: 13px; }
         #StudioModeCombo { min-width: 108px; min-height: 38px; padding: 0 24px 0 12px; color: $text; background: $panel; border: 1px solid $border; border-radius: 8px; }
-        #StudioAnalyze { background: #16a085; color: #ffffff; border: 0; border-radius: 8px; min-width: 122px; min-height: 38px; font-weight: 800; }
-        #StudioAnalyze:hover { background: #12866f; }
+        #StudioAnalyze { background: rgba(21, 152, 120, 38); color: #17846e; border: 1px solid rgba(21, 152, 120, 70); border-radius: 8px; min-width: 122px; min-height: 38px; font-weight: 800; }
+        #StudioAnalyze:hover { background: rgba(21, 152, 120, 58); }
         #StudioPrimary {
-            background: $accent; color: #ffffff; border: 0; border-radius: 8px;
+            background: rgba(21, 152, 120, 38); color: #17846e; border: 1px solid rgba(21, 152, 120, 70); border-radius: 8px;
             min-width: 112px; min-height: 38px; font-weight: 800;
         }
-        #StudioPrimary:hover { background: $accent_hover; }
+        #StudioPrimary:hover { background: rgba(21, 152, 120, 58); }
         #StudioSecondaryAction {
-            background: $panel; color: $text; border: 1px solid $border;
+            background: rgba(21, 152, 120, 24); color: #17846e; border: 1px solid rgba(21, 152, 120, 70);
             border-radius: 8px; min-height: 38px; font-weight: 800;
         }
         #StudioSecondaryAction:hover { color: $accent; border-color: $accent; }
@@ -6597,18 +6617,18 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         }
         #RankFilterOption { background: transparent; color: $muted; border: 0; border-radius: 16px; padding: 7px 12px; min-height: 30px; font-size: 13px; }
         #RankFilterOption:hover { color: $accent; background: $tag; }
-        #RankFilterOption:checked { color: #ffffff; background: $accent; font-weight: 800; }
+        #RankFilterOption:checked { color: #17846e; background: rgba(21, 152, 120, 38); border: 1px solid rgba(21, 152, 120, 70); font-weight: 800; }
         #RankFilterViewButton { background: $tag; color: $accent; border: 1px solid $border; border-radius: 8px; min-height: 32px; font-weight: 800; }
-        #RankFilterViewButton:hover { background: $accent; color: #ffffff; }
+        #RankFilterViewButton:hover { background: rgba(21, 152, 120, 58); color: #17846e; }
         #StudioChip {
-            background: $panel; color: $muted; border: 1px solid $border;
+            background: rgba(21, 152, 120, 24); color: #17846e; border: 1px solid rgba(21, 152, 120, 70);
             border-radius: 14px; padding: 5px 12px; font-size: 11px;
         }
         #StudioChip:hover { color: $accent; border-color: $accent; }
         #StudioIconButton {
-            background: $panel; color: $accent; border: 1px solid $border; border-radius: 10px;
+            background: rgba(21, 152, 120, 38); color: #17846e; border: 1px solid rgba(21, 152, 120, 70); border-radius: 10px;
         }
-        #StudioIconButton:hover { background: $accent; }
+        #StudioIconButton:hover { background: rgba(21, 152, 120, 58); }
         #StudioSectionTitle { background: transparent; color: $text; font-size: 17px; font-weight: 900; }
         #StudioScroll { background: transparent; border: 0; }
         #StudioCarousel { background: transparent; }
@@ -6670,6 +6690,10 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #Card {
             background: $panel; border: 1px solid $border; border-radius: 12px;
         }
+        #Panel {
+            background: $panel; border: 1px solid $border; border-radius: 12px;
+        }
+        #PersonalValue { background: transparent; color: $text; font-size: 15px; font-weight: 800; }
         #CardTitle { background: transparent; color: $text; font-size: 16px; font-weight: 800; }
         #Chip {
             background: $tag; color: $tag_text; border: 1px solid $border;
@@ -6695,26 +6719,26 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             background: $input; color: $text; border-radius: 8px; padding: 12px;
         }
         #PrimaryAction {
-            background: $accent; min-width: 130px;
+            background: rgba(21, 152, 120, 38); color: #17846e; border: 1px solid rgba(21, 152, 120, 70); min-width: 130px;
         }
         #SecondaryAction {
-            background: $panel; color: $accent; border: 1px solid $accent;
+            background: rgba(21, 152, 120, 24); color: #17846e; border: 1px solid rgba(21, 152, 120, 70);
             min-width: 130px;
         }
         #SecondaryAction:hover { background: $tag; }
         #ProductDeriveView {
-            background: #4e75f6; min-width: 0; padding: 4px 7px; font-size: 11px;
+            background: rgba(78, 117, 246, 38); color: #3d62d7; border: 1px solid rgba(78, 117, 246, 70); min-width: 0; padding: 4px 7px; font-size: 11px;
         }
-        #ProductDeriveView:hover { background: #3d62d7; }
+        #ProductDeriveView:hover { background: rgba(78, 117, 246, 58); }
         #ProductDeriveAvailable {
-            background: $accent; min-width: 0; padding: 4px 7px; font-size: 11px;
+            background: rgba(21, 152, 120, 38); color: #17846e; border: 1px solid rgba(21, 152, 120, 70); min-width: 0; padding: 4px 7px; font-size: 11px;
         }
-        #ProductDeriveAvailable:hover { background: $accent_hover; }
+        #ProductDeriveAvailable:hover { background: rgba(21, 152, 120, 58); }
         #ProductDeriveDisabled {
             background: $metric; color: $muted; border: 1px solid $border; min-width: 0; padding: 4px 7px; font-size: 11px;
         }
         #ProductCollect {
-            background: $panel; color: $accent; border: 1px solid $border;
+            background: rgba(21, 152, 120, 24); color: #17846e; border: 1px solid rgba(21, 152, 120, 70);
             border-radius: 7px; padding: 4px 7px; font-size: 11px; font-weight: 800;
         }
         #ProductCollect:hover { background: $tag; border-color: $accent; }
@@ -6732,7 +6756,7 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
             background: $panel; color: $accent; border: 1px solid $border;
             border-radius: 10px; font-size: 34px; font-weight: 800;
         }
-        #CarouselNext:hover { background: $accent; color: #ffffff; }
+        #CarouselNext:hover { background: rgba(21, 152, 120, 58); color: #17846e; }
         #ProductGridWrap { background: $bg; }
         #ProductCard, #TeacherProductCard, #CompactProductCard {
             background: $panel; border: 1px solid $border; border-radius: 10px;
