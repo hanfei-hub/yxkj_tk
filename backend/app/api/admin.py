@@ -1,18 +1,26 @@
 import time
+import hashlib
+import os
+import re
+import shutil
+import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_role
-from app.core.database import get_db
+from app.core.database import BASE_DIR, get_db
 from app.core.security import hash_password
-from app.models.entities import DerivedProductAttributeScore, ModelConfig, SelectionAttribute, SystemSetting, TeacherReviewRecord, ThirdPartyConfig, User, UserSearchRecommendation
+from app.models.entities import AiPromptConstant, AppRelease, DerivedProductAttributeScore, ModelConfig, SelectionAttribute, SystemSetting, TeacherReviewRecord, ThirdPartyConfig, User, UserSearchRecommendation
 from app.services.serializers import (
     attribute_to_dict,
+    prompt_constant_to_dict,
     model_config_to_dict,
     system_setting_to_dict,
     third_party_config_to_dict,
@@ -22,6 +30,9 @@ from app.services.system_settings_service import ensure_system_settings
 from app.services.ai_model_service import ModelCallError, chat_completion
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_role("admin"))])
+
+RELEASE_DIR = BASE_DIR / "runtime" / "releases"
+RELEASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class UserCreate(BaseModel):
@@ -74,6 +85,8 @@ class ThirdPartyConfigPayload(BaseModel):
     db_name: str = ""
     db_user: str = ""
     db_password_encrypted: str = ""
+    sign_name: str = ""
+    template_code: str = ""
     status: int = 1
     remark: str = ""
 
@@ -87,8 +100,118 @@ class AttributeCreate(BaseModel):
     status: int = 1
 
 
+class PromptConstantPayload(BaseModel):
+    constant_key: str
+    constant_name: str
+    constant_content: str = ""
+    status: int = 1
+    remark: str = ""
+
+
 class SystemSettingsPayload(BaseModel):
     values: dict[str, str]
+
+
+def release_to_dict(item: AppRelease) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "version": item.version,
+        "filename": item.filename,
+        "download_url": item.download_url,
+        "release_notes": item.release_notes,
+        "sha256": item.sha256,
+        "force_update": bool(item.force_update),
+        "status": item.status,
+        "uploaded_by": item.uploaded_by,
+        "published_at": item.published_at.isoformat() if item.published_at else None,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
+@router.get("/app-releases")
+def list_app_releases(db: Session = Depends(get_db)):
+    items = db.scalars(select(AppRelease).order_by(AppRelease.created_at.desc(), AppRelease.id.desc())).all()
+    return [release_to_dict(item) for item in items]
+
+
+@router.post("/app-releases/upload")
+def upload_app_release(
+    version: str = Form(...),
+    release_notes: str = Form(""),
+    force_update: int = Form(0),
+    package: UploadFile = File(...),
+    current_user: dict = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    normalized_version = version.strip().lstrip("vV")
+    if not re.fullmatch(r"\d+(?:\.\d+){1,3}", normalized_version):
+        raise HTTPException(status_code=400, detail="版本号格式应为 1.0.1")
+    original_name = Path(package.filename or "").name
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in {".exe", ".zip"}:
+        raise HTTPException(status_code=400, detail="只支持上传 .exe 或 .zip 安装包")
+    release_dir = RELEASE_DIR
+    stored_name = f"tk-selection-{normalized_version}-{uuid.uuid4().hex[:10]}{suffix}"
+    stored_path = release_dir / stored_name
+    digest = hashlib.sha256()
+    try:
+        with stored_path.open("wb") as output:
+            while chunk := package.file.read(1024 * 1024):
+                output.write(chunk)
+                digest.update(chunk)
+    except OSError as exc:
+        stored_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"保存安装包失败：{exc}") from exc
+    finally:
+        package.file.close()
+
+    old = db.scalar(select(AppRelease).where(AppRelease.version == normalized_version))
+    if old:
+        Path(old.storage_path).unlink(missing_ok=True)
+        db.delete(old)
+        db.flush()
+    db.query(AppRelease).update({AppRelease.status: 0}, synchronize_session=False)
+    public_base = os.getenv("TK_PUBLIC_BASE_URL", "http://120.26.207.89:8000").rstrip("/")
+    item = AppRelease(
+        version=normalized_version,
+        filename=original_name or stored_name,
+        storage_path=str(stored_path),
+        download_url=f"{public_base}/static/releases/{stored_name}",
+        release_notes=release_notes.strip(),
+        sha256=digest.hexdigest(),
+        force_update=1 if int(force_update or 0) else 0,
+        status=1,
+        uploaded_by=int(current_user.get("id") or 0) or None,
+        published_at=datetime.utcnow(),
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return release_to_dict(item)
+
+
+@router.patch("/app-releases/{release_id}/publish")
+def publish_app_release(release_id: int, db: Session = Depends(get_db)):
+    item = db.get(AppRelease, release_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    db.query(AppRelease).update({AppRelease.status: 0}, synchronize_session=False)
+    item.status = 1
+    item.published_at = datetime.utcnow()
+    db.commit()
+    db.refresh(item)
+    return release_to_dict(item)
+
+
+@router.delete("/app-releases/{release_id}")
+def delete_app_release(release_id: int, db: Session = Depends(get_db)):
+    item = db.get(AppRelease, release_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    Path(item.storage_path).unlink(missing_ok=True)
+    db.delete(item)
+    db.commit()
+    return {"ok": True, "deleted_id": release_id}
 
 
 class ModelTestPayload(BaseModel):
@@ -335,7 +458,11 @@ def update_third_party_config(config_id: int, payload: ThirdPartyConfigPayload, 
     item = db.get(ThirdPartyConfig, config_id)
     if not item:
         raise HTTPException(status_code=404, detail="第三方配置不存在")
-    for key, value in payload.model_dump().items():
+    values = payload.model_dump()
+    for key in ("access_key_encrypted", "secret_key_encrypted", "db_password_encrypted"):
+        if not values.get(key):
+            values[key] = getattr(item, key)
+    for key, value in values.items():
         setattr(item, key, value)
     db.commit()
     db.refresh(item)
@@ -431,3 +558,65 @@ def delete_selection_attribute(attribute_id: int, db: Session = Depends(get_db))
     db.delete(attribute)
     db.commit()
     return {"ok": True, "deleted_id": attribute_id}
+
+
+@router.get("/prompt-constants")
+def list_prompt_constants(db: Session = Depends(get_db)):
+    items = db.scalars(select(AiPromptConstant).order_by(AiPromptConstant.id.asc())).all()
+    return [prompt_constant_to_dict(item) for item in items]
+
+
+@router.post("/prompt-constants")
+def create_prompt_constant(payload: PromptConstantPayload, db: Session = Depends(get_db)):
+    key = payload.constant_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="常量编码不能为空")
+    if db.scalar(select(AiPromptConstant).where(AiPromptConstant.constant_key == key)):
+        raise HTTPException(status_code=400, detail="常量编码已存在")
+    item = AiPromptConstant(
+        constant_key=key,
+        constant_name=payload.constant_name.strip() or key,
+        constant_content=payload.constant_content,
+        status=payload.status,
+        remark=payload.remark,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return prompt_constant_to_dict(item)
+
+
+@router.put("/prompt-constants/{constant_id}")
+def update_prompt_constant(constant_id: int, payload: PromptConstantPayload, db: Session = Depends(get_db)):
+    item = db.get(AiPromptConstant, constant_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="常量不存在")
+    item.constant_key = payload.constant_key.strip() or item.constant_key
+    item.constant_name = payload.constant_name.strip() or item.constant_key
+    item.constant_content = payload.constant_content
+    item.status = payload.status
+    item.remark = payload.remark
+    db.commit()
+    db.refresh(item)
+    return prompt_constant_to_dict(item)
+
+
+@router.patch("/prompt-constants/{constant_id}/status")
+def update_prompt_constant_status(constant_id: int, payload: StatusRequest, db: Session = Depends(get_db)):
+    item = db.get(AiPromptConstant, constant_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="常量不存在")
+    item.status = payload.status
+    db.commit()
+    db.refresh(item)
+    return prompt_constant_to_dict(item)
+
+
+@router.delete("/prompt-constants/{constant_id}")
+def delete_prompt_constant(constant_id: int, db: Session = Depends(get_db)):
+    item = db.get(AiPromptConstant, constant_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="常量不存在")
+    db.delete(item)
+    db.commit()
+    return {"ok": True, "deleted_id": constant_id}

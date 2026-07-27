@@ -1,8 +1,10 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import admin, ai, auth, auto_publish, favorites, pipeline, products, selection_attributes, suppliers, teacher
+from app.api import admin, ai, app_info, auth, auto_publish, favorites, pipeline, products, selection_attributes, suppliers, teacher
 from app.core.database import BASE_DIR
 from app.services.seed import init_db
 
@@ -17,6 +19,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(app_info.router)
 app.include_router(admin.router)
 app.include_router(products.router)
 app.include_router(selection_attributes.router)
@@ -29,6 +32,9 @@ app.include_router(pipeline.router)
 AUTO_PUBLISH_RUNTIME_DIR = BASE_DIR / "runtime" / "auto_publish"
 AUTO_PUBLISH_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static/auto_publish", StaticFiles(directory=AUTO_PUBLISH_RUNTIME_DIR), name="auto_publish")
+RELEASE_RUNTIME_DIR = BASE_DIR / "runtime" / "releases"
+RELEASE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static/releases", StaticFiles(directory=RELEASE_RUNTIME_DIR), name="releases")
 
 
 @app.on_event("startup")
@@ -39,3 +45,4 @@ def on_startup():
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": "tk-selection-backend"}
+

@@ -1,0 +1,137 @@
+模型测试结果
+时间：2026-07-21 15:44:22
+模型：ep-20260710160935-grs59
+类型：general
+耗时：53429 ms
+状态：成功
+============================================================
+{
+  "items": [
+    {
+      "source_product_id": 123,
+      "derived_title": "便携迷你舒缓保湿喷雾",
+      "derived_description": "容量小于100ml的小瓶装温泉水类保湿喷雾，主打敏感肌舒缓补水，无添加酒精香精配方",
+      "recommendation_reason": "适配日区消费者外出补湿的高频需求，规避大容量压力容器航空运输限制，契合日区敏感肌护肤的普遍诉求",
+      "target_audience": "18-35岁日本女性、敏感肌人群、通勤上班族、短途出行游客",
+      "usage_scene": "通勤途中补湿、妆后定妆、晒后舒缓、办公室空调房补水、旅行随身护肤",
+      "suggested_price_min": 800,
+      "suggested_price_max": 1500,
+      "risk_notes": "需符合日本药事法化妆品备案要求，压力容器喷雾需符合日本气溶胶类商品进口合规标准，禁止违规添加违禁成分",
+      "ai_score": 88,
+      "weighted_score": 88,
+      "analysis_report": {
+        "dimension_1": {
+          "dimension_name": "使用场景",
+          "rating_level": "S级",
+          "analysis_content": "覆盖通勤、办公、出行、妆后护理等多个高频日常护肤场景，场景适配性极强，无明显使用场景局限"
+        },
+        "dimension_2": {
+          "dimension_name": "商品周期性",
+          "rating_level": "S级",
+          "analysis_content": "属于四季刚需护肤品类，夏季主打晒后舒缓、冬季主打空调房补水，淡旺季波动极小，全年可稳定销售"
+        },
+        "dimension_3": {
+          "dimension_name": "目标群体",
+          "rating_level": "S级",
+          "analysis_content": "覆盖日本广泛的敏感肌女性护肤群体，受众基数大，年龄跨度覆盖学生到职场女性，需求普适性高"
+        },
+        "dimension_4": {
+          "dimension_name": "短视频流量种草适配能力",
+          "rating_level": "A级",
+          "analysis_content": "可拍摄喷雾上脸细腻雾化效果、即时舒缓泛红实测、妆后补喷不花妆演示等内容，视觉呈现效果好，易触发用户种草转化"
+        },
+        "dimension_5": {
+          "dimension_name": "日本市场偏好",
+          "rating_level": "S级",
+          "analysis_content": "契合日本消费者偏好无添加、温和低刺激护肤产品的消费习惯，小容量便携设计符合日区用户外出随身带好物的使用偏好"
+        },
+        "dimension_6": {
+          "dimension_name": "是否属于新奇特商品",
+          "rating_level": "B级",
+          "analysis_content": "在常规保湿喷雾基础上做了迷你便携化升级，属于微创新实用类商品，无充足依据判定为颠覆性新奇特品类，仅作参考线索"
+        },
+        "dimension_7": {
+          "dimension_name": "复购属性",
+          "rating_level": "S级",
+          "analysis_content": "属于日常消耗类护肤快消品，单瓶使用周期短，用户用完后复购意愿强，可驱动多次回购"
+        },
+        "dimension_8": {
+          "dimension_name": "竞品属性",
+          "rating_level": "A级",
+          "analysis_content": "当前日区市场迷你便携款温和保湿喷雾细分赛道竞争程度低于常规大瓶喷雾，差异化优势明显"
+        }
+      },
+      "source_search_keywords": ["迷你保湿喷雾 敏感肌", "便携温泉水喷雾 小瓶", "无添加舒缓补水喷雾 日本", "100ml以下化妆品喷雾"],
+      "match_tags": ["日区跨境美妆", "敏感肌护肤", "便携护肤好物", "通勤补湿神器"]
+    },
+    {
+      "source_product_id": 123,
+      "derived_title": "晒后修护降温保湿喷雾",
+      "derived_description": "添加芦荟、积雪草成分的保湿喷雾，主打晒后泛红肌肤舒缓降温，凉感配方不刺激，适配户外暴晒后肌肤护理",
+      "recommendation_reason": "精准匹配日区夏季户外出行、海边度假的晒后护肤需求，差异化定位比普通保湿喷雾功能更聚焦",
+      "target_audience": "16-30岁日本年轻群体、户外爱好者、海边游客、日常通勤暴晒人群",
+      "usage_scene": "海边度假晒后修护、户外运动后降温、夏日通勤晒后舒缓、泳池活动后护肤、夏季日常外出补喷降温",
+      "suggested_price_min": 1200,
+      "suggested_price_max": 2200,
+      "risk_notes": "需确保成分符合日本化妆品成分规范，晒后修护相关宣称需符合日本药事法要求，不得违规标注医疗功效",
+      "ai_score": 85,
+      "weighted_score": 85,
+      "analysis_report": {
+        "dimension_1": {
+          "dimension_name": "使用场景",
+          "rating_level": "A级",
+          "analysis_content": "聚焦夏季户外相关的晒后护理细分场景，场景需求痛点明确，用户使用指向性强"
+        },
+        "dimension_2": {
+          "dimension_name": "商品周期性",
+          "rating_level": "A级",
+          "analysis_content": "核心销售周期为夏季6-9月，其余季节也可作为日常舒缓喷雾使用，周期覆盖度较高，非完全季节性爆品"
+        },
+        "dimension_3": {
+          "dimension_name": "目标群体",
+          "rating_level": "A级",
+          "analysis_content": "覆盖喜爱夏日户外活动的年轻消费群体，该群体在日区TikTok活跃度高，消费意愿强"
+        },
+        "dimension_4": {
+          "dimension_name": "短视频流量种草适配能力",
+          "rating_level": "S级",
+          "analysis_content": "可拍摄晒后泛红实测、上脸即时降温体感演示、海边出游实测等强视觉冲击内容，极易引发用户共鸣种草"
+        },
+        "dimension_5": {
+          "dimension_name": "日本市场偏好",
+          "rating_level": "A级",
+          "analysis_content": "契合日本消费者夏季追求凉感护肤、晒后温和护理的普遍偏好，天然植物成分添加符合日区护肤消费趋势"
+        },
+        "dimension_6": {
+          "dimension_name": "是否属于新奇特商品",
+          "rating_level": "A级",
+          "analysis_content": "在常规保湿喷雾基础上叠加凉感降温+晒后修护专属功能，属于功能创新类护肤好物，差异化感知强"
+        },
+        "dimension_7": {
+          "dimension_name": "复购属性",
+          "rating_level": "B级",
+          "analysis_content": "夏季消耗速度快，但非全年高频刚需，用户复购集中在夏季时段，复购表现中等，无充足依据判定为高复购品类，仅作参考线索"
+        },
+        "dimension_8": {
+          "dimension_name": "竞品属性",
+          "rating_level": "A级",
+          "analysis_content": "当前日区专门主打晒后降温的保湿喷雾细分竞品较少，赛道竞争压力小"
+        }
+      },
+      "source_search_keywords": ["晒后修护保湿喷雾 积雪草", "凉感舒缓喷雾 夏季", "户外降温护肤喷雾", "敏感肌晒后补水喷雾"],
+      "match_tags": ["夏日护肤好物", "晒后修护神器", "户外护肤", "日区TikTok爆品"]
+    },
+    {
+      "source_product_id": 123,
+      "derived_title": "纳米雾化补水保湿喷雾仪",
+      "derived_description": "手持充电款纳米喷雾补水仪，可装入常规保湿喷雾原液，输出超细雾化颗粒，便携可随时给肌肤补水",
+      "recommendation_reason": "将保湿喷雾和便携小家电结合，提升使用体验，符合日区用户追求精致护肤小电器的消费偏好",
+      "target_audience": "20-40岁日本精致护肤女性、办公室白领、美妆爱好者、数码美妆达人",
+      "usage_scene": "办公室桌面补水、居家护肤导入、旅行随身补水、美妆直播演示、妆前湿敷补水",
+      "suggested_price_min": 1800,
+      "suggested_price_max": 3500,
+      "risk_notes": "电子产品需符合日本PSE认证要求，电器电池进口需符合日区相关物流合规标准，禁止违规寄运带电产品",
+      "ai_score": 82,
+      "weighted_score": 82,
+      "analysis_report": {
+        "dimension_

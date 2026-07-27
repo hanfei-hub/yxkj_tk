@@ -17,6 +17,7 @@ from app.services.ai_model_service import (
 )
 from app.services.execution_log_service import create_task, elapsed_ms, finish_task, start_timer
 from app.services.supplier_1688_service import Supplier1688Error, auto_match_1688_for_search_result
+from app.services.prompt_constant_service import prompt_constants_block
 
 
 PROMPT_CODE = "ai_selection_from_user_v1"
@@ -89,17 +90,24 @@ def ensure_ai_selection_prompt(db: Session) -> AiPromptTemplate:
     return item
 
 
-def build_prompt(template: AiPromptTemplate, user_message: str) -> str:
+def build_prompt(db: Session, template: AiPromptTemplate, user_message: str, requested_count: int) -> str:
     content = template.prompt_content.replace("[用户对话框内容]", user_message.strip())
+    content = content.replace("选出10个商品", f"选出{requested_count}个商品")
+    # 常量词表由管理员维护，跟随每次用户搜索动态拼接。
+    # 这里不修改只读的 ai_prompt_templates 原文。
+    constants = prompt_constants_block(db)
+    if constants:
+        content = f"{content}\n\n{constants}"
     return (
         f"{content}\n\n"
+        f"本次必须生成 {requested_count} 个商品，items 数组最多保留 {requested_count} 个商品。\n"
         "请严格输出纯 JSON，不要输出 markdown、解释或多余文字。\n"
         "如果没有真实可访问的商品图片 URL，image_url 必须输出空字符串，不要编造 example.com 或占位图片。\n"
         f"JSON 结构必须符合：{template.output_schema}"
     )
 
 
-def normalize_items(raw: Any) -> list[dict[str, Any]]:
+def normalize_items(raw: Any, requested_count: int = 10) -> list[dict[str, Any]]:
     if isinstance(raw, dict):
         raw_items = raw.get("items") or raw.get("products") or []
     elif isinstance(raw, list):
@@ -108,7 +116,7 @@ def normalize_items(raw: Any) -> list[dict[str, Any]]:
         raw_items = []
 
     items: list[dict[str, Any]] = []
-    for raw_item in raw_items[:10]:
+    for raw_item in raw_items[:requested_count]:
         if not isinstance(raw_item, dict):
             continue
         title = str(raw_item.get("title") or raw_item.get("product_name") or "").strip()
@@ -184,18 +192,18 @@ def save_user_search_recommendations(
     db.commit()
 
 
-def start_ai_selection_task(db: Session, user_message: str, user_id: int) -> TaskExecution:
+def start_ai_selection_task(db: Session, user_message: str, user_id: int, requested_count: int = 10) -> TaskExecution:
     return create_task(
         db,
         task_type="ai_selection",
         task_name="AI 智能选品搜索",
         trigger_source="student_dialog",
         total_count=4,
-        input_snapshot={"message": user_message, "user_id": user_id},
+        input_snapshot={"message": user_message, "user_id": user_id, "requested_count": requested_count},
     )
 
 
-def run_ai_selection_task(task_id: int, user_message: str, user_id: int, credit_cost: int = 0) -> None:
+def run_ai_selection_task(task_id: int, user_message: str, user_id: int, credit_cost: int = 0, requested_count: int = 10) -> None:
     with SessionLocal() as db:
         task = db.get(TaskExecution, task_id)
         if not task:
@@ -205,9 +213,9 @@ def run_ai_selection_task(task_id: int, user_message: str, user_id: int, credit_
             update_task_progress(db, task, processed_count=1, stage="prepare_prompt", message="正在组装选品话术")
             template = ensure_ai_selection_prompt(db)
             db.commit()
-            prompt = build_prompt(template, user_message)
+            prompt = build_prompt(db, template, user_message, requested_count)
 
-            update_task_progress(db, task, processed_count=2, stage="model_generating", message="大模型正在生成 10 个商品")
+            update_task_progress(db, task, processed_count=2, stage="model_generating", message=f"大模型正在生成 {requested_count} 个商品")
             answer = chat_completion(
                 db,
                 [
@@ -221,7 +229,7 @@ def run_ai_selection_task(task_id: int, user_message: str, user_id: int, credit_
             )
 
             update_task_progress(db, task, processed_count=3, stage="saving_results", message="正在保存本次搜索结果")
-            items = normalize_items(extract_json_object(answer))
+            items = normalize_items(extract_json_object(answer), requested_count)
             if not items:
                 raise ModelCallError("大模型未返回可入库的商品列表")
             save_user_search_recommendations(db, user_id=user_id, task_id=task.id, search_query=user_message, items=items)
@@ -283,17 +291,26 @@ def run_ai_selection_task(task_id: int, user_message: str, user_id: int, credit_
 
 
 def user_search_result_to_dict(item: UserSearchRecommendation) -> dict[str, Any]:
+    try:
+        report = json.loads(item.analysis_report or "{}")
+    except ValueError:
+        report = {}
+    if not isinstance(report, dict):
+        report = {}
     return {
         "id": item.id,
         "user_id": item.user_id,
         "task_id": item.task_id,
         "search_query": item.search_query,
+        "source_type": "ai_search",
         "title": item.title,
         "image_url": item.image_url,
         "price": item.price,
         "sales_count": item.sales_count,
         "reason_summary": item.reason_summary,
         "analysis_report": item.analysis_report,
+        "region": report.get("_library_region", ""),
+        "category": report.get("_library_category", ""),
         "supplier_search_status": item.supplier_search_status,
         "supplier_next_page": item.supplier_next_page,
         "supplier_searched_count": item.supplier_searched_count,

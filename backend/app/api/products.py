@@ -84,6 +84,7 @@ def hot_products(region: str = Query("JP"), list_type: str = Query("new"), categ
 def daily_recommendations(region: str = Query("JP"), list_type: str = Query("new"), category: str = Query("全部"), start_date: str = Query(""), end_date: str = Query(""), db: Session = Depends(get_db)):
     products = db.scalars(
         select(FmProduct)
+        .options(selectinload(FmProduct.derived_products))
         .where(*product_filters(region, list_type, category, start_date, end_date))
         .order_by(FmProduct.rank_no, FmProduct.id)
     ).all()
@@ -101,6 +102,7 @@ def daily_recommendations(region: str = Query("JP"), list_type: str = Query("new
                 "category": item.category,
                 "region": item.region,
                 "list_type": item.list_type,
+                "derived_count": len(item.derived_products),
                 "reason_summary": "FastMoss 日本新品榜：跨境商品=是，全托管商品=否。",
                 "sort_order": index,
             }

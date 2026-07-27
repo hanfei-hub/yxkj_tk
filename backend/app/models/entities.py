@@ -55,8 +55,107 @@ class ThirdPartyConfig(Base, TimestampMixin):
     db_name: Mapped[str] = mapped_column(String(128), default="")
     db_user: Mapped[str] = mapped_column(String(128), default="")
     db_password_encrypted: Mapped[str] = mapped_column(Text, default="")
+    sign_name: Mapped[str] = mapped_column(String(128), default="")
+    template_code: Mapped[str] = mapped_column(String(128), default="")
     status: Mapped[int] = mapped_column(Integer, default=1)
     remark: Mapped[str] = mapped_column(Text, default="")
+
+
+class AppRelease(Base, TimestampMixin):
+    __tablename__ = "app_releases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    storage_path: Mapped[str] = mapped_column(String(500), default="")
+    download_url: Mapped[str] = mapped_column(String(1000), default="")
+    release_notes: Mapped[str] = mapped_column(Text, default="")
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    force_update: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    uploaded_by: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class VideoProject(Base, TimestampMixin):
+    __tablename__ = "video_projects"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    title: Mapped[str] = mapped_column(String(255), default="")
+    target_market: Mapped[str] = mapped_column(String(64), default="Japan")
+    video_language: Mapped[str] = mapped_column(String(64), default="Japanese")
+    product_details: Mapped[str] = mapped_column(Text, default="")
+    script_text: Mapped[str] = mapped_column(Text, default="")
+    script_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    result_video_url: Mapped[str] = mapped_column(Text, default="")
+
+
+class VideoAsset(Base, TimestampMixin):
+    __tablename__ = "video_assets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    asset_type: Mapped[str] = mapped_column(String(32), default="product_image")
+    role: Mapped[str] = mapped_column(String(128), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    file_name: Mapped[str] = mapped_column(String(255), default="")
+    file_path: Mapped[str] = mapped_column(Text, default="")
+    url: Mapped[str] = mapped_column(Text, default="")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    public_url: Mapped[str] = mapped_column(Text, default="")
+    is_primary: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class VideoStoryboardFrame(Base, TimestampMixin):
+    __tablename__ = "video_storyboard_frames"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    frame_index: Mapped[int] = mapped_column(Integer, default=0)
+    time_range: Mapped[str] = mapped_column(String(64), default="")
+    shot_size: Mapped[str] = mapped_column(String(128), default="")
+    visual: Mapped[str] = mapped_column(Text, default="")
+    atmosphere_quality: Mapped[str] = mapped_column(Text, default="")
+    prompt: Mapped[str] = mapped_column(Text, default="")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    timeline: Mapped[str] = mapped_column(String(64), default="")
+    shot_type: Mapped[str] = mapped_column(String(128), default="")
+    visual_cn: Mapped[str] = mapped_column(Text, default="")
+    copy: Mapped[str] = mapped_column(Text, default="")
+    atmosphere_cn: Mapped[str] = mapped_column(Text, default="")
+
+
+class VideoTask(Base, TimestampMixin):
+    __tablename__ = "video_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    mode: Mapped[str] = mapped_column(String(32), default="text_to_video", index=True)
+    provider: Mapped[str] = mapped_column(String(64), default="doubao")
+    generation_mode: Mapped[str] = mapped_column(String(32), default="text_to_video")
+    model_name: Mapped[str] = mapped_column(String(128), default="")
+    provider_task_id: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(32), default="submitted", index=True)
+    request_snapshot: Mapped[str] = mapped_column(Text, default="{}")
+    response_snapshot: Mapped[str] = mapped_column(Text, default="{}")
+    request_payload: Mapped[str] = mapped_column(Text, default="{}")
+    response_payload: Mapped[str] = mapped_column(Text, default="{}")
+    result_video_url: Mapped[str] = mapped_column(Text, default="")
+    local_video_path: Mapped[str] = mapped_column(Text, default="")
+    local_video_url: Mapped[str] = mapped_column(Text, default="")
+    video_url: Mapped[str] = mapped_column(Text, default="")
+    usage_prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    usage_completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    usage_total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    usage_cost_cny: Mapped[float] = mapped_column(Float, default=0)
+    usage_note: Mapped[str] = mapped_column(Text, default="")
+    usage_raw: Mapped[str] = mapped_column(Text, default="{}")
+    error_message: Mapped[str] = mapped_column(Text, default="")
 
 
 class SystemSetting(Base, TimestampMixin):
@@ -85,6 +184,17 @@ class SelectionAttribute(Base, TimestampMixin):
     is_system: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[int] = mapped_column(Integer, default=1)
     created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class AiPromptConstant(Base, TimestampMixin):
+    __tablename__ = "ai_prompt_constants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    constant_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    constant_name: Mapped[str] = mapped_column(String(128))
+    constant_content: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[int] = mapped_column(Integer, default=1)
+    remark: Mapped[str] = mapped_column(Text, default="")
 
 
 class FmProduct(Base, TimestampMixin):

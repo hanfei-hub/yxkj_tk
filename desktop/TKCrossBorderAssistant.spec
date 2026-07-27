@@ -5,8 +5,8 @@ a = Analysis(
     ['app\\main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=[('app/assets', 'app/assets')],
+    hiddenimports=['PySide6.QtSvg'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -35,4 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['app\\assets\\icons\\10_TK跨境助手.ico'],
 )

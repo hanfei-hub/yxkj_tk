@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
@@ -11,9 +12,11 @@ from app.core.database import SessionLocal
 from app.models.entities import (
     AiPromptTemplate,
     DerivedProductAttributeScore,
+    DerivedProductDimensionReport,
     DerivedProductRecommendation,
     FmProduct,
     TaskExecution,
+    TeacherReviewRecord,
 )
 from app.services.ai_model_service import (
     MODEL_TYPE_GENERAL,
@@ -25,6 +28,7 @@ from app.services.ai_model_service import (
 from app.services.product_family_service import active_dimensions, save_dimension_reports, weights_for_prompt
 from app.services.execution_log_service import create_task, elapsed_ms, finish_task, start_timer
 from app.services.system_settings_service import get_setting_int
+from app.services.prompt_constant_service import prompt_constants_block
 
 
 PROMPT_CODE = "fastmoss_jp_derivation_v1"
@@ -150,6 +154,84 @@ def normalize_items(raw: Any, product_ids: set[int]) -> list[dict[str, Any]]:
     return items
 
 
+def normalize_plain_text_items(answer: str, product_ids: set[int], dimensions: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """Parse the stable tagged text format used by the derivation model."""
+    blocks = re.findall(r"\[商品\](.*?)(?:\[/商品\]|(?=\[商品\]|$))", answer or "", flags=re.IGNORECASE | re.DOTALL)
+    if not blocks:
+        blocks = re.findall(r"商品\s*\d*\s*[：:]\s*(.*?)(?=商品\s*\d*\s*[：:]|$)", answer or "", flags=re.IGNORECASE | re.DOTALL)
+    if not blocks:
+        return []
+
+    source_ids = list(product_ids)
+    result: list[dict[str, Any]] = []
+    for index, block in enumerate(blocks):
+        fields: dict[str, str] = {}
+        report: dict[str, dict[str, str]] = {}
+        current_dimension: str | None = None
+        for raw_line in block.splitlines():
+            line = raw_line.strip().strip("-•")
+            if not line:
+                continue
+            dimension_match = re.match(
+                r"维度\s*(\d+)\s*[-—－、.]?\s*([^：:]+)[：:]\s*等级\s*[=：:]\s*(.*?)[；;]\s*内容\s*[=：:]\s*(.*)$",
+                line,
+                flags=re.IGNORECASE,
+            )
+            if dimension_match:
+                number = int(dimension_match.group(1))
+                code = dimensions[number - 1][0] if 1 <= number <= len(dimensions) else f"dimension_{number}"
+                name = dimensions[number - 1][1] if 1 <= number <= len(dimensions) else dimension_match.group(2).strip()
+                report[code] = {
+                    "dimension_name": name,
+                    "rating_level": dimension_match.group(3).strip(),
+                    "analysis_content": dimension_match.group(4).strip(),
+                }
+                current_dimension = code
+                continue
+            field_match = re.match(r"([^：:]+)[：:]\s*(.*)$", line)
+            if field_match:
+                key = field_match.group(1).strip()
+                value = field_match.group(2).strip()
+                fields[key] = value
+                current_dimension = None
+                continue
+            if current_dimension and report.get(current_dimension):
+                report[current_dimension]["analysis_content"] += f" {line}"
+
+        if not report:
+            continue
+        raw_source_id = fields.get("来源原商品ID") or fields.get("原商品ID") or fields.get("source_product_id")
+        try:
+            source_product_id = int(raw_source_id) if raw_source_id else source_ids[min(index, len(source_ids) - 1)]
+        except (TypeError, ValueError, IndexError):
+            source_product_id = source_ids[min(index, len(source_ids) - 1)]
+        if source_product_id not in product_ids:
+            source_product_id = source_ids[min(index, len(source_ids) - 1)]
+        title = fields.get("名称") or fields.get("商品名称") or "未命名衍生品"
+        keywords = [item.strip() for item in re.split(r"[,，、|]", fields.get("关键词", title)) if item.strip()]
+        score_match = re.search(r"\d+(?:\.\d+)?", fields.get("评分", ""))
+        score = float(score_match.group(0)) if score_match else 0
+        result.append(
+            {
+                "source_product_id": source_product_id,
+                "derived_title": title,
+                "derived_description": fields.get("说明", ""),
+                "recommendation_reason": fields.get("理由", fields.get("推荐理由", "")),
+                "target_audience": fields.get("目标人群", ""),
+                "usage_scene": fields.get("使用场景", ""),
+                "suggested_price_min": 0,
+                "suggested_price_max": 0,
+                "risk_notes": fields.get("风险提示", ""),
+                "ai_score": score,
+                "weighted_score": score,
+                "analysis_report": report,
+                "source_search_keywords": keywords[:8],
+                "match_tags": [],
+            }
+        )
+    return result
+
+
 def build_derivation_prompt(db: Session, products: list[FmProduct], prompt_template: AiPromptTemplate, derivative_count: int) -> str:
     current_product = products[0] if products else None
     weight_info = weights_for_prompt(db, current_product.family_id if current_product else None)
@@ -157,9 +239,17 @@ def build_derivation_prompt(db: Session, products: list[FmProduct], prompt_templ
         "[维度权重信息]",
         format_weight_prompt(weight_info),
     ).replace("[维度列表]", format_dimension_prompt(db)).replace("10个", f"{derivative_count}个")
+    prompt_content = re.sub(r"5\.\s*输出必须是纯JSON[^。]*。?", "5. 输出必须是规定格式的纯文本，不输出 JSON、Markdown 或额外解释。", prompt_content)
+    constants = prompt_constants_block(db)
+    if constants:
+        prompt_content = f"{prompt_content}\n\n{constants}"
     return (
         f"{prompt_content}\n\n"
-        f"输出 JSON 结构必须严格等于：{prompt_template.output_schema}\n\n"
+        "请不要输出 JSON、Markdown、代码块或额外解释，只按以下纯文本格式输出。"
+        f"必须输出 {derivative_count} 个以 [商品] 开头、[/商品] 结尾的商品块。\n"
+        "每个商品块必须包含：来源原商品ID、名称、说明、理由、评分、关键词，以及当前启用维度的完整分析。\n"
+        "每个维度必须单独一行，格式严格为：维度N-维度名称：等级=等级；内容=客观分析内容。\n"
+        "示例字段：来源原商品ID：1；名称：中文商品名；说明：中文说明；理由：中文理由；评分：85；关键词：关键词1,关键词2。\n\n"
         "请只基于下面传入的商品名称、商品图片URL和维度权重信息，"
         f"为每个 source_product_id 输出 {derivative_count} 个最值得进一步找货的中文衍生品方向。\n"
         "维度权重越高，表示老师历史审核越认可；维度权重越低，表示更容易被拒绝。"
@@ -185,7 +275,7 @@ def generate_derivatives_for_products(db: Session, products: list[FmProduct], ta
             [
                 {
                     "role": "system",
-                    "content": "你是 TikTok 日本站跨境专业选品分析师。只输出合法 JSON，所有字段内容必须使用简体中文。",
+                    "content": "你是 TikTok 日本站跨境专业选品分析师。只输出规定格式的纯文本，所有字段内容必须使用简体中文。",
                 },
                 {"role": "user", "content": build_derivation_prompt(db, products, prompt_template, derivative_count)},
             ],
@@ -194,15 +284,23 @@ def generate_derivatives_for_products(db: Session, products: list[FmProduct], ta
             temperature=0.2,
             max_tokens=12000,
         )
-        try:
-            parsed = extract_json_object(answer)
-        except ModelCallError as exc:
+        product_ids = {item.id for item in products}
+        dimensions = active_dimensions(db)
+        items = normalize_plain_text_items(answer, product_ids, dimensions)
+        # Some configured general models still return the structured payload
+        # even when the prompt requests plain text. Accept that valid response
+        # as a compatibility fallback instead of reporting empty_model_items.
+        if not items:
+            try:
+                items = normalize_items(extract_json_object(answer), product_ids)
+            except ModelCallError:
+                items = []
+        if not items:
             return {
                 "model_used": True,
                 "generated_count": 0,
-                "error": f"json_parse_failed: {exc}; response_tail={answer[-800:]}",
+                "error": f"model_items_parse_failed; response_tail={answer[-800:]}",
             }
-        items = normalize_items(parsed, {item.id for item in products})
     except ModelCallError as exc:
         return {"model_used": True, "generated_count": 0, "error": str(exc)}
 
@@ -220,7 +318,9 @@ def generate_derivatives_for_products(db: Session, products: list[FmProduct], ta
         ).all()
     )
     if pending_ids:
+        db.execute(delete(DerivedProductDimensionReport).where(DerivedProductDimensionReport.recommendation_id.in_(pending_ids)))
         db.execute(delete(DerivedProductAttributeScore).where(DerivedProductAttributeScore.recommendation_id.in_(pending_ids)))
+        db.execute(delete(TeacherReviewRecord).where(TeacherReviewRecord.recommendation_id.in_(pending_ids)))
         db.execute(delete(DerivedProductRecommendation).where(DerivedProductRecommendation.id.in_(pending_ids)))
         db.flush()
 

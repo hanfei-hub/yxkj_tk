@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
@@ -20,11 +21,20 @@ from app.services.execution_log_service import create_task, elapsed_ms, finish_t
 from app.services.serializers import derived_to_dict
 
 router = APIRouter(prefix="/api/ai", tags=["ai"], dependencies=[Depends(require_role("admin", "teacher", "student"))])
-SEARCH_CREDIT_COST = 1
+ALLOWED_SELECTION_COUNTS = {5, 10, 20}
+
+
+def selection_credit_cost(count: int) -> int:
+    return 10
 
 
 class ChatSelectionRequest(BaseModel):
     message: str
+    count: int = 10
+
+
+class LibraryProductRequest(BaseModel):
+    product: dict[str, Any]
 
 
 @router.post("/chat-selection")
@@ -37,16 +47,20 @@ def chat_selection(
     message = payload.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="消息不能为空")
+    if payload.count not in ALLOWED_SELECTION_COUNTS:
+        raise HTTPException(status_code=400, detail="推荐条数只能选择 5、10 或 20 条")
+    requested_count = int(payload.count)
+    credit_cost = selection_credit_cost(requested_count)
     user_id = int(user.get("id") or 0)
     db_user = db.get(User, user_id)
     if not db_user:
         raise HTTPException(status_code=404, detail="用户不存在")
-    if int(db_user.credit_balance or 0) < SEARCH_CREDIT_COST:
+    if int(db_user.credit_balance or 0) < credit_cost:
         raise HTTPException(status_code=400, detail="积分不足，请先充值")
-    db_user.credit_balance = int(db_user.credit_balance or 0) - SEARCH_CREDIT_COST
+    db_user.credit_balance = int(db_user.credit_balance or 0) - credit_cost
     db.commit()
-    task = start_ai_selection_task(db, message, user_id=user_id)
-    background_tasks.add_task(run_ai_selection_task, task.id, message, user_id, SEARCH_CREDIT_COST)
+    task = start_ai_selection_task(db, message, user_id=user_id, requested_count=requested_count)
+    background_tasks.add_task(run_ai_selection_task, task.id, message, user_id, credit_cost, requested_count)
     return {
         "ok": True,
         "mode": "background_task",
@@ -54,8 +68,9 @@ def chat_selection(
         "status": task.status,
         "progress": 0,
         "credit_balance": db_user.credit_balance,
-        "credit_cost": SEARCH_CREDIT_COST,
-        "message": "已开始 AI 智能选品",
+        "credit_cost": credit_cost,
+        "requested_count": requested_count,
+        "message": f"已开始 AI 智能选品，将生成 {requested_count} 个商品",
     }
 
 
@@ -113,6 +128,46 @@ def my_search_results(
         .order_by(UserSearchRecommendation.created_at.desc(), UserSearchRecommendation.sort_order, UserSearchRecommendation.id)
     ).all()
     return [user_search_result_to_dict(item) for item in items]
+
+
+@router.post("/library-products")
+def add_library_product(
+    payload: LibraryProductRequest,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_role("admin", "teacher", "student")),
+):
+    product = payload.product or {}
+    title = str(product.get("title") or product.get("derived_title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="商品名称不能为空")
+    report = product.get("analysis_report") or {}
+    if isinstance(report, str):
+        try:
+            report = json.loads(report)
+        except ValueError:
+            report = {}
+    if not isinstance(report, dict):
+        report = {}
+    report = dict(report)
+    report["_library_region"] = str(product.get("region") or "")
+    report["_library_category"] = str(product.get("category") or "")
+    item = UserSearchRecommendation(
+        user_id=int(user.get("id") or 0),
+        task_id=None,
+        search_query="榜单加入选品库",
+        title=title,
+        image_url=str(product.get("image_url") or ""),
+        price=float(product.get("price") or 0),
+        sales_count=int(float(product.get("sales_count") or 0)),
+        reason_summary="来自 FastMoss 榜单，已加入当前账号选品库。",
+        analysis_report=json.dumps(report, ensure_ascii=False),
+        sort_order=0,
+        created_at=datetime.utcnow(),
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return user_search_result_to_dict(item)
 
 
 @router.post("/products/{product_id}/generate-derived")
@@ -200,13 +255,25 @@ def run_product_full_pipeline(product_id: int, task_id: int) -> None:
 
 
 @router.post("/products/{product_id}/generate-full-task")
-def generate_full_task(product_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def generate_full_task(
+    product_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_role("admin", "teacher", "student")),
+):
     product = db.get(FmProduct, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="原商品不存在")
+    db_user = db.get(User, int(user.get("id") or 0))
+    if not db_user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if int(db_user.credit_balance or 0) < 10:
+        raise HTTPException(status_code=400, detail="积分不足，请先到个人中心充值积分")
+    db_user.credit_balance = int(db_user.credit_balance or 0) - 10
     task = create_task(db, task_type="product_full_pipeline", task_name="单品完整衍生", trigger_source="product_click", total_count=2, input_snapshot={"product_id": product_id})
+    db.commit()
     background_tasks.add_task(run_product_full_pipeline, product_id, task.id)
-    return {"ok": True, "task_id": task.id, "status": task.status, "progress": 0}
+    return {"ok": True, "task_id": task.id, "status": task.status, "progress": 0, "credit_cost": 10, "credit_balance": db_user.credit_balance}
 
 
 @router.get("/product-full-tasks/{task_id}")

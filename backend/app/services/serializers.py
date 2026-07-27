@@ -6,6 +6,7 @@ from typing import Any
 
 from app.models.entities import (
     DailyRecommendation,
+    AiPromptConstant,
     FavoriteProduct,
     DerivedProductAttributeScore,
     DerivedProductRecommendation,
@@ -64,6 +65,10 @@ def third_party_config_to_dict(item: ThirdPartyConfig) -> dict[str, Any]:
         "db_port": item.db_port,
         "db_name": item.db_name,
         "db_user": item.db_user,
+        "has_access_key": bool(item.access_key_encrypted),
+        "has_secret_key": bool(item.secret_key_encrypted),
+        "sign_name": item.sign_name,
+        "template_code": item.template_code,
         "status": item.status,
         "remark": item.remark,
     }
@@ -93,6 +98,7 @@ def product_to_dict(item: FmProduct) -> dict[str, Any]:
         "fm_product_id": item.fm_product_id,
         "region": item.region,
         "list_type": item.list_type,
+        "source_type": "new_product",
         "title": item.title,
         "image_url": item.image_url,
         "price": item.price,
@@ -124,6 +130,7 @@ def derived_to_dict(item: DerivedProductRecommendation) -> dict[str, Any]:
         "id": item.id,
         "family_id": item.family_id,
         "source_product_id": item.source_product_id,
+        "source_type": "derived",
         "derived_title": item.derived_title,
         "derived_description": item.derived_description,
         "recommendation_reason": item.recommendation_reason,
@@ -171,6 +178,17 @@ def daily_to_dict(item: DailyRecommendation) -> dict[str, Any]:
         "sales_count": item.sales_count,
         "reason_summary": item.reason_summary,
         "sort_order": item.sort_order,
+    }
+
+
+def prompt_constant_to_dict(item: AiPromptConstant) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "constant_key": item.constant_key,
+        "constant_name": item.constant_name,
+        "constant_content": item.constant_content,
+        "status": item.status,
+        "remark": item.remark,
     }
 
 

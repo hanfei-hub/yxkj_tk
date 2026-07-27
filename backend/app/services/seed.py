@@ -5,10 +5,11 @@ from sqlalchemy.orm import Session
 
 from app.core.database import Base, engine
 from app.core.security import hash_password
-from app.models.entities import ModelConfig, SelectionAttribute, ThirdPartyConfig, User
+from app.models.entities import AiPromptConstant, ModelConfig, SelectionAttribute, ThirdPartyConfig, User
 from app.services.product_family_service import DIMENSIONS, INITIAL_WEIGHT
 from app.services.selection_derivation_service import ensure_selection_prompt
 from app.services.system_settings_service import ensure_system_settings
+from app.services.prompt_constant_service import ensure_prompt_constants
 
 
 def init_db() -> None:
@@ -20,6 +21,7 @@ def init_db() -> None:
     try:
         ensure_dimension_attributes(db)
         ensure_system_settings(db)
+        ensure_prompt_constants(db)
         seed_all(db)
         ensure_selection_prompt(db)
         db.commit()
@@ -53,6 +55,10 @@ def ensure_runtime_schema() -> None:
     }
     model_columns = {
         "model_type": "VARCHAR(64) DEFAULT 'general'",
+    }
+    third_party_columns = {
+        "sign_name": "VARCHAR(128) DEFAULT ''",
+        "template_code": "VARCHAR(128) DEFAULT ''",
     }
     user_columns = {
         "credit_balance": "INTEGER DEFAULT 0",
@@ -95,6 +101,13 @@ def ensure_runtime_schema() -> None:
                 ).first()
                 if not exists:
                     conn.execute(text(f"ALTER TABLE model_configs ADD COLUMN {column} {definition}"))
+            for column, definition in third_party_columns.items():
+                exists = conn.execute(
+                    text("SHOW COLUMNS FROM third_party_configs LIKE :column"),
+                    {"column": column},
+                ).first()
+                if not exists:
+                    conn.execute(text(f"ALTER TABLE third_party_configs ADD COLUMN {column} {definition}"))
             for column, definition in user_columns.items():
                 exists = conn.execute(
                     text("SHOW COLUMNS FROM users LIKE :column"),
@@ -116,6 +129,7 @@ def ensure_runtime_schema() -> None:
                 "derived_product_recommendations": derived_columns,
                 "fm_products": fm_columns,
                 "model_configs": model_columns,
+                "third_party_configs": third_party_columns,
                 "users": user_columns,
                 "user_search_recommendations": search_result_columns,
             }

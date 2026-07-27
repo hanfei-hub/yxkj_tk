@@ -85,3 +85,30 @@ class ApiClient:
 
     def delete(self, path: str) -> Any:
         return self.request("DELETE", path)
+
+    def upload(self, path: str, file_path: str, field_name: str, data: dict[str, Any] | None = None, timeout: int | None = None) -> Any:
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            with open(file_path, "rb") as handle:
+                response = requests.post(
+                    f"{self.base_url}{path}",
+                    files={field_name: (os.path.basename(file_path), handle, "application/octet-stream")},
+                    data=data or {},
+                    headers=headers,
+                    timeout=timeout or self.timeout,
+                )
+        except (OSError, requests.RequestException) as exc:
+            raise ApiError(f"文件上传失败：{exc}") from exc
+        if response.status_code >= 400:
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            detail = body.get("detail") if isinstance(body, dict) else response.text
+            raise ApiError(f"HTTP {response.status_code}\n{detail or '上传失败'}")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ApiError("上传接口返回格式错误") from exc
