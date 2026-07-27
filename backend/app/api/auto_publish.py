@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_role
@@ -10,10 +12,12 @@ from app.services.auto_publish_service import (
     create_1688_batch_publish_task,
     create_1688_publish_task,
     create_task,
+    list_miaoshou_shop_options,
     get_task_result,
     get_latest_result,
     list_history,
     list_publish_candidates,
+    save_miaoshou_picture_space_storage_state,
     mark_task_runtime_failure,
     run_1688_publish_task,
     run_task,
@@ -45,8 +49,17 @@ class AutoPublishTaskRequest(BaseModel):
     derived_id: int
     publish_count: int = 1
     target_channel: str = "TikTok Shop Japan"
-    erp_url: str = "https://erp.91miaoshou.com/?ac=1og270"
     dry_run: bool = True
+
+
+class AutoPublish1688ItemRequest(BaseModel):
+    offer_url: str
+    package_weight_g: float = 500
+    package_length_cm: float = 10
+    package_width_cm: float = 10
+    package_height_cm: float = 40
+    profit_rule: str = ""
+    pricing_currency: str = "CNY"
 
 
 class AutoPublish1688Request(BaseModel):
@@ -54,21 +67,63 @@ class AutoPublish1688Request(BaseModel):
     publish_count: int = 1
     target_channel: str = "TikTok Shop Japan"
     target_language: str = "ja"
-    erp_url: str = "https://erp.91miaoshou.com/?ac=1og270"
+    target_site: str = "JP"
+    target_shop_id: int | None = None
+    miaoshou_app_key: str = ""
+    miaoshou_app_secret: str = ""
+    miaoshou_api_base_url: str = ""
+    enable_image_translation: bool = True
+    enable_image_removal: bool = True
+    enable_title_optimization: bool = True
+    enable_sku_optimization: bool = True
+    enable_description_optimization: bool = True
+    remove_logo: bool = True
+    remove_transparent_text: bool = True
+    remove_text: bool = False
+    remove_psoriasis: bool = True
+    package_weight_g: float = 500
+    package_length_cm: float = 10
+    package_width_cm: float = 10
+    package_height_cm: float = 40
+    profit_rule: str = ""
+    pricing_currency: str = "CNY"
     dry_run: bool = False
-    miaoshou_username: str = ""
-    miaoshou_password: str = ""
 
 
 class AutoPublish1688BatchRequest(BaseModel):
     offer_urls: list[str]
+    items: list[AutoPublish1688ItemRequest] = Field(default_factory=list)
     publish_count: int = 1
     target_channel: str = "TikTok Shop Japan"
     target_language: str = "ja"
-    erp_url: str = "https://erp.91miaoshou.com/?ac=1og270"
+    target_site: str = "JP"
+    target_shop_id: int | None = None
+    miaoshou_app_key: str = ""
+    miaoshou_app_secret: str = ""
+    miaoshou_api_base_url: str = ""
+    enable_image_translation: bool = True
+    enable_image_removal: bool = True
+    enable_title_optimization: bool = True
+    enable_sku_optimization: bool = True
+    enable_description_optimization: bool = True
+    remove_logo: bool = True
+    remove_transparent_text: bool = True
+    remove_text: bool = False
+    remove_psoriasis: bool = True
+    profit_rule: str = ""
+    pricing_currency: str = "CNY"
     dry_run: bool = False
-    miaoshou_username: str = ""
-    miaoshou_password: str = ""
+
+
+class MiaoshouShopListRequest(BaseModel):
+    target_site: str = "JP"
+    miaoshou_app_key: str = ""
+    miaoshou_app_secret: str = ""
+    miaoshou_api_base_url: str = ""
+
+
+class MiaoshouReauthorizeRequest(BaseModel):
+    storage_state: dict[str, Any]
 
 
 @router.get("/candidates")
@@ -86,6 +141,30 @@ def latest(user: dict = Depends(require_role("admin", "teacher"))):
 def history(user: dict = Depends(require_role("admin", "teacher"))):
     user_id, role = user_id_and_role(user)
     return list_history(user_id=user_id, role=role)
+
+
+@router.post("/miaoshou/shop-list")
+def miaoshou_shop_list(
+    payload: MiaoshouShopListRequest,
+    user: dict = Depends(require_role("admin", "teacher")),
+    db: Session = Depends(get_db),
+):
+    try:
+        return list_miaoshou_shop_options(db, payload.model_dump())
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/miaoshou/reauthorize-picture-space")
+def miaoshou_reauthorize_picture_space(
+    payload: MiaoshouReauthorizeRequest,
+    user: dict = Depends(require_role("admin", "teacher")),
+    db: Session = Depends(get_db),
+):
+    try:
+        return save_miaoshou_picture_space_storage_state(db, payload.storage_state)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/tasks/{task_id}")

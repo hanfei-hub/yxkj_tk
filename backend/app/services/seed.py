@@ -234,3 +234,13 @@ def ensure_ark_third_party_config(db: Session) -> None:
                 remark="第三方 1688 API 接入占位。",
             )
         )
+    if not db.scalar(select(ThirdPartyConfig).where(ThirdPartyConfig.service_type == "miaoshou_api")):
+        db.add(
+            ThirdPartyConfig(
+                config_name="妙手开放平台 API",
+                service_type="miaoshou_api",
+                api_base_url="https://openapi-erp.91miaoshou.com",
+                status=0,
+                remark="请填写 AppKey 和 AppSecret；用于妙手开放平台签名调用。",
+            )
+        )
