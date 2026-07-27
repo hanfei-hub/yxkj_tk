@@ -72,6 +72,7 @@ MENU_ICON_MAP = {
     "选品库": "menu_library.svg",
     "新品榜单": "menu_new.svg",
     "采集箱": "menu_favorite.svg",
+    "视频生成": "menu_course.svg",
     "店铺管理": "menu_store.svg",
     "数据看板": "menu_dashboard.svg",
     "个人中心": "menu_settings.svg",
@@ -87,10 +88,10 @@ MENU_ICON_MAP = {
 MENU_ROLE_ACCESS = {
     "admin": None,
     "teacher": {
-        "数据看板", "个人中心", "关于益行", "教师看板", "选品属性", "新品榜单", "智能选品",
+        "数据看板", "个人中心", "关于益行", "教师看板", "选品属性", "新品榜单", "智能选品", "视频生成",
     },
     "student": {
-        "智能选品", "选品库", "新品榜单", "采集箱", "店铺管理", "关于益行", "个人中心",
+        "智能选品", "选品库", "新品榜单", "采集箱", "店铺管理", "关于益行", "个人中心", "视频生成",
     },
 }
 
@@ -1092,6 +1093,7 @@ class MainWindow(QMainWindow):
         self.add_page("选品库", SelectionLibraryPage(self.gateway), "08_选品属性.ico")
         self.add_page("新品榜单", NewProductsPage(self.gateway), "01_智能选品.ico")
         self.add_page("采集箱", FavoritesPage(self.gateway), "05_主题皮肤.ico")
+        self.add_page("视频生成", VideoGenerationPage(self.gateway), "menu_course.svg")
         self.add_nav_separator()
         self.add_page("店铺管理", AutoPublishPage(self.gateway), "10_TK跨境助手.ico")
         self.add_page("数据看板", DataDashboardPage(self.gateway), "07_第三方API.ico")
@@ -1165,6 +1167,14 @@ class MainWindow(QMainWindow):
             if item and item.data(Qt.UserRole) != -1 and not item.isHidden():
                 self.nav.setCurrentRow(row)
                 return
+
+    def open_video_generation_page(self) -> None:
+        for row in range(self.nav.count()):
+            item = self.nav.item(row)
+            if item and item.text() == "视频生成" and not item.isHidden():
+                self.nav.setCurrentRow(row)
+                return
+        QMessageBox.information(self, "视频生成", "当前没有找到视频生成入口，请先登录或刷新页面。")
 
     def open_login_dialog(self) -> None:
         dialog = LoginDialog(self.gateway, self)
