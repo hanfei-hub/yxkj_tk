@@ -276,13 +276,12 @@ class PromptEditorFrame(QFrame):
         margin = 10
         button_width = self.analyze_button.width()
         self.credit_label.adjustSize()
-        action_width = button_width + 7 + self.credit_label.width()
-        self.analyze_button.move(self.width() - action_width - margin, self.height() - self.analyze_button.height() - margin)
+        self.analyze_button.move(self.width() - button_width - margin, self.height() - self.analyze_button.height() - margin)
         self.count_label.adjustSize()
         self.count_label.move(self.analyze_button.x() - self.count_label.width() - 14, self.height() - self.count_label.height() - 21)
         self.credit_label.move(
-            self.analyze_button.x() + self.analyze_button.width() + 7,
-            self.analyze_button.y() + (self.analyze_button.height() - self.credit_label.height()) // 2,
+            self.analyze_button.x() + self.analyze_button.width() - self.credit_label.width(),
+            self.analyze_button.y() - self.credit_label.height() - 2,
         )
 
 
@@ -3617,11 +3616,19 @@ class StudioNewProductCard(QFrame):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
         layout.addWidget(create_product_image(str(item.get("supplier_image_url") or item.get("image_url") or ""), "📦", 172, 132))
+        name_row = QHBoxLayout()
+        name_row.setSpacing(5)
         name = QLabel(title[:14])
         name.setObjectName("StudioNewName")
         name.setWordWrap(True)
         name.setToolTip(title)
-        layout.addWidget(name)
+        name_row.addWidget(name, 1)
+        if item.get("_is_latest_search"):
+            new_tag = QLabel("NEW")
+            new_tag.setObjectName("StudioNewTag")
+            new_tag.setAlignment(Qt.AlignCenter)
+            name_row.addWidget(new_tag, 0, Qt.AlignTop)
+        layout.addLayout(name_row)
         metrics = QHBoxLayout()
         price_label = QLabel(price_formatter(price) if price_formatter else format_region_price(item.get("region"), price, item.get("currency")))
         price_label.setObjectName("StudioNewPrice")
@@ -3707,15 +3714,6 @@ class SelectionStudioPage(Page):
         tutorial.setObjectName("StudioTutorial")
         tutorial.clicked.connect(self.show_tutorial)
         heading.addWidget(tutorial)
-        refresh_button = QPushButton()
-        refresh_button.setObjectName("IconButton")
-        refresh_button.setFixedSize(34, 34)
-        refresh_button.setIcon(QIcon(icon_path("06_刷新图标.png")))
-        refresh_button.setIconSize(QSize(17, 17))
-        refresh_button.setToolTip("刷新商品数据")
-        refresh_button.clicked.connect(self.force_refresh)
-        self.data_refresh_button = refresh_button
-        heading.addWidget(refresh_button)
         left_stack = QVBoxLayout()
         left_stack.setContentsMargins(0, 0, 0, 0)
         left_stack.setSpacing(14)
@@ -3750,6 +3748,7 @@ class SelectionStudioPage(Page):
         self.count_select.currentIndexChanged.connect(
             lambda: prompt_editor.set_credit_cost(int(self.count_select.currentData() or 10))
         )
+        self.count_select.currentIndexChanged.connect(self.refresh_credit_state)
         prompt_editor.set_credit_cost(int(self.count_select.currentData() or 10))
         count_row.addWidget(self.count_select)
         count_hint = QLabel("积分按推荐条数扣除")
@@ -3907,7 +3906,8 @@ class SelectionStudioPage(Page):
     def refresh_credit_state(self) -> None:
         if hasattr(self, "send_button") and not self.selection_task_id:
             balance = int((self.gateway.user or {}).get("credit_balance") or 0)
-            self.send_button.setEnabled(balance >= 10)
+            required = int(self.count_select.currentData() or 10)
+            self.send_button.setEnabled(balance >= required)
 
     def force_refresh(self) -> None:
         try:
@@ -3968,6 +3968,28 @@ class SelectionStudioPage(Page):
             self.progress_label.setText(f"选品完成，生成 {status.get('success_count') or 0} 个商品")
             self.chat_input.setEnabled(True)
             self.send_button.setEnabled(True)
+            QMessageBox.information(
+                self,
+                "选品完成",
+                f"本次选品已完成，共生成 {status.get('success_count') or 0} 个商品。\n点击确定后进入选品库。",
+            )
+            parent = self.window()
+            if hasattr(parent, "nav") and hasattr(parent, "pages"):
+                for index, page in enumerate(parent.pages):
+                    if isinstance(page, SelectionLibraryPage):
+                        try:
+                            page.refresh()
+                            # Navigation rows also contain separators, so find
+                            # the row by its stored page index instead of using
+                            # the pages list index directly.
+                            for row in range(parent.nav.count()):
+                                nav_item = parent.nav.item(row)
+                                if nav_item and nav_item.data(Qt.UserRole) == index:
+                                    parent.nav.setCurrentRow(row)
+                                    break
+                        except Exception as exc:
+                            show_error_details(self, "选品库加载失败", exc)
+                        break
         elif status.get("status") == "failed":
             self.selection_timer.stop()
             self.chat_input.setEnabled(True)
@@ -4324,6 +4346,12 @@ class SelectionLibraryPage(Page):
             if child.widget():
                 child.widget().deleteLater()
         items = self.gateway.user_search_results()
+        task_ids = [int(item.get("task_id") or 0) for item in items if item.get("task_id")]
+        latest_task_id = max(task_ids, default=0)
+        for item in items:
+            item["_is_latest_search"] = bool(
+                latest_task_id and int(item.get("task_id") or 0) == latest_task_id
+            )
         self._update_library_category_state(items)
         items = [item for item in items if self._matches_library_filter(item)]
         if not items:
@@ -5312,6 +5340,12 @@ class StudioSelectionPage(Page):
             self.send_button.setEnabled(True)
             self.chat_input.setEnabled(True)
             self.progress_label.setText("选品失败，积分已按后端结果处理")
+            detail = str(status.get("error_message") or "任务执行失败")
+            QMessageBox.warning(
+                self,
+                "选品失败",
+                f"选品失败，积分已按后端结果处理。\n\n{detail}",
+            )
 
     @staticmethod
     def _clear_row(row: QHBoxLayout) -> None:
