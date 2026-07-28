@@ -2,11 +2,11 @@
 
 
 a = Analysis(
-    ['app\\main.py'],
+    ['installer_wizard.py'],
     pathex=[],
     binaries=[],
-    datas=[('app/assets', 'app/assets')],
-    hiddenimports=['PySide6.QtSvg', 'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets'],
+    datas=[('dist/TKCrossBorderAssistant.exe', 'payload')],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='TKCrossBorderAssistant',
+    name='TKCrossBorderAssistantSetup',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

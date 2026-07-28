@@ -62,6 +62,7 @@ class ThirdPartyConfig(Base, TimestampMixin):
 
 class VideoProject(Base, TimestampMixin):
     __tablename__ = "video_projects"
+    __table_args__ = {"extend_existing": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)
@@ -77,6 +78,7 @@ class VideoProject(Base, TimestampMixin):
 
 class VideoAsset(Base, TimestampMixin):
     __tablename__ = "video_assets"
+    __table_args__ = {"extend_existing": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(Integer, index=True)
@@ -94,6 +96,7 @@ class VideoAsset(Base, TimestampMixin):
 
 class VideoStoryboardFrame(Base, TimestampMixin):
     __tablename__ = "video_storyboard_frames"
+    __table_args__ = {"extend_existing": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(Integer, index=True)
@@ -114,6 +117,8 @@ class VideoStoryboardFrame(Base, TimestampMixin):
 
 class VideoTask(Base, TimestampMixin):
     __tablename__ = "video_tasks"
+    __table_args__ = {"extend_existing": True}
+
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(Integer, index=True)
@@ -159,6 +164,7 @@ class AppRelease(Base, TimestampMixin):
 
 class VideoProject(Base, TimestampMixin):
     __tablename__ = "video_projects"
+    __table_args__ = {"extend_existing": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)
@@ -174,6 +180,7 @@ class VideoProject(Base, TimestampMixin):
 
 class VideoAsset(Base, TimestampMixin):
     __tablename__ = "video_assets"
+    __table_args__ = {"extend_existing": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(Integer, index=True)
@@ -191,6 +198,7 @@ class VideoAsset(Base, TimestampMixin):
 
 class VideoStoryboardFrame(Base, TimestampMixin):
     __tablename__ = "video_storyboard_frames"
+    __table_args__ = {"extend_existing": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(Integer, index=True)
@@ -211,6 +219,7 @@ class VideoStoryboardFrame(Base, TimestampMixin):
 
 class VideoTask(Base, TimestampMixin):
     __tablename__ = "video_tasks"
+    __table_args__ = {"extend_existing": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(Integer, index=True)
