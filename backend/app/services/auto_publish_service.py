@@ -22,7 +22,7 @@ import requests
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps, UnidentifiedImageError
 from requests.adapters import HTTPAdapter
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 from urllib3.util.retry import Retry
 try:
     import pytesseract
@@ -31,9 +31,6 @@ except Exception:  # pragma: no cover - optional OCR dependency
 
 from app.core.database import SessionLocal
 from app.models.entities import (
-    DerivedProductAttributeScore,
-    DerivedProductRecommendation,
-    FmProduct,
     ModelConfig,
     ThirdPartyConfig,
 )
@@ -47,15 +44,10 @@ from app.services.miaoshou_openapi_service import (
     get_miaoshou_openapi_client_optional,
     get_miaoshou_openapi_client_from_credentials,
 )
-from app.services.serializers import derived_to_dict, product_to_dict
-
-
 RUNTIME_DIR = Path(__file__).resolve().parents[2] / "runtime" / "auto_publish"
 LATEST_RESULT_FILE = RUNTIME_DIR / "latest_result.json"
 HISTORY_FILE = RUNTIME_DIR / "history.json"
 API_USAGE_FILE = RUNTIME_DIR / "api_usage.json"
-DEFAULT_TEMPLATE_PATH = Path(os.getenv("MIAOSHOU_IMPORT_TEMPLATE", r"C:\Users\Gao\Downloads\导入产品模板 (1).xls"))
-DEFAULT_OXYLABS_REALTIME_URL = "https://realtime.oxylabs.io/v1/queries"
 AIMEDIAKIT_IMAGE_TRANSLATE_URL = "https://mediakit.cn-beijing.volces.com/api/v1/tools-sync/translate-image-text"
 AIMEDIAKIT_REMOVE_ELEMENTS_URL = "https://mediakit.cn-beijing.volces.com/api/v1/tools-sync/remove-image-elements"
 DEFAULT_ASSET_BASE_URL = os.getenv("AUTO_PUBLISH_ASSET_BASE_URL", "https://120.26.207.89/auto_publish").strip()
@@ -423,26 +415,6 @@ def attach_api_usage(task: dict[str, Any] | None) -> dict[str, Any] | None:
     return task | {"api_usage": api_usage_for_task(task_id)}
 
 
-def list_publish_candidates(db: Session, limit: int = 50) -> list[dict[str, Any]]:
-    items = db.scalars(
-        select(DerivedProductRecommendation)
-        .options(
-            selectinload(DerivedProductRecommendation.source_product).selectinload(FmProduct.derived_products),
-            selectinload(DerivedProductRecommendation.attributes).selectinload(DerivedProductAttributeScore.attribute),
-        )
-        .where(DerivedProductRecommendation.review_status == "approved")
-        .order_by(DerivedProductRecommendation.weighted_score.desc(), DerivedProductRecommendation.id.desc())
-        .limit(limit)
-    ).all()
-    return [
-        {
-            "derived": derived_to_dict(item),
-            "source_product": product_to_dict(item.source_product) if item.source_product else None,
-        }
-        for item in items
-    ]
-
-
 def empty_latest_result() -> dict[str, Any]:
     return {
         "ok": True,
@@ -606,89 +578,6 @@ def update_task_progress(
             steps.append(message)
         task["steps"] = steps[-20:]
     _record_task(task)
-
-
-def create_task(db: Session, payload: dict[str, Any], user_id: int | None = None) -> dict[str, Any]:
-    derived_id = int(payload.get("derived_id") or 0)
-    derived = db.scalar(
-        select(DerivedProductRecommendation)
-        .options(
-            selectinload(DerivedProductRecommendation.source_product).selectinload(FmProduct.derived_products),
-            selectinload(DerivedProductRecommendation.attributes).selectinload(DerivedProductAttributeScore.attribute),
-        )
-        .where(DerivedProductRecommendation.id == derived_id)
-    )
-    if not derived:
-        raise ValueError("衍生品不存在，无法创建自动上架任务。")
-    if derived.review_status != "approved":
-        raise ValueError("只有教师审核通过的衍生品可以进入自动上架。")
-
-    quantity = max(1, min(int(payload.get("publish_count") or 1), 20))
-    dry_run = bool(payload.get("dry_run", True))
-    now = datetime.utcnow().replace(microsecond=0).isoformat()
-    task = {
-        "task_id": uuid4().hex,
-        "created_at": now,
-        "created_by": user_id,
-        "status": "created",
-        "dry_run": dry_run,
-        "publish_count": quantity,
-        "target_channel": str(payload.get("target_channel") or "TikTok Shop Japan"),
-        "erp_url": str(payload.get("erp_url") or "https://erp.91miaoshou.com/?ac=1og270"),
-        "derived": derived_to_dict(derived),
-        "source_product": product_to_dict(derived.source_product) if derived.source_product else None,
-        "steps": ["已创建自动上架任务，等待执行。"],
-        "errors": [],
-        "product_infos": [],
-    }
-    _record_task(task)
-    return task
-
-
-def run_task(task_id: str) -> dict[str, Any]:
-    history = list_history()
-    task = next((item for item in history if item.get("task_id") == task_id), None)
-    if not task:
-        raise ValueError("自动上架任务不存在。")
-
-    title = task.get("derived", {}).get("derived_title") or "未命名商品"
-    source_title = (task.get("source_product") or {}).get("title") or "未知原商品"
-    product_info = {
-        "title": title,
-        "source_title": source_title,
-        "target_channel": task.get("target_channel"),
-        "suggested_price_min": task.get("derived", {}).get("suggested_price_min"),
-        "suggested_price_max": task.get("derived", {}).get("suggested_price_max"),
-        "search_keywords": task.get("derived", {}).get("search_keywords"),
-    }
-
-    steps = [
-        f"已读取审核通过的衍生品：{title}",
-        f"已生成上架草稿，目标渠道：{task.get('target_channel')}",
-        "已整理标题、卖点、适用场景、风险提示和供运营复核的商品资料。",
-    ]
-    if task.get("dry_run", True):
-        steps.append("当前为 dry-run 模式：未登录 ERP，未提交真实上架。")
-        status = "draft_ready"
-        ok = True
-        message = "自动上架草稿已生成，可交由运营复核后接入真实 ERP 自动化。"
-    else:
-        steps.append("真实 ERP 自动化适配器尚未启用，本次未提交外部平台。")
-        status = "adapter_not_configured"
-        ok = False
-        message = "已阻止真实提交：请先配置稳定的 ERP 自动化适配器。"
-
-    result = task | {
-        "status": status,
-        "ok": ok,
-        "message": message,
-        "finished_at": datetime.utcnow().replace(microsecond=0).isoformat(),
-        "steps": steps,
-        "errors": [] if ok else ["ERP 自动化适配器未配置。"],
-        "product_infos": [product_info],
-    }
-    _record_task(result)
-    return result
 
 
 def normalize_package_metadata(payload: dict[str, Any] | None) -> dict[str, float]:
@@ -1231,7 +1120,7 @@ def create_1688_publish_task(db: Session, payload: dict[str, Any], user_id: int 
         "target_site": normalize_tiktok_site(payload.get("target_site") or "JP"),
         "steps": [
             "已创建 1688 链接自动上架任务，等待执行。",
-            "主链路仅使用妙手开放平台 API，不启用方案 1/3 的浏览器、Oxylabs 或本地回退兜底。",
+        "主链路仅使用妙手开放平台 API，不启用浏览器采集或本地回退兜底。",
         ],
         "errors": [],
         "product_infos": [],
@@ -1310,7 +1199,7 @@ def create_1688_batch_publish_task(db: Session, payload: dict[str, Any], user_id
         "steps": [
             f"已创建批量自动上架任务，共 {len(items)} 个 1688 链接。",
             "多个商品会写入同一个妙手模板；产品主编号用于区分不同商品。",
-            "妙手开放平台 API 会串行执行，且不会回退到浏览器自动化或 Oxylabs 方案。",
+        "妙手开放平台 API 会串行执行，且不会回退到浏览器自动化采集。",
         ],
         "errors": [],
         "product_infos": [],
@@ -1666,7 +1555,7 @@ def run_1688_publish_task(db: Session, task_id: str) -> dict[str, Any]:
     if task.get("workflow") == "1688_batch_to_miaoshou":
         return run_1688_batch_publish_task(db, task)
     if task.get("workflow") != "1688_to_miaoshou":
-        return run_task(task_id)
+        raise ValueError("不支持旧版自动上架任务，请使用 1688 妙手开放平台流程重新创建任务。")
 
     target_language = normalize_target_language(task.get("target_language"))
     target_site = normalize_tiktok_site(task.get("target_site") or "JP")
@@ -2958,39 +2847,6 @@ def normalize_1688_url(url: str) -> str:
     return url
 
 
-def get_oxylabs_credentials(db: Session) -> tuple[str, str]:
-    username, password, _endpoint = get_oxylabs_config(db)
-    return username, password
-
-
-def get_oxylabs_config(db: Session) -> tuple[str, str, str]:
-    configs = get_oxylabs_config_pool(db)
-    if not configs:
-        raise AutoPublishError("Oxylabs 账号未配置：请在第三方 API 配置 oxylabs，或设置 OXYLABS_USERNAME/OXYLABS_PASSWORD。")
-    username, password, endpoint = pick_from_pool("oxylabs", configs)
-    return username, password, endpoint.rstrip("/")
-
-
-def get_oxylabs_config_pool(db: Session) -> list[tuple[str, str, str]]:
-    rows = db.scalars(
-        select(ThirdPartyConfig)
-        .where(ThirdPartyConfig.service_type == "oxylabs", ThirdPartyConfig.status == 1)
-        .order_by(ThirdPartyConfig.id.desc())
-    ).all()
-    configs: list[tuple[str, str, str]] = []
-    for row in rows:
-        username = str(row.access_key_encrypted or "").strip()
-        password = str(row.secret_key_encrypted or "").strip()
-        endpoint = str(row.api_base_url or DEFAULT_OXYLABS_REALTIME_URL).strip()
-        if username and password:
-            configs.append((username, password, endpoint.rstrip("/")))
-    env_username = os.getenv("OXYLABS_USERNAME", "").strip()
-    env_password = os.getenv("OXYLABS_PASSWORD", "").strip()
-    if env_username and env_password:
-        configs.append((env_username, env_password, os.getenv("OXYLABS_REALTIME_URL", DEFAULT_OXYLABS_REALTIME_URL).rstrip("/")))
-    return dedupe_tuple_pool(configs)
-
-
 def get_miaoshou_credentials(db: Session, task_id: str | None = None) -> tuple[str, str]:
     if task_id and task_id in MIAOSHOU_TASK_CREDENTIALS:
         return MIAOSHOU_TASK_CREDENTIALS[task_id]
@@ -3132,80 +2988,6 @@ def save_miaoshou_credentials_from_payload(db: Session, payload: dict[str, Any])
     return True
 
 
-def post_oxylabs_with_powershell(endpoint: str, username: str, password: str, payload: dict[str, Any], original_error: str) -> dict[str, Any]:
-    _ensure_runtime_dir()
-    temp_prefix = RUNTIME_DIR / f"oxylabs_request_{uuid4().hex}"
-    payload_path = temp_prefix.with_suffix(".json")
-    response_path = temp_prefix.with_suffix(".response.json")
-    error_path = temp_prefix.with_suffix(".error.txt")
-    script_path = temp_prefix.with_suffix(".ps1")
-    payload_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    script_path.write_text(
-        r'''
-$ErrorActionPreference = "Stop"
-$endpoint = $args[0]
-$username = $args[1]
-$password = $args[2]
-$payloadPath = $args[3]
-$responsePath = $args[4]
-$errorPath = $args[5]
-try {
-  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
-} catch {
-  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-}
-$pair = "${username}:${password}"
-$bytes = [System.Text.Encoding]::ASCII.GetBytes($pair)
-$auth = [Convert]::ToBase64String($bytes)
-$headers = @{ Authorization = "Basic $auth"; "Content-Type" = "application/json"; "Accept" = "application/json" }
-$body = Get-Content -LiteralPath $payloadPath -Raw -Encoding UTF8
-try {
-  $result = Invoke-RestMethod -Uri $endpoint -Method Post -Headers $headers -Body $body -ContentType "application/json" -TimeoutSec 120
-  $result | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $responsePath -Encoding UTF8
-} catch {
-  $message = $_.Exception.Message
-  if ($_.Exception.Response) {
-    $message = "HTTP " + [int]$_.Exception.Response.StatusCode + " " + $message
-  }
-  Set-Content -LiteralPath $errorPath -Value $message -Encoding UTF8
-  exit 1
-}
-'''.strip(),
-        encoding="utf-8",
-    )
-    try:
-        subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(script_path),
-                endpoint,
-                username,
-                password,
-                str(payload_path),
-                str(response_path),
-                str(error_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=140,
-        )
-        return json.loads(response_path.read_text(encoding="utf-8-sig"))
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as exc:
-        detail = error_path.read_text(encoding="utf-8", errors="ignore") if error_path.exists() else ""
-        raise AutoPublishError(f"Oxylabs 请求失败：Python TLS 失败：{original_error}；系统网络兜底也失败：{detail or exc}") from exc
-    finally:
-        for path in (payload_path, response_path, error_path, script_path):
-            try:
-                path.unlink()
-            except OSError:
-                pass
-
-
 def post_aimediakit_with_powershell(endpoint: str, api_key: str, payload: dict[str, Any], original_error: str) -> dict[str, Any]:
     _ensure_runtime_dir()
     temp_prefix = RUNTIME_DIR / f"aimediakit_request_{uuid4().hex}"
@@ -3322,87 +3104,6 @@ try {
                 path.unlink()
             except OSError:
                 pass
-
-
-def import_template_to_miaoshou(
-    db: Session,
-    template_path: Path,
-    erp_url: str,
-    task_id: str | None = None,
-) -> dict[str, Any]:
-    steps: list[str] = []
-    errors: list[str] = []
-    screenshots: list[str] = []
-
-    try:
-        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        return {"ok": False, "steps": [], "errors": [f"Playwright 未安装：{exc}"], "screenshots": []}
-
-    headless = should_run_miaoshou_headless()
-    target_url = erp_url or "https://erp.91miaoshou.com/?ac=1og270"
-    try:
-        username, password = get_miaoshou_credentials(db, task_id)
-    except AutoPublishError as exc:
-        return {"ok": False, "steps": steps, "errors": [str(exc)], "screenshots": []}
-    storage_path = miaoshou_storage_state_path_for_username(username)
-    storage_path.parent.mkdir(parents=True, exist_ok=True)
-    with sync_playwright() as playwright:
-        try:
-            browser = playwright.chromium.launch(**browser_launch_options(headless))
-        except Exception as exc:  # noqa: BLE001 - surface browser setup as a normal import failure.
-            return {"ok": False, "steps": steps, "errors": [f"妙手浏览器启动失败：{exc}"], "screenshots": []}
-        context_kwargs: dict[str, Any] = {"viewport": {"width": 1440, "height": 900}}
-        using_saved_state = storage_path.exists()
-        if using_saved_state:
-            context_kwargs["storage_state"] = str(storage_path)
-        context = browser.new_context(**context_kwargs)
-        page = context.new_page()
-        try:
-            page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-            steps.append(f"已打开妙手 ERP：{target_url}")
-            close_miaoshou_popups(page)
-            if using_saved_state:
-                steps.append("已使用本次保存的妙手登录态进入导入流程。")
-                if not is_miaoshou_logged_in(page):
-                    steps.append("保存的妙手登录态已失效，正在重新填写账号密码登录。")
-                    login_miaoshou(page, username, password, force=True)
-                    page.wait_for_timeout(2000)
-                    close_miaoshou_popups(page)
-                    context.storage_state(path=str(storage_path))
-                    steps.append("已重新登录并更新妙手登录态。")
-            else:
-                login_miaoshou(page, username, password, force=True)
-                steps.append("已填写妙手账号密码；如页面出现验证码，请在妙手窗口手动完成验证。")
-                page.wait_for_timeout(2000)
-                close_miaoshou_popups(page)
-                context.storage_state(path=str(storage_path))
-                steps.append("已保存妙手登录态。")
-            open_miaoshou_public_collection(page)
-            steps.append("已进入公用采集箱/导入入口。")
-            upload_miaoshou_template(page, template_path)
-            steps.append("已上传妙手产品导入模板。")
-            submit_miaoshou_import(page)
-            context.storage_state(path=str(storage_path))
-            steps.append("已提交导入任务，请在妙手后台确认导入结果。")
-            return {"ok": True, "steps": steps, "errors": [], "screenshots": []}
-        except Exception as exc:  # noqa: BLE001 - automation must preserve page evidence.
-            screenshot = RUNTIME_DIR / f"miaoshou_import_failed_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.png"
-            try:
-                page.screenshot(path=str(screenshot), full_page=True)
-                screenshots.append(str(screenshot))
-            except Exception:
-                pass
-            if isinstance(exc, PlaywrightTimeoutError):
-                errors.append(f"妙手页面等待超时：{exc}")
-            else:
-                errors.append(f"妙手自动导入失败：{exc}")
-            return {"ok": False, "steps": steps, "errors": errors, "screenshots": screenshots}
-        finally:
-            keep_open = os.getenv("MIAOSHOU_KEEP_BROWSER_ON_ERROR", "1") == "1" and errors
-            if not keep_open:
-                browser.close()
 
 
 def browser_launch_options(headless: bool) -> dict[str, Any]:
@@ -3605,124 +3306,6 @@ def is_miaoshou_public_collection_page(page: Any) -> bool:
         return False
 
 
-def upload_miaoshou_template(page: Any, template_path: Path) -> None:
-    if not template_path.exists():
-        raise AutoPublishError(f"模板文件不存在：{template_path}")
-    close_miaoshou_popups(page)
-    if click_text_if_visible(page, "导入产品", exact=False, timeout=5000):
-        page.wait_for_timeout(800)
-    if click_miaoshou_import_dropdown_item(page):
-        page.wait_for_timeout(1200)
-    else:
-        for text in ("导入商品", "导入产品"):
-            if click_text_if_visible(page, text, exact=True, timeout=3000):
-                page.wait_for_timeout(1200)
-                break
-    file_inputs = page.locator("input[type='file']")
-    if file_inputs.count():
-        file_inputs.first.set_input_files(str(template_path), timeout=10000)
-        page.wait_for_timeout(2500)
-        return
-    for text in ("点击或拖拽文件导入", "上传文件", "选择文件", "导入文件", "上传"):
-        try:
-            with page.expect_file_chooser(timeout=5000) as chooser_info:
-                page.get_by_text(text, exact=False).first.click(timeout=3000)
-            chooser_info.value.set_files(str(template_path))
-            page.wait_for_timeout(2500)
-            return
-        except Exception:
-            pass
-    raise AutoPublishError("没有找到妙手模板上传控件。")
-
-
-def click_miaoshou_import_dropdown_item(page: Any) -> bool:
-    for selector in (
-        ".el-dropdown-menu__item",
-        ".ant-dropdown-menu-item",
-        "[role='menuitem']",
-        ".dropdown-menu li",
-        ".el-popper li",
-        ".popper li",
-    ):
-        try:
-            locator = page.locator(selector)
-            for index in range(locator.count()):
-                item = locator.nth(index)
-                if not item.is_visible(timeout=500):
-                    continue
-                text = re.sub(r"\s+", "", item.inner_text(timeout=1000))
-                if text not in {"导入产品", "导入商品"}:
-                    continue
-                box = item.bounding_box(timeout=1000)
-                if not box:
-                    continue
-                if box["x"] < 900 or box["y"] < 250:
-                    continue
-                page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-                return True
-        except Exception:
-            pass
-    try:
-        return bool(
-            page.evaluate(
-                """() => {
-                    const normalize = (value) => (value || "").replace(/\\s+/g, "").trim();
-                    const isVisible = (el) => {
-                        const style = window.getComputedStyle(el);
-                        const rect = el.getBoundingClientRect();
-                        return style && style.visibility !== "hidden" && style.display !== "none"
-                            && rect.width > 1 && rect.height > 1
-                            && rect.bottom >= 0 && rect.right >= 0
-                            && rect.top <= window.innerHeight && rect.left <= window.innerWidth;
-                    };
-                    const wanted = new Set(["导入产品", "导入商品"]);
-                    const importButtons = Array.from(document.querySelectorAll("button, a, div, span"))
-                        .filter((el) => isVisible(el) && normalize(el.innerText || el.textContent || "") === "导入产品")
-                        .map((el) => el.getBoundingClientRect())
-                        .filter((rect) => rect.left > window.innerWidth * 0.55)
-                        .sort((a, b) => a.top - b.top);
-                    const buttonBottom = importButtons.length ? importButtons[0].bottom : 250;
-                    const candidates = Array.from(document.querySelectorAll(
-                        ".el-dropdown-menu__item, .ant-dropdown-menu-item, [role='menuitem'], .dropdown-menu li, .el-popper li, .popper li"
-                    )).filter((el) => {
-                        if (!isVisible(el)) return false;
-                        const rect = el.getBoundingClientRect();
-                        const text = normalize(el.innerText || el.textContent || "");
-                        return wanted.has(text)
-                            && rect.left > window.innerWidth * 0.55
-                            && rect.top > buttonBottom
-                            && rect.width < 260
-                            && rect.height < 80;
-                    }).sort((a, b) => {
-                        const ar = a.getBoundingClientRect();
-                        const br = b.getBoundingClientRect();
-                        return ar.top - br.top || br.left - ar.left;
-                    });
-                    if (!candidates.length) return false;
-                    const el = candidates[0];
-                    el.scrollIntoView({ block: "center", inline: "center" });
-                    el.click();
-                    return true;
-                }"""
-            )
-        )
-    except Exception:
-        return False
-
-
-def submit_miaoshou_import(page: Any) -> None:
-    for text in ("确定", "确认导入", "开始导入", "提交", "导入"):
-        try:
-            locator = page.get_by_text(text, exact=False)
-            if locator.count():
-                locator.last.click(timeout=5000)
-                page.wait_for_timeout(3500)
-                return
-        except Exception:
-            pass
-    raise AutoPublishError("模板已选择，但没有找到提交导入按钮。")
-
-
 def fill_first_visible(page: Any, selectors: list[str], value: str) -> None:
     for selector in selectors:
         locator = page.locator(selector)
@@ -3810,106 +3393,6 @@ def click_visible_text_by_script(page: Any, text: str, exact: bool = False, max_
         )
     except Exception:
         return False
-
-
-def fetch_1688_page_with_oxylabs(db: Session, offer_url: str, task_id: str = "") -> dict[str, Any]:
-    configs = get_oxylabs_config_pool(db)
-    if not configs:
-        raise AutoPublishError("Oxylabs credentials not configured: add enabled third-party configs with service_type=oxylabs or set OXYLABS_USERNAME/OXYLABS_PASSWORD.")
-    payload = {
-        "source": "universal",
-        "url": offer_url,
-        "geo_location": "China",
-        "render": "html",
-        "parse": False,
-    }
-    errors: list[str] = []
-    first_config = pick_from_pool("oxylabs", configs)
-    ordered_configs = [first_config] + [item for item in configs if item != first_config]
-    data: dict[str, Any] | None = None
-    for config_index, (username, password, endpoint) in enumerate(ordered_configs, start=1):
-        status_code: int | None = None
-        usage_meta = {
-            "pool_index": config_index,
-            "pool_size": len(configs),
-            "key_label": usage_key_label(f"oxylabs-{config_index}", username),
-        }
-        try:
-            response = requests.post(endpoint, auth=(username, password), json=payload, timeout=90)
-            status_code = response.status_code
-            if response.status_code >= 400:
-                error_text = f"HTTP {response.status_code} {response.text[:300]}"
-                record_api_usage(
-                    task_id,
-                    provider="oxylabs",
-                    purpose="fetch_1688_page",
-                    model="universal_html_render",
-                    endpoint=endpoint,
-                    success=False,
-                    status_code=status_code,
-                    error=error_text,
-                    meta=usage_meta,
-                )
-                errors.append(f"??{config_index}/{len(configs)} {error_text}")
-                if retryable_external_error(error_text) and config_index < len(ordered_configs):
-                    time.sleep(0.8 * config_index)
-                    continue
-                raise AutoPublishError("Oxylabs request failed: " + " | ".join(errors[-3:]))
-            data = response.json()
-            record_api_usage(
-                task_id,
-                provider="oxylabs",
-                purpose="fetch_1688_page",
-                model="universal_html_render",
-                endpoint=endpoint,
-                success=True,
-                status_code=status_code,
-                meta=usage_meta,
-            )
-            break
-        except requests.RequestException as exc:
-            try:
-                data = post_oxylabs_with_powershell(endpoint, username, password, payload, str(exc))
-                record_api_usage(
-                    task_id,
-                    provider="oxylabs",
-                    purpose="fetch_1688_page",
-                    model="universal_html_render",
-                    endpoint=endpoint,
-                    success=True,
-                    request_count=2,
-                    status_code=status_code,
-                    meta={**usage_meta, "fallback": "powershell"},
-                )
-                break
-            except Exception as fallback_exc:
-                error_text = sanitize_secret_error(str(fallback_exc))
-                errors.append(f"??{config_index}/{len(configs)} {error_text}")
-                record_api_usage(
-                    task_id,
-                    provider="oxylabs",
-                    purpose="fetch_1688_page",
-                    model="universal_html_render",
-                    endpoint=endpoint,
-                    success=False,
-                    request_count=2,
-                    status_code=status_code,
-                    error=error_text,
-                    meta={**usage_meta, "fallback": "powershell"},
-                )
-                if retryable_external_error(error_text) and config_index < len(ordered_configs):
-                    time.sleep(0.8 * config_index)
-                    continue
-                raise AutoPublishError("Oxylabs request failed: " + " | ".join(errors[-3:])) from fallback_exc
-    if not data:
-        raise AutoPublishError("Oxylabs request failed: " + " | ".join(errors[-3:]))
-    result = (data.get("results") or [{}])[0] if isinstance(data, dict) else {}
-    content = result.get("content") or data.get("content") if isinstance(data, dict) else ""
-    if isinstance(content, dict):
-        html = json.dumps(content, ensure_ascii=False)
-    else:
-        html = str(content or "")
-    return {"html": html, "raw": data}
 
 
 def extract_1688_product(offer_url: str, html: str, raw: dict[str, Any]) -> dict[str, Any]:
@@ -4866,7 +4349,7 @@ def image_failure_diagnostics(
         diagnostics.append("诊断：主图处理/上传后为空，商品无法生成可用主图。")
     elif main_count < main_target:
         if main_source_count < main_target:
-            diagnostics.append(f"诊断：1688/Oxylabs 只解析到主图源图 {main_source_count}/{main_target}；按当前规则允许主图不足 5 张继续上架，并会尽量用干净 SKU/详情图或重复链接补足模板。")
+            diagnostics.append(f"诊断：当前采集结果只解析到主图源图 {main_source_count}/{main_target}；按当前规则允许主图不足 5 张继续上架，并会尽量用干净 SKU/详情图补足。")
         else:
             diagnostics.append(f"诊断：主图源图足够，但处理后只剩 {main_count}/{main_target}；按当前规则允许继续上架。")
     if detail_count == 0 and detail_source_count > 0:
@@ -8439,45 +7922,6 @@ def sanitize_listing_copy(value: str) -> str:
     value = re.sub(r"\s+", " ", value)
     value = re.sub(r">\s+<", "><", value)
     return value.strip()
-
-def build_miaoshou_import_xls(task_id: str, product: dict[str, Any]) -> Path:
-    if not DEFAULT_TEMPLATE_PATH.exists():
-        raise AutoPublishError(f"妙手导入模板不存在：{DEFAULT_TEMPLATE_PATH}")
-    _ensure_runtime_dir()
-    output_path = RUNTIME_DIR / f"miaoshou_import_{task_id}.xls"
-    shutil.copyfile(DEFAULT_TEMPLATE_PATH, output_path)
-    rows = miaoshou_rows(product)
-    write_rows_to_xls(output_path, rows)
-    return output_path
-
-
-def build_miaoshou_import_xls_multi(task_id: str, products: list[dict[str, Any]]) -> Path:
-    if not DEFAULT_TEMPLATE_PATH.exists():
-        raise AutoPublishError(f"妙手导入模板不存在：{DEFAULT_TEMPLATE_PATH}")
-    _ensure_runtime_dir()
-    output_path = RUNTIME_DIR / f"miaoshou_import_batch_{task_id}.xls"
-    shutil.copyfile(DEFAULT_TEMPLATE_PATH, output_path)
-
-    rows: list[list[Any]] = []
-    used_main_no: set[str] = set()
-    for product_index, product in enumerate(products, start=1):
-        product_rows = miaoshou_rows(product)
-        if not product_rows:
-            continue
-        base_main_no = str(product_rows[0][0] or f"A{product_index:03d}").strip() or f"A{product_index:03d}"
-        main_no = base_main_no
-        if main_no in used_main_no:
-            main_no = f"{base_main_no}-{product_index:02d}"
-        used_main_no.add(main_no)
-        for row in product_rows:
-            row[0] = main_no
-        rows.extend(product_rows)
-
-    if not rows:
-        raise AutoPublishError("没有可写入妙手模板的商品行。")
-    write_rows_to_xls(output_path, rows)
-    return output_path
-
 
 def validate_template_images_from_miaoshou_space(product: dict[str, Any]) -> list[str]:
     image_result = product.get("image_result") if isinstance(product.get("image_result"), dict) else {}

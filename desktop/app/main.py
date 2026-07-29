@@ -396,14 +396,6 @@ class DataGateway:
     def sync_fastmoss_products(self, region: str = "JP", list_type: str = "new") -> dict[str, Any]:
         return self.client.post(f"/api/fastmoss/sync-products?page=1&region={region}&list_type={list_type}")
 
-    def auto_publish_candidates(self) -> list[dict[str, Any]]:
-        if not self.user:
-            return []
-        return self.client.get("/api/auto-publish/candidates")
-
-    def create_auto_publish_task(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.client.post("/api/auto-publish/tasks", payload)
-
     def create_1688_auto_publish_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.post("/api/auto-publish/1688/tasks", payload, timeout=60)
 
@@ -416,10 +408,6 @@ class DataGateway:
 
     def reauthorize_miaoshou_picture_space(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.post("/api/auto-publish/miaoshou/reauthorize-picture-space", payload, timeout=600)
-
-    def run_auto_publish_task(self, task_id: str) -> dict[str, Any]:
-        return self.client.post(f"/api/auto-publish/tasks/{task_id}/run", timeout=1800)
-
 
     def start_auto_publish_task_async(self, task_id: str) -> dict[str, Any]:
         return self.client.post(f"/api/auto-publish/tasks/{task_id}/run-async", timeout=30)
@@ -494,183 +482,39 @@ class DataGateway:
     def search_1688_for_derived(self, derived_id: int, page: int = 1, page_size: int = 20) -> dict[str, Any]:
         return self.client.post(f"/api/suppliers/1688/derived-products/{derived_id}/search?page={page}&page_size={page_size}")
 
-
-def make_title(text: str, subtitle: str = "") -> QWidget:
-    box = QFrame()
-    box.setObjectName("PageHeader")
-    layout = QVBoxLayout(box)
-    layout.setContentsMargins(20, 18, 20, 18)
-    layout.setSpacing(6)
-    title = QLabel(text)
-    title.setObjectName("PageTitle")
-    layout.addWidget(title)
-    if subtitle:
-        sub = QLabel(subtitle)
-        sub.setObjectName("Muted")
-        layout.addWidget(sub)
-    return box
-
-
-DIMENSION_LABELS = [
-    ("dimension_1", "使用场景"),
-    ("dimension_2", "商品周期性"),
-    ("dimension_3", "目标群体"),
-    ("dimension_4", "短视频种草"),
-    ("dimension_5", "日本偏好"),
-    ("dimension_6", "新奇特"),
-    ("dimension_7", "复购属性"),
-    ("dimension_8", "竞品属性"),
-]
-
-
-def dimension_items_from_report(item: dict[str, Any]) -> list[tuple[str, str, str]]:
-    raw_report = item.get("analysis_report") or {}
-    if isinstance(raw_report, str):
-        try:
-            raw_report = json.loads(raw_report)
-        except (TypeError, ValueError):
-            raw_report = {}
-    result: list[tuple[str, str, str]] = []
-    for code, default_name in DIMENSION_LABELS:
-        row = raw_report.get(code) if isinstance(raw_report, dict) else None
-        if not row and isinstance(raw_report, dict):
-            row = raw_report.get(default_name)
-        if isinstance(row, dict):
-            name = str(row.get("dimension_name") or row.get("维度名称") or default_name)
-            level = str(row.get("判定等级") or row.get("rating_level") or row.get("level") or "")
-            content = str(row.get("客观分析内容") or row.get("analysis_content") or row.get("content") or "")
-            result.append((name, level, content))
-        else:
-            result.append((default_name, "", ""))
-    fallback = {
-        "使用场景": item.get("usage_scene") or "",
-        "目标群体": item.get("target_audience") or "",
-        "短视频种草": item.get("recommendation_reason") or "",
-        "竞品属性": item.get("risk_notes") or "",
-    }
-    return [(name, level, content or str(fallback.get(name, ""))) for name, level, content in result]
-
-
-def show_analysis_report(parent: QWidget, item: dict[str, Any]) -> None:
-    title = str(item.get("title") or item.get("derived_title") or "选品分析报告")
-    dialog = QDialog(parent)
-    dialog.setWindowTitle(f"选品分析报告 - {title[:40]}")
-    dialog.resize(860, 620)
-    layout = QVBoxLayout(dialog)
-    layout.setContentsMargins(20, 20, 20, 20)
-    header = QLabel(title)
-    header.setObjectName("PageTitle")
-    header.setWordWrap(True)
-    layout.addWidget(header)
-    scroll = QScrollArea()
-    scroll.setWidgetResizable(True)
-    content = QWidget()
-    grid = QGridLayout(content)
-    grid.setContentsMargins(0, 0, 10, 10)
-    grid.setHorizontalSpacing(10)
-    grid.setVerticalSpacing(10)
-    for index, (name, level, detail) in enumerate(dimension_items_from_report(item)):
-        box = QFrame()
-        box.setObjectName("MetricBox")
-        box_layout = QVBoxLayout(box)
-        box_layout.setContentsMargins(12, 10, 12, 10)
-        box_layout.setSpacing(6)
-        name_label = QLabel(name)
-        name_label.setObjectName("CardTitle")
-        level_label = QLabel(level or "暂无等级")
-        level_label.setObjectName("ProductPrice")
-        detail_label = QLabel(detail or "暂无分析内容")
-        detail_label.setObjectName("ProductMuted")
-        detail_label.setWordWrap(True)
-        box_layout.addWidget(name_label)
-        box_layout.addWidget(level_label)
-        box_layout.addWidget(detail_label)
-        grid.addWidget(box, index // 2, index % 2)
-    scroll.setWidget(content)
-    layout.addWidget(scroll, 1)
-    close_button = QPushButton("关闭")
-    close_button.clicked.connect(dialog.accept)
-    actions = QHBoxLayout()
-    actions.addStretch()
-    actions.addWidget(close_button)
-    layout.addLayout(actions)
-    dialog.exec()
-
-
-def table(headers: list[str]) -> QTableWidget:
-    widget = QTableWidget(0, len(headers))
-    widget.setHorizontalHeaderLabels(headers)
-    widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-    widget.verticalHeader().setVisible(False)
-    widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    widget.setSelectionBehavior(QAbstractItemView.SelectRows)
-    widget.setAlternatingRowColors(True)
-    widget.setShowGrid(False)
-    widget.setWordWrap(False)
-    widget.verticalHeader().setDefaultSectionSize(46)
-    return widget
-
-
-def fill_table(widget: QTableWidget, rows: list[list[Any]]) -> None:
-    widget.setRowCount(len(rows))
-    for row_index, row in enumerate(rows):
-        for column_index, value in enumerate(row):
-            item = QTableWidgetItem(str(value))
-            item.setTextAlignment(Qt.AlignCenter)
-            widget.setItem(row_index, column_index, item)
-
-
-def metric_card(title: str, value: str, note: str) -> QWidget:
-    card = QFrame()
-    card.setObjectName("MetricCard")
-    layout = QVBoxLayout(card)
-    layout.setContentsMargins(16, 14, 16, 14)
-    layout.setSpacing(4)
-    title_label = QLabel(title)
-    title_label.setObjectName("ProductMuted")
-    value_label = QLabel(value)
-    value_label.setObjectName("DashboardMetric")
-    note_label = QLabel(note)
-    note_label.setObjectName("Muted")
-    layout.addWidget(title_label)
-    layout.addWidget(value_label)
-    layout.addWidget(note_label)
-    return card
-
-
     def video_projects(self) -> list[dict[str, Any]]:
         if not self.user:
             return []
         return self.client.get("/api/video/projects")
 
+    def video_models(self) -> list[dict[str, Any]]:
+        if not self.user:
+            return []
+        return self.client.get("/api/video/models")
+
+    def sync_buming_video_models(self) -> dict[str, Any]:
+        return self.client.post("/api/video/models/buming/sync", {}, timeout=60)
 
     def create_video_project(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.post("/api/video/projects", payload)
 
-
     def update_video_project(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.put(f"/api/video/projects/{project_id}", payload)
-
 
     def upload_video_asset(self, project_id: int, file_path: str, fields: dict[str, Any]) -> dict[str, Any]:
         return self.client.upload(f"/api/video/projects/{project_id}/assets", file_path, fields, timeout=180)
 
-
     def update_video_asset(self, project_id: int, asset_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.put(f"/api/video/projects/{project_id}/assets/{asset_id}", payload)
-
 
     def generate_video_script(self, project_id: int) -> dict[str, Any]:
         return self.client.post(f"/api/video/projects/{project_id}/script/generate", timeout=240)
 
-
     def save_video_script(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.put(f"/api/video/projects/{project_id}/script", payload)
 
-
     def create_video_task(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.post(f"/api/video/projects/{project_id}/tasks", payload, timeout=300)
-
 
     def refresh_video_task(self, project_id: int, task_id: int) -> dict[str, Any]:
         return self.client.post(f"/api/video/projects/{project_id}/tasks/{task_id}/refresh", timeout=180)
@@ -1189,6 +1033,9 @@ class MainWindow(QMainWindow):
     def on_page_changed(self, index: int) -> None:
         item = self.nav.item(index)
         page_data = item.data(Qt.UserRole) if item else None
+        if not item or item.isHidden():
+            self.apply_menu_permissions()
+            return
         page_index = int(page_data) if page_data is not None else -1
         if page_index < 0:
             return
@@ -1463,6 +1310,7 @@ class VideoGenerationPage(Page):
         return box
 
     def activate(self) -> None:
+        self.refresh_video_models()
         if not self.loaded:
             self.refresh_projects()
             self.loaded = True
@@ -1575,6 +1423,8 @@ class VideoGenerationPage(Page):
         self.video_model = QComboBox()
         self.video_model.addItem("Seedance 2.0 mini", "doubao-seedance-2-0-mini-260615")
         self.video_model.addItem("Seedance 2.0 Fast", "doubao-seedance-2-0-fast")
+        self.sync_video_models_button = QPushButton("同步视频模型")
+        self.sync_video_models_button.clicked.connect(self.sync_video_models)
         self.submit_video_button = QPushButton("提交生成视频")
         self.refresh_task_button = QPushButton("刷新任务")
         self.download_video_button = QPushButton("下载视频")
@@ -1583,6 +1433,7 @@ class VideoGenerationPage(Page):
         self.download_video_button.clicked.connect(self.download_current_video)
         row.addWidget(self.image_mode_label)
         row.addWidget(self.video_model)
+        row.addWidget(self.sync_video_models_button)
         row.addWidget(self.submit_video_button)
         row.addWidget(self.refresh_task_button)
         row.addWidget(self.download_video_button)
@@ -1647,6 +1498,55 @@ class VideoGenerationPage(Page):
         content.addLayout(preview, 1)
         layout.addLayout(content, 1)
         self.stack.addWidget(page)
+
+    def is_admin_user(self) -> bool:
+        return bool(self.gateway.user and str(self.gateway.user.get("role") or "").lower() == "admin")
+
+    def refresh_video_models(self) -> None:
+        if not hasattr(self, "video_model"):
+            return
+        is_admin = self.is_admin_user()
+        self.image_mode_label.setVisible(is_admin)
+        self.video_model.setVisible(is_admin)
+        self.sync_video_models_button.setVisible(is_admin)
+        if not is_admin:
+            self.video_model.blockSignals(True)
+            self.video_model.clear()
+            self.video_model.addItem("默认视频模型", "auto")
+            self.video_model.blockSignals(False)
+            return
+        current_value = str(self.video_model.currentData() or "")
+        self.video_model.blockSignals(True)
+        self.video_model.clear()
+        self.video_model.addItem("Seedance 2.0 mini", "doubao-seedance-2-0-mini-260615")
+        self.video_model.addItem("Seedance 2.0 Fast", "doubao-seedance-2-0-fast")
+        try:
+            items = self.gateway.video_models()
+        except Exception:
+            items = []
+        seen_values = {"doubao-seedance-2-0-mini-260615", "doubao-seedance-2-0-fast"}
+        for item in items:
+            label = str(item.get("label") or "视频模型").strip()
+            value = str(item.get("value") or "").strip()
+            if not value or value in seen_values:
+                continue
+            seen_values.add(value)
+            self.video_model.addItem(label, value)
+        for index in range(self.video_model.count()):
+            if str(self.video_model.itemData(index) or "") == current_value:
+                self.video_model.setCurrentIndex(index)
+                break
+        self.video_model.blockSignals(False)
+
+    def sync_video_models(self) -> None:
+        if not self.is_admin_user():
+            return
+        try:
+            result = self.gateway.sync_buming_video_models()
+            self.refresh_video_models()
+            QMessageBox.information(self, "同步完成", f"已同步 {int(result.get('synced') or 0)} 个新视频模型。")
+        except Exception as exc:
+            QMessageBox.warning(self, "同步失败", str(exc))
 
     def strategy_label(self) -> str:
         return self.video_strategy.currentText().strip() or "自动稳妥"
@@ -1977,7 +1877,8 @@ class VideoGenerationPage(Page):
             QMessageBox.information(self, "提示", "请先上传至少 1 张产品图，再生成视频。")
             return
         mode = "image_to_video"
-        payload = {"generation_mode": mode, "model_name": str(self.video_model.currentData() or self.video_model.currentText()).strip()}
+        model_name = "auto" if not self.is_admin_user() else str(self.video_model.currentData() or self.video_model.currentText()).strip()
+        payload = {"generation_mode": mode, "model_name": model_name}
         self.generate_status.setText("正在提交给视频模型。系统会先生成分镜画面，请稍候。")
         self.set_video_progress(True, "正在调用视频模型，任务创建中...")
         self.set_video_buttons_busy(True)
@@ -2639,7 +2540,7 @@ class AdminUsersPage(Page):
         self.layout.addWidget(action_bar)
         self.user_table = table(["ID", "账号", "姓名", "角色", "状态", "积分", "最后登录"])
         self.layout.addWidget(self.user_table)
-        self.refresh()
+        self.items: list[dict[str, Any]] = []
 
     def activate(self) -> None:
         self.refresh()
@@ -2779,7 +2680,7 @@ class SimpleConfigPage(Page):
         if config_type == "third" and gateway:
             self.threshold_panel = BusinessThresholdPanel(gateway)
             self.layout.addWidget(self.threshold_panel)
-        self.refresh()
+        self.items: list[dict[str, Any]] = []
 
     def activate(self) -> None:
         self.refresh()
@@ -2823,8 +2724,8 @@ class SimpleConfigPage(Page):
     def model_fields(self) -> list[tuple[str, str, str]]:
         return [
             ("config_name", "配置名称", "DeepSeek 选品模型"),
-            ("provider", "服务商", "doubao/openai/deepseek/qwen/custom"),
-            ("model_type", "模型类型", "general/text_translation/product_vision/image_translation/image_generation"),
+            ("provider", "服务商", "buming_ai/doubao/openai/deepseek/qwen/custom"),
+            ("model_type", "模型类型", "general/text_translation/product_vision/image_translation/image_generation/video_generation"),
             ("base_url", "Base URL", "https://api.deepseek.com/v1"),
             ("api_key_encrypted", "API Key", "DeepSeek API Key"),
             ("model_name", "模型名称", "deepseek-chat"),
@@ -2837,7 +2738,7 @@ class SimpleConfigPage(Page):
     def third_fields(self) -> list[tuple[str, str, str]]:
         return [
             ("config_name", "配置名称", "1688 寻源 API"),
-            ("service_type", "服务类型", "miaoshou_api/fastmoss/1688_api/custom_api/oxylabs/volcengine-mediakit"),
+            ("service_type", "服务类型", "buming_ai/miaoshou_api/fastmoss/1688_api/custom_api/volcengine-mediakit"),
             ("api_base_url", "API 地址", "https://example.com"),
             ("access_key_encrypted", "Access Key", "API Key 或 Bearer Token"),
             ("secret_key_encrypted", "Secret Key", "可选"),
@@ -3080,12 +2981,17 @@ class ModelTestPage(Page):
         self.result_edit.setLineWrapMode(QTextEdit.WidgetWidth)
         self.result_edit.setMinimumHeight(420)
         self.layout.addWidget(self.result_edit, 1)
-        self.refresh_models()
+        self.items: list[dict[str, Any]] = []
 
     def activate(self) -> None:
         self.refresh_models()
 
     def refresh_models(self) -> None:
+        if str((self.gateway.user or {}).get("role") or "").lower() != "admin":
+            self.items = []
+            self.model_combo.clear()
+            self.status_label.setText("模型测试仅管理员可用。")
+            return
         try:
             self.items = self.gateway.model_configs()
         except Exception as exc:
@@ -5811,14 +5717,14 @@ class AutoPublishPage(Page):
         self.layout.addWidget(
             make_title(
                 "自动上架",
-                "1688 链接进入妙手开放平台采集箱，标题、规格、产品描述、图片翻译与智能抹除均可按需勾选。",
+                "配置店铺后，填写链接并开始执行。",
             )
         )
 
         self.offer_url_input = QTextEdit()
         self.offer_url_input.setObjectName("AutoPublishInput")
         self.offer_url_input.setPlaceholderText(
-            "粘贴 1688 商品链接，每行一个。\n也可以只粘贴 offerId，例如 123456789012。"
+            "粘贴 1688 商品链接，每行一个。"
         )
         self.offer_url_input.setFixedHeight(112)
         self.offer_url_input.textChanged.connect(self.schedule_offer_meta_sync)
@@ -5949,7 +5855,7 @@ class AutoPublishPage(Page):
         self.offer_meta_layout = QVBoxLayout(self.offer_meta_content)
         self.offer_meta_layout.setContentsMargins(0, 0, 0, 0)
         self.offer_meta_layout.setSpacing(8)
-        meta_empty = QLabel("识别到链接后，这里会出现每个商品的重量和尺寸。默认 500g / 10 x 10 x 40cm。")
+        meta_empty = QLabel("识别到链接后，这里会显示每个商品的重量和尺寸。")
         meta_empty.setObjectName("AutoPublishHint")
         meta_empty.setWordWrap(True)
         self.offer_meta_layout.addWidget(meta_empty)
@@ -6030,7 +5936,7 @@ class AutoPublishPage(Page):
         removal_row.addStretch(1)
         workspace_layout.addLayout(removal_row, 5, 0)
 
-        self.shop_info_label = QLabel("店铺信息：请先在上方填写妙手 AppKey / AppSecret，再刷新店铺。")
+        self.shop_info_label = QLabel("店铺信息：请先填写妙手 AppKey / AppSecret，再刷新店铺。")
         self.shop_info_label.setObjectName("AutoPublishShopInfo")
         self.shop_info_label.setWordWrap(True)
         workspace_layout.addWidget(self.shop_info_label, 6, 0)
@@ -6079,7 +5985,7 @@ class AutoPublishPage(Page):
         usage_title.setObjectName("CardTitle")
         usage_head.addWidget(usage_title)
         usage_head.addStretch()
-        self.api_usage_summary = QLabel("等待任务完成后显示调用次数、图片数量和 Token 用量。")
+        self.api_usage_summary = QLabel("任务完成后显示调用次数、图片数量和 Token 用量。")
         self.api_usage_summary.setObjectName("AutoPublishHint")
         self.api_usage_summary.setWordWrap(True)
         self.api_usage_detail = QLabel("暂无数据")
@@ -6101,7 +6007,7 @@ class AutoPublishPage(Page):
         self.result = QTextEdit()
         self.result.setReadOnly(True)
         self.result.setMinimumHeight(170)
-        self.result.setPlaceholderText("任务执行结果会显示在这里。")
+        self.result.setPlaceholderText("任务结果会显示在这里。")
         result_layout.addWidget(result_title)
         result_layout.addWidget(self.result)
         self.layout.addWidget(result_card, 1)
@@ -6110,7 +6016,7 @@ class AutoPublishPage(Page):
 
     def activate(self) -> None:
         if not self.loaded:
-            self.result.setPlaceholderText("粘贴 1688 商品链接后点击开始上架。长任务会在后台执行，窗口不会卡住。")
+            self.result.setPlaceholderText("粘贴 1688 商品链接后点击开始上架。")
             self.loaded = True
         self.update_summary_state()
         if not self.miaoshou_shop_options:
@@ -6256,6 +6162,8 @@ class AutoPublishPage(Page):
         direct_credentials = self._collect_miaoshou_credentials_from_inputs()
         if direct_credentials:
             return direct_credentials
+        if str((self.gateway.user or {}).get("role") or "").lower() != "admin":
+            return {}
         for config in self.gateway.third_party_configs():
             if str(config.get("service_type") or "").strip() != "miaoshou_api":
                 continue
