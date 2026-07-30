@@ -93,14 +93,14 @@ MENU_ICON_MAP = {
     "用户管理": "menu_users.svg",
     "模型配置": "menu_model.svg",
     "第三方 API": "menu_api.svg",
-    "选品属性": "menu_attributes.svg",
+    "业务配置": "menu_attributes.svg",
     "版本更新": "menu_settings.svg",
 }
 
 MENU_ROLE_ACCESS = {
     "admin": None,
     "teacher": {
-        "数据看板", "个人中心", "关于益行", "教师看板", "选品属性", "新品榜单", "智能选品", "视频生成",
+        "数据看板", "个人中心", "关于益行", "教师看板", "新品榜单", "智能选品", "视频生成",
     },
     "student": {
         "智能选品", "选品库", "新品榜单", "采集箱", "店铺管理", "关于益行", "个人中心", "视频生成",
@@ -391,12 +391,13 @@ class DataGateway:
     def hot_products(self) -> list[dict[str, Any]]:
         if not self.user:
             return []
-        return self.client.get("/api/products/hot")
+        return self.client.get("/api/teacher/products")
 
-    def daily_recommendations(self, region: str = "JP", list_type: str = "new", category: str = "全部", start_date: str = "", end_date: str = "") -> list[dict[str, Any]]:
+    def daily_recommendations(self, region: str = "JP", list_type: str = "new", category: str = "全部", start_date: str = "", end_date: str = "", page: int = 1, page_size: int = 50, paged: bool = False) -> Any:
         if not self.user:
-            return []
-        return self.client.get(f"/api/daily-recommendations?region={region}&list_type={list_type}&category={category}&start_date={start_date}&end_date={end_date}")
+            return {"items": [], "has_more": False} if paged else []
+        suffix = f"&page={page}&pagesize={page_size}&paged=true" if paged else ""
+        return self.client.get(f"/api/daily-recommendations?region={region}&list_type={list_type}&category={category}&start_date={start_date}&end_date={end_date}{suffix}")
 
     def favorites(self) -> list[dict[str, Any]]:
         if not self.user:
@@ -577,6 +578,27 @@ class DataGateway:
 
     def update_system_settings(self, values: dict[str, str]) -> list[dict[str, Any]]:
         return self.client.put("/api/admin/system-settings", {"values": values})
+
+    def regions(self) -> list[dict[str, Any]]:
+        if not self.user:
+            return []
+        return self.client.get("/api/regions")
+
+    def admin_regions(self) -> list[dict[str, Any]]:
+        if not self.user:
+            return []
+        return self.client.get("/api/admin/regions")
+
+    def save_region(self, payload: dict[str, Any], region_id: int | None = None) -> dict[str, Any]:
+        if region_id:
+            return self.client.put(f"/api/admin/regions/{region_id}", payload)
+        return self.client.post("/api/admin/regions", payload)
+
+    def set_region_status(self, region_id: int, status: int) -> dict[str, Any]:
+        return self.client.patch(f"/api/admin/regions/{region_id}/status", {"status": status})
+
+    def delete_region(self, region_id: int) -> dict[str, Any]:
+        return self.client.delete(f"/api/admin/regions/{region_id}")
 
     def queue_pending_derivations(self, limit: int | None = None, min_derived_count: int | None = None) -> dict[str, Any]:
         if not self.user:
@@ -1380,12 +1402,15 @@ class MainWindow(QMainWindow):
         user_head.setSpacing(9)
         user_text = QVBoxLayout()
         user_text.setSpacing(2)
-        user_text.addWidget(self.user_name)
+        user_name_row = QHBoxLayout()
+        user_name_row.setSpacing(8)
+        user_name_row.addWidget(self.user_name)
+        user_name_row.addWidget(self.user_status, 1, Qt.AlignRight | Qt.AlignVCenter)
+        user_text.addLayout(user_name_row)
         user_text.addWidget(self.user_role)
         user_head.addWidget(self.user_avatar)
         user_head.addLayout(user_text, 1)
         user_layout.addLayout(user_head)
-        user_layout.addWidget(self.user_status)
         user_layout.addWidget(self.login_button)
 
         sidebar_layout.addWidget(brand_box)
@@ -1440,7 +1465,7 @@ class MainWindow(QMainWindow):
         self.add_page("数据看板", DataDashboardPage(self.gateway), "07_第三方API.ico")
         self.add_nav_separator()
         self.add_page("个人中心", PersonalCenterPage(self.gateway, self.apply_theme, self.apply_font), "menu_settings.svg")
-        about_page = InfoPage("关于益行", "益行跨境 AI 平台", f"益行跨境 AI 平台专注 TikTok 日本站跨境选品、商品分析、1688 货源匹配和店铺运营。\n\n当前版本：{CURRENT_APP_VERSION}\n服务地址：" + self.gateway.client.base_url)
+        about_page = InfoPage("关于益行", "益行跨境 AI 平台", f"益行跨境 AI 平台专注 TikTok 日本站跨境选品、商品分析、1688 货源匹配和店铺运营。\n\n当前版本：{CURRENT_APP_VERSION}")
         about_page.update_button.clicked.connect(lambda: self.check_for_updates(manual=True))
         self.add_page("关于益行", about_page, "menu_settings.svg")
         self.add_nav_separator()
@@ -1450,12 +1475,11 @@ class MainWindow(QMainWindow):
         self.add_page("模型配置", SimpleConfigPage("模型配置", self.gateway.model_configs, ["配置名称", "服务商", "类型", "Base URL", "模型", "Key", "使用中"], self.gateway, "model"), "04_模型配置.ico")
         self.add_page("模型测试", ModelTestPage(self.gateway), "04_模型配置.ico")
         self.add_page("第三方 API", SimpleConfigPage("第三方 API 配置", self.gateway.third_party_configs, ["配置名称", "服务类型", "状态"], self.gateway, "third"), "07_第三方API.ico")
-        self.add_page("选品属性", AttributePage(self.gateway), "08_选品属性.ico")
+        self.add_page("业务配置", BusinessConfigPage(self.gateway), "08_选品属性.ico")
         self.add_page("版本更新", VersionUpdatePage(self.gateway), "menu_settings.svg")
 
     def update_login_status(self) -> None:
         if self.user:
-            api_host = self.gateway.client.base_url.replace("http://", "").replace("https://", "")
             role_map = {"admin": "系统管理员", "teacher": "选品老师", "student": "学生账号"}
             real_name = str(self.user.get("real_name") or self.user.get("username") or "用户")
             role = str(self.user.get("role") or "")
@@ -1463,7 +1487,7 @@ class MainWindow(QMainWindow):
             self.user_avatar.setText(real_name[:1].upper())
             self.user_name.setText(real_name)
             self.user_role.setText(role_map.get(role, role or "已登录"))
-            self.user_status.setText(f"积分 {credits} · {api_host}")
+            self.user_status.setText(f"积分 {credits}")
             self.login_button.setText("退出登录")
             self.setWindowTitle(f"益行跨境AI平台 - {self.user.get('real_name') or '系统管理员'}")
             self.apply_menu_permissions()
@@ -2684,7 +2708,10 @@ class DataDashboardPage(Page):
         pie_panel.setObjectName("Panel")
         pie_layout = QVBoxLayout(pie_panel)
         pie_layout.setContentsMargins(16, 14, 16, 14)
-        pie_layout.addWidget(QLabel("业务环节分布"))
+        pie_layout.addWidget(QLabel("积分情况"))
+        self.credit_summary = QLabel("充值 0 · 使用 0 · 当前余额 0")
+        self.credit_summary.setObjectName("Muted")
+        pie_layout.addWidget(self.credit_summary)
         self.pie_chart = PieChart()
         pie_layout.addWidget(self.pie_chart, 1)
         chart_row.addWidget(pie_panel, 1)
@@ -2710,8 +2737,9 @@ class DataDashboardPage(Page):
             status = {}
         fastmoss = status.get("fastmoss") or {}
         derivation = status.get("derivation") or {}
-        supplier = status.get("supplier") or {}
+        supplier = status.get("supplier_1688") or {}
         review = status.get("review") or {}
+        credits = status.get("credits") or {}
         values = [
             ("新品商品", str(fastmoss.get("product_count") or 0), "FastMoss 入库"),
             ("衍生品", str(derivation.get("derived_count") or 0), "AI 生成"),
@@ -2727,11 +2755,13 @@ class DataDashboardPage(Page):
         for index in range(4):
             self.metrics.setColumnStretch(index, 1)
         self.pie_chart.set_data([
-            ("新品商品", int(fastmoss.get("product_count") or 0), "#4e75f6"),
-            ("衍生品", int(derivation.get("derived_count") or 0), "#16a085"),
-            ("1688 匹配", int(supplier.get("matched_count") or 0), "#f59e0b"),
-            ("审核记录", int(review.get("review_record_count") or 0), "#ef6461"),
+            ("已充值", int(credits.get("recharged") or 0), "#4e75f6"),
+            ("已使用", int(credits.get("consumed") or 0), "#ef6461"),
+            ("当前余额", int(credits.get("total_balance") or 0), "#16a085"),
         ])
+        self.credit_summary.setText(
+            f"充值 {int(credits.get('recharged') or 0)} · 使用 {int(credits.get('consumed') or 0)} · 当前余额 {int(credits.get('total_balance') or 0)} · 用户 {int(credits.get('user_count') or 0)}"
+        )
         radar_values = [7.0] * 8
         try:
             derived_items = self.gateway.recommended_derived_products(1)
@@ -2801,8 +2831,8 @@ class PersonalCenterPage(Page):
         password_layout.addWidget(self.confirm_password)
         password_button = QPushButton("保存新密码")
         password_button.clicked.connect(self.save_password)
-        password_layout.addWidget(password_button)
         password_layout.addStretch()
+        password_layout.addWidget(password_button)
         body.addWidget(password_panel, 1)
 
         recharge_panel = QFrame()
@@ -2819,13 +2849,13 @@ class PersonalCenterPage(Page):
         recharge_layout.addWidget(recharge_hint)
         recharge_button = QPushButton("扫码联系管理员")
         recharge_button.clicked.connect(self.show_recharge_qr)
-        recharge_layout.addWidget(recharge_button)
         recharge_layout.addWidget(QLabel("充值记录"))
         record_hint = QLabel("充值记录功能已预留，后续接入微信支付或管理员审核后会显示明细。")
         record_hint.setObjectName("Muted")
         record_hint.setWordWrap(True)
         recharge_layout.addWidget(record_hint)
         recharge_layout.addStretch()
+        recharge_layout.addWidget(recharge_button)
         body.addWidget(recharge_panel, 1)
         self.layout.addLayout(body)
         settings_panel = ThemeSettingsPanel(on_theme_change or (lambda _: None), on_font_change)
@@ -3765,10 +3795,11 @@ class ModelTestPage(Page):
 
 
 class AttributePage(Page):
-    def __init__(self, gateway: DataGateway) -> None:
+    def __init__(self, gateway: DataGateway, show_title: bool = True, include_constants: bool = False) -> None:
         super().__init__()
         self.gateway = gateway
-        self.layout.addWidget(make_title("选品属性", "这些属性既用于展示衍生关系，也用于老师拒绝原因和后期权重计算。"))
+        if show_title:
+            self.layout.addWidget(make_title("选品属性", "这些属性既用于展示衍生关系，也用于老师拒绝原因和后期权重计算。"))
         action_bar = QFrame()
         action_bar.setObjectName("Toolbar")
         actions = QHBoxLayout(action_bar)
@@ -3790,7 +3821,7 @@ class AttributePage(Page):
         self.attr_table = table(["ID", "属性", "类型", "当前权重", "状态"])
         self.layout.addWidget(self.attr_table)
         self.constant_panel = None
-        if self.gateway.user and self.gateway.user.get("role") == "admin":
+        if include_constants and self.gateway.user and self.gateway.user.get("role") == "admin":
             self.constant_panel = PromptConstantPanel(self.gateway)
             self.layout.addWidget(self.constant_panel)
         self.refresh()
@@ -4065,6 +4096,153 @@ class BusinessThresholdPanel(QFrame):
             QMessageBox.warning(self, "保存失败", str(exc))
 
 
+class RegionConfigPanel(QFrame):
+    """Admin CRUD for the regions visible in ranking and library filters."""
+
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.items: list[dict[str, Any]] = []
+        self.setObjectName("Card")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+        heading = QHBoxLayout()
+        title = QLabel("国家和地区")
+        title.setObjectName("CardTitle")
+        hint = QLabel("只显示已启用地区；选品库和新品榜单会同步使用这里的配置。")
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        heading.addWidget(title)
+        heading.addWidget(hint)
+        heading.addStretch()
+        add = QPushButton("新增地区")
+        edit = QPushButton("编辑选中")
+        toggle = QPushButton("启用/禁用")
+        delete_button = QPushButton("删除选中")
+        add.clicked.connect(self.add_region)
+        edit.clicked.connect(self.edit_region)
+        toggle.clicked.connect(self.toggle_region)
+        delete_button.clicked.connect(self.delete_region)
+        for button in (add, edit, toggle, delete_button):
+            heading.addWidget(button)
+        layout.addLayout(heading)
+        self.table = table(["ID", "国家/地区", "代码", "排序", "状态"])
+        self.table.setMinimumHeight(180)
+        layout.addWidget(self.table)
+        self.refresh()
+
+    def refresh(self) -> None:
+        try:
+            self.items = self.gateway.admin_regions()
+        except Exception as exc:
+            self.items = []
+            QMessageBox.warning(self, "读取失败", str(exc))
+        fill_table(
+            self.table,
+            [[item.get("id"), item.get("region_name"), item.get("region_code"), item.get("sort_order"), "启用" if int(item.get("status", 1)) else "禁用"] for item in self.items],
+        )
+
+    def selected_item(self) -> dict[str, Any] | None:
+        row = self.table.currentRow()
+        return self.items[row] if 0 <= row < len(self.items) else None
+
+    @staticmethod
+    def fields() -> list[tuple[str, str, str]]:
+        return [("region_name", "国家/地区名称", "日本"), ("region_code", "地区代码", "JP"), ("sort_order", "排序", "0"), ("status", "状态", "1/0")]
+
+    @staticmethod
+    def normalize(data: dict[str, str]) -> dict[str, Any]:
+        data["region_code"] = data.get("region_code", "").strip().upper()
+        data["sort_order"] = int(data.get("sort_order") or 0)
+        data["status"] = int(data.get("status") or 1)
+        return data
+
+    def add_region(self) -> None:
+        dialog = FormDialog("新增国家和地区", self.fields(), parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            try:
+                self.gateway.save_region(self.normalize(dialog.data()))
+                self.refresh()
+            except Exception as exc:
+                QMessageBox.warning(self, "保存失败", str(exc))
+
+    def edit_region(self) -> None:
+        item = self.selected_item()
+        if not item:
+            QMessageBox.information(self, "提示", "请先选择国家/地区。")
+            return
+        dialog = FormDialog("编辑国家和地区", self.fields(), item, self)
+        if dialog.exec() == QDialog.Accepted:
+            try:
+                self.gateway.save_region(self.normalize(dialog.data()), int(item["id"]))
+                self.refresh()
+            except Exception as exc:
+                QMessageBox.warning(self, "保存失败", str(exc))
+
+    def toggle_region(self) -> None:
+        item = self.selected_item()
+        if not item:
+            QMessageBox.information(self, "提示", "请先选择国家/地区。")
+            return
+        try:
+            self.gateway.set_region_status(int(item["id"]), 0 if int(item.get("status", 1)) else 1)
+            self.refresh()
+        except Exception as exc:
+            QMessageBox.warning(self, "状态更新失败", str(exc))
+
+    def delete_region(self) -> None:
+        item = self.selected_item()
+        if not item:
+            QMessageBox.information(self, "提示", "请先选择国家/地区。")
+            return
+        if QMessageBox.question(self, "确认删除", f"确定删除地区「{item.get('region_name', '')}」吗？") != QMessageBox.Yes:
+            return
+        try:
+            self.gateway.delete_region(int(item["id"]))
+            self.refresh()
+        except Exception as exc:
+            QMessageBox.warning(self, "删除失败", str(exc))
+
+
+class BusinessConfigPage(Page):
+    """Admin workspace for the four groups of business configuration."""
+
+    def __init__(self, gateway: DataGateway) -> None:
+        super().__init__()
+        self.gateway = gateway
+        self.layout.setContentsMargins(24, 22, 24, 22)
+        self.layout.setSpacing(14)
+        self.layout.addWidget(make_title("业务配置", "统一管理选品属性、模型常量词表、国家地区和业务阈值。"))
+
+        scroll = QScrollArea()
+        scroll.setObjectName("ConfigScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 12, 18)
+        content_layout.setSpacing(14)
+
+        self.attribute_page = AttributePage(gateway, show_title=False, include_constants=False)
+        content_layout.addWidget(self.attribute_page)
+        self.constant_panel = PromptConstantPanel(gateway)
+        content_layout.addWidget(self.constant_panel)
+        self.region_panel = RegionConfigPanel(gateway)
+        content_layout.addWidget(self.region_panel)
+        self.threshold_panel = BusinessThresholdPanel(gateway)
+        content_layout.addWidget(self.threshold_panel)
+        content_layout.addStretch(1)
+        scroll.setWidget(content)
+        self.layout.addWidget(scroll, 1)
+
+    def activate(self) -> None:
+        self.attribute_page.refresh()
+        self.constant_panel.refresh()
+        self.region_panel.refresh()
+        self.threshold_panel.refresh()
+
+
 class ThemePage(Page):
     def __init__(self, on_theme_change, on_font_change=None, gateway: DataGateway | None = None) -> None:
         super().__init__()
@@ -4184,13 +4362,13 @@ def format_region_price(region: Any, value: Any, currency: Any = "") -> str:
 
 def product_source_type(item: dict[str, Any]) -> str:
     snapshot = item.get("product_snapshot") if isinstance(item.get("product_snapshot"), dict) else {}
+    source = str(item.get("source_type") or snapshot.get("source_type") or "").lower()
+    if source in {"derived", "new_product", "ai_search"}:
+        return source
     if item.get("search_query") or snapshot.get("search_query"):
         return "ai_search"
     if item.get("list_type") or snapshot.get("list_type"):
         return "new_product"
-    source = str(item.get("source_type") or "").lower()
-    if source in {"derived", "new_product", "ai_search"}:
-        return source
     return "derived"
 
 
@@ -5294,11 +5472,20 @@ class SelectionLibraryPage(Page):
 
         region_row = QHBoxLayout()
         region_row.setSpacing(4)
+        self.library_region_row = region_row
         region_label = QLabel("国家/地区：")
         region_label.setObjectName("RankFilterLabel")
         region_row.addWidget(region_label)
         self.library_region_buttons: list[QPushButton] = []
-        library_regions = (("全部", "ALL"), ("美国", "US"), ("英国", "GB"), ("东南亚", "SEA"), ("日本", "JP"))
+        try:
+            configured_regions = self.gateway.regions()
+        except Exception:
+            configured_regions = []
+        library_regions = [("全部", "ALL")] + [
+            (str(item.get("region_name") or item.get("region_code")), str(item.get("region_code") or "").upper())
+            for item in configured_regions
+            if str(item.get("region_code") or "").strip()
+        ]
         for label, code in library_regions:
             add_library_option(region_row, label, code, self.library_region_buttons)
         self.library_region_buttons[0].setChecked(True)
@@ -5330,6 +5517,8 @@ class SelectionLibraryPage(Page):
         scroll.setObjectName("StudioScroll")
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.product_scroll = scroll
+        scroll.verticalScrollBar().valueChanged.connect(self._on_product_scroll)
         content = QWidget()
         content.setObjectName("StudioGrid")
         self.product_grid = QGridLayout(content)
@@ -5412,9 +5601,44 @@ class SelectionLibraryPage(Page):
 
     def activate(self) -> None:
         # 每次进入选品库都重新读取，确保刚加入的商品立即可见。
+        self.refresh_library_regions()
         self.load_favorites()
         self.refresh()
         self.loaded = True
+
+    def _on_product_scroll(self, _value: int) -> None:
+        """Overridden by the ranking page for incremental loading."""
+        return
+
+    def refresh_library_regions(self) -> None:
+        try:
+            configured_regions = self.gateway.regions()
+        except Exception:
+            return
+        current = self._selected_library_value(self.library_region_buttons, "ALL")
+        while self.library_region_row.count() > 1:
+            item = self.library_region_row.takeAt(1)
+            if item.widget():
+                item.widget().deleteLater()
+        self.library_region_buttons = []
+        options = [("全部", "ALL")] + [
+            (str(item.get("region_name") or item.get("region_code")), str(item.get("region_code") or "").upper())
+            for item in configured_regions
+            if str(item.get("region_code") or "").strip()
+        ]
+        for label, code in options:
+            button = QPushButton(label)
+            button.setObjectName("RankFilterOption")
+            button.setCheckable(True)
+            button.setAutoExclusive(False)
+            button.setFocusPolicy(Qt.NoFocus)
+            button.setProperty("filter_value", code)
+            button.clicked.connect(lambda checked=False, current_button=button: self._select_library_filter(current_button, self.library_region_buttons))
+            self.library_region_buttons.append(button)
+            self.library_region_row.addWidget(button)
+        self.library_region_row.addStretch()
+        selected = next((button for button in self.library_region_buttons if str(button.property("filter_value")) == current), None)
+        (selected or self.library_region_buttons[0]).setChecked(True)
 
     def force_refresh(self) -> None:
         try:
@@ -5669,6 +5893,12 @@ class NewProductsPage(SelectionLibraryPage):
 
     def __init__(self, gateway: DataGateway) -> None:
         super().__init__(gateway)
+        self.rank_page_size = 50
+        self.rank_page = 1
+        self.rank_has_more = False
+        self.rank_loading = False
+        self.rank_items: list[dict[str, Any]] = []
+        self.library_items: list[dict[str, Any]] = []
         filter_panel = QFrame()
         filter_panel.setObjectName("RankFilterPanel")
         filter_layout = QVBoxLayout(filter_panel)
@@ -5720,23 +5950,29 @@ class NewProductsPage(SelectionLibraryPage):
 
         region_row = QHBoxLayout()
         region_row.setSpacing(4)
+        self.region_row = region_row
         region_label = QLabel("国家/地区：")
         region_label.setObjectName("RankFilterLabel")
         region_row.addWidget(region_label)
         self.region_options: list[QPushButton] = []
-        region_values = (
-            ("全部", "ALL"), ("美国", "US"), ("印度尼西亚", "ID"), ("英国", "GB"),
-            ("越南", "VN"), ("泰国", "TH"), ("马来西亚", "MY"), ("菲律宾", "PH"),
-            ("西班牙", "ES"), ("墨西哥", "MX"), ("德国", "DE"), ("法国", "FR"),
-            ("意大利", "IT"), ("巴西", "BR"), ("日本", "JP"), ("新加坡", "SG"),
-        )
+        try:
+            configured_regions = self.gateway.regions()
+        except Exception:
+            configured_regions = []
+        region_values = [("全部", "ALL")] + [
+            (str(item.get("region_name") or item.get("region_code")), str(item.get("region_code") or "").upper())
+            for item in configured_regions
+            if str(item.get("region_code") or "").strip()
+        ]
         self.region_buttons: list[QPushButton] = []
         for label, code in region_values:
             button = add_filter_option(region_row, label, code, self.region_buttons, self._region_changed)
             button.setProperty("filter_value", code)
-        self.region_buttons[0].setChecked(False)
-        self.region_buttons[1].setChecked(False)
-        self.region_buttons[14].setChecked(True)
+        self.region_buttons[0].setChecked(True)
+        jp_button = next((button for button in self.region_buttons if button.property("filter_value") == "JP"), None)
+        if jp_button:
+            self.region_buttons[0].setChecked(False)
+            jp_button.setChecked(True)
         region_row.addStretch()
         filter_layout.addLayout(region_row)
 
@@ -5771,7 +6007,9 @@ class NewProductsPage(SelectionLibraryPage):
         self.report_panel.hide()
         self.list_title.hide()
         for label in self.findChildren(QLabel):
-            if label.text() == "选品库":
+            if label.text() == "·":
+                label.hide()
+            elif label.text() == "选品库":
                 self.page_title = label
                 label.hide()
             elif label.text() == "查看当前账号最近 7 天的 AI 搜索选品结果":
@@ -5792,30 +6030,105 @@ class NewProductsPage(SelectionLibraryPage):
         self.region_code = current_region
         self.category_code = current_category
         self.page_title.setText(rank_names.get(current_rank, "榜单商品"))
+        self.rank_page = 1
+        self.rank_has_more = False
+        self.rank_items = []
+        self.rank_loading = False
         while self.product_grid.count():
             child = self.product_grid.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
         self.load_favorites()
-        items = self.gateway.daily_recommendations(current_region, current_rank, current_category, start_date, end_date)
-        if not items:
+        try:
+            self.library_items = self.gateway.user_search_results()
+        except Exception:
+            self.library_items = []
+        self._load_rank_page(reset=True)
+
+    def _load_rank_page(self, reset: bool = False) -> None:
+        if self.rank_loading or (not reset and not self.rank_has_more):
+            return
+        self.rank_loading = True
+        page = 1 if reset else self.rank_page + 1
+        items_data = self.gateway.daily_recommendations(
+            self.region_code,
+            self.rank_code,
+            self.category_code,
+            self.start_date_edit.date().toString("yyyy-MM-dd"),
+            self.end_date_edit.date().toString("yyyy-MM-dd"),
+            page=page,
+            page_size=self.rank_page_size,
+            paged=True,
+        )
+        payload = items_data if isinstance(items_data, dict) else {"items": items_data, "has_more": False}
+        items = list(payload.get("items") or [])
+        self.rank_page = int(payload.get("page") or page)
+        self.rank_has_more = bool(payload.get("has_more"))
+        self.rank_items.extend(items)
+        if reset and not items:
             empty = QLabel("暂无新品榜单数据，请先同步 FastMoss。")
             empty.setObjectName("Muted")
             self.product_grid.addWidget(empty, 0, 0)
+            self.rank_loading = False
             return
-        for index, item in enumerate(items):
+        for index, item in enumerate(items, start=len(self.rank_items) - len(items)):
             can_derive = str(item.get("region") or "").upper() == "JP" and str(item.get("list_type") or "").lower() == "new"
+            already_collected = any(
+                str(saved.get("title") or "") == str(item.get("title") or "")
+                and str(saved.get("image_url") or "") == str(item.get("image_url") or "")
+                for saved in self.library_items
+            )
             self.product_grid.addWidget(
-                TeacherProductCard(item, self.open_derivable_product, can_derive=can_derive, on_collect=self.add_to_library),
+                TeacherProductCard(item, self.open_derivable_product, can_derive=can_derive, on_collect=self.add_to_library, already_collected=already_collected),
                 index // 6,
                 index % 6,
             )
         self.product_grid.setColumnStretch(8, 1)
+        self.rank_loading = False
+
+    def _on_product_scroll(self, value: int) -> None:
+        scrollbar = self.product_scroll.verticalScrollBar()
+        if scrollbar.maximum() > 0 and value >= scrollbar.maximum() - 80:
+            self._load_rank_page()
 
     def open_derivable_product(self, product: dict[str, Any]) -> None:
         dialog = DerivedDialog(self.gateway, product, [product], 0, self, review_mode=False)
         dialog.exec()
         self.refresh()
+
+    def activate(self) -> None:
+        self.refresh_rank_regions()
+        super().activate()
+
+    def refresh_rank_regions(self) -> None:
+        try:
+            configured_regions = self.gateway.regions()
+        except Exception:
+            return
+        current = self._selected_value(self.region_buttons, "ALL")
+        while self.region_row.count() > 1:
+            item = self.region_row.takeAt(1)
+            if item.widget():
+                item.widget().deleteLater()
+        self.region_buttons = []
+        options = [("全部", "ALL")] + [
+            (str(item.get("region_name") or item.get("region_code")), str(item.get("region_code") or "").upper())
+            for item in configured_regions
+            if str(item.get("region_code") or "").strip()
+        ]
+        for label, code in options:
+            button = QPushButton(label)
+            button.setObjectName("RankFilterOption")
+            button.setCheckable(True)
+            button.setAutoExclusive(False)
+            button.setFocusPolicy(Qt.NoFocus)
+            button.setProperty("filter_value", code)
+            button.clicked.connect(lambda checked=False, current_button=button: self._select_filter_option(current_button, self.region_buttons, self._region_changed))
+            self.region_buttons.append(button)
+            self.region_row.addWidget(button)
+        self.region_row.addStretch()
+        selected = next((button for button in self.region_buttons if str(button.property("filter_value")) == current), None)
+        (selected or self.region_buttons[0]).setChecked(True)
 
     def add_to_library(self, product: dict[str, Any], button: QPushButton | None = None) -> None:
         try:
@@ -6532,7 +6845,7 @@ class StudioSelectionPage(Page):
 
 
 class TeacherProductCard(QFrame):
-    def __init__(self, product: dict[str, Any], on_open, can_derive: bool = True, on_collect=None) -> None:
+    def __init__(self, product: dict[str, Any], on_open, can_derive: bool = True, on_collect=None, already_collected: bool = False) -> None:
         super().__init__()
         self.product = product
         self.on_open = on_open
@@ -6588,6 +6901,9 @@ class TeacherProductCard(QFrame):
             action_row.setSpacing(6)
             action_row.addWidget(open_button, 1)
             collect_button = QPushButton("加入选品库")
+            if already_collected:
+                collect_button.setText("已加入选品库")
+                collect_button.setEnabled(False)
             collect_button.setObjectName("ProductCollect")
             collect_button.setMinimumHeight(30)
             collect_button.setMaximumHeight(32)
@@ -8982,6 +9298,11 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #Card {
             background: $panel; border: 1px solid $border; border-radius: 12px;
         }
+        #RegionChip {
+            background: $tag; color: $tag_text; border: 1px solid $border;
+            border-radius: 8px; padding: 5px 10px; font-size: 13px; font-weight: 700;
+        }
+        #ConfigScroll { background: transparent; border: 0; }
         #Panel {
             background: $panel; border: 1px solid $border; border-radius: 12px;
         }

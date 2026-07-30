@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.deps import require_role
 from app.core.database import SessionLocal
 from app.core.database import get_db
-from app.models.entities import DerivedProductAttributeScore, DerivedProductRecommendation, FmProduct, TaskExecution, User, UserSearchRecommendation
+from app.models.entities import CreditTransaction, DerivedProductAttributeScore, DerivedProductRecommendation, FmProduct, TaskExecution, User, UserSearchRecommendation
 from app.services.ai_selection_task_service import run_ai_selection_task, start_ai_selection_task, user_search_result_to_dict
 from app.services.selection_derivation_service import generate_derivatives_for_products
 from app.services.fastmoss_service import prepare_product_for_derivation
@@ -58,6 +58,14 @@ def chat_selection(
     if int(db_user.credit_balance or 0) < credit_cost:
         raise HTTPException(status_code=400, detail="积分不足，请先充值")
     db_user.credit_balance = int(db_user.credit_balance or 0) - credit_cost
+    db.add(CreditTransaction(
+        user_id=db_user.id,
+        transaction_type="consume",
+        credits=-credit_cost,
+        balance_after=int(db_user.credit_balance),
+        source="ai_selection",
+        remark=f"智能选品 {requested_count} 条",
+    ))
     db.commit()
     task = start_ai_selection_task(db, message, user_id=user_id, requested_count=requested_count)
     background_tasks.add_task(run_ai_selection_task, task.id, message, user_id, credit_cost, requested_count)
@@ -155,6 +163,7 @@ def add_library_product(
         user_id=int(user.get("id") or 0),
         task_id=None,
         search_query="榜单加入选品库",
+        source_type=str(product.get("source_type") or ("new_product" if product.get("list_type") else "ai_search")),
         title=title,
         image_url=str(product.get("image_url") or ""),
         price=float(product.get("price") or 0),
@@ -270,6 +279,15 @@ def generate_full_task(
     if int(db_user.credit_balance or 0) < 10:
         raise HTTPException(status_code=400, detail="积分不足，请先到个人中心充值积分")
     db_user.credit_balance = int(db_user.credit_balance or 0) - 10
+    db.add(CreditTransaction(
+        user_id=db_user.id,
+        transaction_type="consume",
+        credits=-10,
+        balance_after=int(db_user.credit_balance),
+        source="derived_pipeline",
+        reference_id=product_id,
+        remark="开始商品衍生",
+    ))
     task = create_task(db, task_type="product_full_pipeline", task_name="单品完整衍生", trigger_source="product_click", total_count=2, input_snapshot={"product_id": product_id})
     db.commit()
     background_tasks.add_task(run_product_full_pipeline, product_id, task.id)

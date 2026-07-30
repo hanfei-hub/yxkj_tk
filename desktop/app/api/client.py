@@ -64,7 +64,10 @@ class ApiClient:
             except ValueError:
                 detail = response.text
             if response.status_code == 401:
-                detail = "Please log in again"
+                if path == "/api/auth/sms/login":
+                    detail = "验证码不正确"
+                else:
+                    detail = "Please log in again"
             message = format_error_detail(detail)
             raise ApiError(f"HTTP {response.status_code}: {message}")
         if not response.text:

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_role
 from app.core.database import BASE_DIR, get_db
 from app.core.security import hash_password
-from app.models.entities import AiPromptConstant, AppRelease, DerivedProductAttributeScore, ModelConfig, SelectionAttribute, SystemSetting, TeacherReviewRecord, ThirdPartyConfig, User, UserSearchRecommendation
+from app.models.entities import AiPromptConstant, AppRelease, CreditTransaction, DerivedProductAttributeScore, ModelConfig, SelectionAttribute, SystemSetting, TeacherReviewRecord, ThirdPartyConfig, User, UserSearchRecommendation
 from app.services.serializers import (
     attribute_to_dict,
     prompt_constant_to_dict,
@@ -321,6 +321,14 @@ def recharge_user_credits(user_id: int, payload: CreditRechargeRequest, db: Sess
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
     user.credit_balance = int(user.credit_balance or 0) + int(payload.credits)
+    db.add(CreditTransaction(
+        user_id=user.id,
+        transaction_type="recharge",
+        credits=int(payload.credits),
+        balance_after=int(user.credit_balance),
+        source="admin_recharge",
+        remark=payload.remark or "管理员充值",
+    ))
     db.commit()
     db.refresh(user)
     return {"ok": True, "credits_added": payload.credits, "user": user_to_dict(user)}

@@ -24,6 +24,19 @@ class User(Base, TimestampMixin):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class CreditTransaction(Base, TimestampMixin):
+    __tablename__ = "credit_transactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    transaction_type: Mapped[str] = mapped_column(String(32), index=True)
+    credits: Mapped[int] = mapped_column(Integer, default=0)
+    balance_after: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(64), default="")
+    reference_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    remark: Mapped[str] = mapped_column(Text, default="")
+
+
 class ModelConfig(Base, TimestampMixin):
     __tablename__ = "model_configs"
 
@@ -258,6 +271,16 @@ class SystemSetting(Base, TimestampMixin):
     value_type: Mapped[str] = mapped_column(String(32), default="int")
     min_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class RegionConfig(Base, TimestampMixin):
+    __tablename__ = "region_configs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    region_name: Mapped[str] = mapped_column(String(64))
+    region_code: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    status: Mapped[int] = mapped_column(Integer, default=1)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class SelectionAttribute(Base, TimestampMixin):
@@ -519,6 +542,7 @@ class UserSearchRecommendation(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     task_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     search_query: Mapped[str] = mapped_column(Text, default="")
+    source_type: Mapped[str] = mapped_column(String(32), default="ai_search", index=True)
     title: Mapped[str] = mapped_column(String(255))
     image_url: Mapped[str] = mapped_column(Text, default="")
     price: Mapped[float] = mapped_column(Float, default=0)

@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
-from app.models.entities import AiPromptTemplate, TaskExecution, User, UserSearchRecommendation
+from app.models.entities import AiPromptTemplate, CreditTransaction, TaskExecution, User, UserSearchRecommendation
 from app.services.ai_model_service import (
     MODEL_TYPE_PRODUCT_VISION,
     ModelCallError,
@@ -354,6 +354,15 @@ def run_ai_selection_task(task_id: int, user_message: str, user_id: int, credit_
                 user = db.get(User, user_id)
                 if user:
                     user.credit_balance = int(user.credit_balance or 0) + int(credit_cost)
+                    db.add(CreditTransaction(
+                        user_id=user.id,
+                        transaction_type="refund",
+                        credits=int(credit_cost),
+                        balance_after=int(user.credit_balance),
+                        source="ai_selection_refund",
+                        reference_id=task_id,
+                        remark="智能选品失败退回积分",
+                    ))
                     db.flush()
             finish_task(
                 db,
@@ -384,7 +393,7 @@ def user_search_result_to_dict(item: UserSearchRecommendation) -> dict[str, Any]
         "user_id": item.user_id,
         "task_id": item.task_id,
         "search_query": item.search_query,
-        "source_type": "ai_search",
+        "source_type": "new_product" if item.search_query == "榜单加入选品库" else (item.source_type or "ai_search"),
         "title": item.title,
         "image_url": item.image_url,
         "price": item.price,

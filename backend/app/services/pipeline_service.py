@@ -2,18 +2,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.entities import (
     DerivedProductRecommendation,
+    CreditTransaction,
     FastMossSyncLog,
     FmProduct,
     ModelCallLog,
     ProductFamily,
     TaskExecution,
     TeacherReviewRecord,
+    User,
 )
 from app.services.execution_log_service import create_task, elapsed_ms, finish_task, start_timer
 from app.services.selection_derivation_service import generate_derivatives_for_product_ids
@@ -41,6 +43,15 @@ def pipeline_status(db: Session) -> dict[str, Any]:
         .outerjoin(derived_count_subquery, FmProduct.id == derived_count_subquery.c.source_product_id)
         .where(func.coalesce(derived_count_subquery.c.derived_count, 0) < get_setting_int(db, "derivatives_per_product"))
     )
+    credit_rows = db.execute(
+        select(
+            func.coalesce(func.sum(case((CreditTransaction.transaction_type == "recharge", CreditTransaction.credits), else_=0)), 0),
+            func.coalesce(func.sum(case((CreditTransaction.transaction_type == "consume", -CreditTransaction.credits), else_=0)), 0),
+            func.coalesce(func.sum(case((CreditTransaction.transaction_type == "refund", CreditTransaction.credits), else_=0)), 0),
+            func.count(CreditTransaction.id),
+        )
+    ).one()
+    total_credit_balance = db.scalar(select(func.coalesce(func.sum(User.credit_balance), 0))) or 0
     return {
         "fastmoss": {
             "product_count": db.scalar(select(func.count(FmProduct.id))) or 0,
@@ -73,6 +84,14 @@ def pipeline_status(db: Session) -> dict[str, Any]:
                 )
             )
             or 0,
+        },
+        "credits": {
+            "user_count": db.scalar(select(func.count(User.id))) or 0,
+            "total_balance": int(total_credit_balance),
+            "recharged": int(credit_rows[0] or 0),
+            "consumed": int(credit_rows[1] or 0),
+            "refunded": int(credit_rows[2] or 0),
+            "transaction_count": int(credit_rows[3] or 0),
         },
         "review": {
             "status_counts": count_by_status(db, DerivedProductRecommendation.review_status),

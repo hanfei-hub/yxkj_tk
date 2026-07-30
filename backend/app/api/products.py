@@ -81,20 +81,35 @@ def hot_products(region: str = Query("JP"), list_type: str = Query("new"), categ
 
 
 @router.get("/daily-recommendations", dependencies=[Depends(require_role("student", "admin", "teacher"))])
-def daily_recommendations(region: str = Query("JP"), list_type: str = Query("new"), category: str = Query("全部"), start_date: str = Query(""), end_date: str = Query(""), db: Session = Depends(get_db)):
+def daily_recommendations(
+    region: str = Query("JP"),
+    list_type: str = Query("new"),
+    category: str = Query("全部"),
+    start_date: str = Query(""),
+    end_date: str = Query(""),
+    page: int = Query(1, ge=1),
+    pagesize: int = Query(50, ge=1, le=100),
+    paged: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    conditions = product_filters(region, list_type, category, start_date, end_date)
+    total = db.scalar(select(func.count(FmProduct.id)).where(*conditions)) or 0
     products = db.scalars(
         select(FmProduct)
         .options(selectinload(FmProduct.derived_products))
-        .where(*product_filters(region, list_type, category, start_date, end_date))
+        .where(*conditions)
         .order_by(FmProduct.rank_no, FmProduct.id)
+        .offset((page - 1) * pagesize if paged else 0)
+        .limit(pagesize if paged else None)
     ).all()
     if products:
-        return [
+        result = [
             {
                 "id": item.id,
                 "recommendation_date": item.data_date,
                 "source_product_id": item.id,
                 "recommendation_id": None,
+                "source_type": "new_product",
                 "title": item.title,
                 "image_url": item.image_url,
                 "price": item.price,
@@ -104,14 +119,18 @@ def daily_recommendations(region: str = Query("JP"), list_type: str = Query("new
                 "list_type": item.list_type,
                 "derived_count": len(item.derived_products),
                 "reason_summary": "FastMoss 日本新品榜：跨境商品=是，全托管商品=否。",
-                "sort_order": index,
+                "sort_order": (page - 1) * pagesize + index,
             }
             for index, item in enumerate(products, start=1)
         ]
+        return {"items": result, "page": page, "pagesize": pagesize, "total": int(total), "has_more": page * pagesize < int(total)} if paged else result
     if region.upper() != "JP" or list_type.lower() != "new" or category != "全部" or start_date or end_date:
-        return []
-    items = db.scalars(select(DailyRecommendation).order_by(DailyRecommendation.sort_order)).all()
-    return [daily_to_dict(item) for item in items]
+        return {"items": [], "page": page, "pagesize": pagesize, "total": 0, "has_more": False} if paged else []
+    fallback_query = select(DailyRecommendation).order_by(DailyRecommendation.sort_order)
+    fallback_total = db.scalar(select(func.count(DailyRecommendation.id))) or 0
+    items = db.scalars(fallback_query.offset((page - 1) * pagesize if paged else 0).limit(pagesize if paged else None)).all()
+    result = [daily_to_dict(item) for item in items]
+    return {"items": result, "page": page, "pagesize": pagesize, "total": int(fallback_total), "has_more": page * pagesize < int(fallback_total)} if paged else result
 
 
 def create_sync_log(

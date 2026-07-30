@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.database import Base, engine
 from app.core.security import hash_password
-from app.models.entities import ModelConfig, SelectionAttribute, ThirdPartyConfig, User
+from app.models.entities import ModelConfig, RegionConfig, SelectionAttribute, SystemSetting, ThirdPartyConfig, User
 from app.services.product_family_service import DIMENSIONS, INITIAL_WEIGHT
 from app.services.selection_derivation_service import ensure_selection_prompt
 from app.services.system_settings_service import ensure_system_settings
@@ -20,12 +20,40 @@ def init_db() -> None:
     try:
         ensure_dimension_attributes(db)
         ensure_system_settings(db)
+        ensure_region_configs(db)
         seed_all(db)
         ensure_ark_third_party_config(db)
         ensure_selection_prompt(db)
         db.commit()
     finally:
         db.close()
+
+
+def ensure_region_configs(db: Session) -> None:
+    marker = db.scalar(select(SystemSetting).where(SystemSetting.setting_key == "region_config_initialized"))
+    if marker and str(marker.setting_value).strip() == "1":
+        return
+    defaults = [
+        ("美国", "US"), ("印度尼西亚", "ID"), ("英国", "GB"), ("越南", "VN"),
+        ("泰国", "TH"), ("马来西亚", "MY"), ("菲律宾", "PH"), ("西班牙", "ES"),
+        ("墨西哥", "MX"), ("德国", "DE"), ("法国", "FR"), ("意大利", "IT"),
+        ("巴西", "BR"), ("日本", "JP"), ("新加坡", "SG"),
+    ]
+    existing_count = int(db.scalar(select(func.count(RegionConfig.id))) or 0)
+    if existing_count == 0:
+        for index, (name, code) in enumerate(defaults):
+            db.add(RegionConfig(region_name=name, region_code=code, sort_order=index))
+    if not marker:
+        marker = SystemSetting(
+            setting_key="region_config_initialized",
+            setting_value="1",
+            setting_name="国家和地区初始化标记",
+            description="仅用于首次初始化国家和地区，后续删除不会自动恢复。",
+            value_type="system",
+        )
+        db.add(marker)
+    else:
+        marker.setting_value = "1"
 
 
 def ensure_runtime_schema() -> None:
@@ -63,6 +91,7 @@ def ensure_runtime_schema() -> None:
         "credit_balance": "INTEGER DEFAULT 0",
     }
     search_result_columns = {
+        "source_type": "VARCHAR(32) DEFAULT 'ai_search'",
         "supplier_search_status": "VARCHAR(32) DEFAULT 'not_searched'",
         "supplier_next_page": "INTEGER DEFAULT 1",
         "supplier_searched_count": "INTEGER DEFAULT 0",

@@ -14,6 +14,7 @@ from app.models.entities import (
     FmProduct,
     ModelConfig,
     SelectionAttribute,
+    RegionConfig,
     TeacherReviewRecord,
     ThirdPartyConfig,
     SystemSetting,
@@ -91,6 +92,16 @@ def attribute_to_dict(item: SelectionAttribute) -> dict[str, Any]:
         "is_system": item.is_system,
         "status": item.status,
         "created_by": item.created_by,
+    }
+
+
+def region_to_dict(item: RegionConfig) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "region_name": item.region_name,
+        "region_code": item.region_code,
+        "status": item.status,
+        "sort_order": item.sort_order,
     }
 
 

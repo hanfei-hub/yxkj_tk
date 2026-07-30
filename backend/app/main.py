@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import admin, ai, app_info, auth, auto_publish, favorites, pipeline, products, selection_attributes, suppliers, teacher, video
+from app.api import admin, ai, app_info, auth, auto_publish, favorites, pipeline, products, regions, selection_attributes, suppliers, teacher, video
 from app.core.database import BASE_DIR
 from app.services.seed import init_db
 
@@ -22,6 +22,8 @@ app.include_router(auth.router)
 app.include_router(app_info.router)
 app.include_router(admin.router)
 app.include_router(products.router)
+app.include_router(regions.router)
+app.include_router(regions.admin_router)
 app.include_router(selection_attributes.router)
 app.include_router(ai.router)
 app.include_router(teacher.router)

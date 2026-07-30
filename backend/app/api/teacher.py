@@ -36,6 +36,7 @@ def teacher_products(db: Session = Depends(get_db)):
     products = db.scalars(
         select(FmProduct)
         .options(selectinload(FmProduct.derived_products))
+        .where(FmProduct.region == "JP", FmProduct.list_type == "new")
         .order_by(FmProduct.rank_no)
     ).all()
     return [product_to_dict(item) for item in products]
