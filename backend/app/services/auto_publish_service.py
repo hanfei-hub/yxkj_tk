@@ -605,6 +605,7 @@ def normalize_package_metadata(payload: dict[str, Any] | None) -> dict[str, floa
 
 
 JPY_CNY_EXCHANGE_RATE = 23.2
+MIAOSHOU_DISPLAY_JPY_PER_CNY = float(os.getenv("AUTO_PUBLISH_MIAOSHOU_DISPLAY_JPY_PER_CNY", "24.185"))
 PRICE_FORWARDER_FEE_CNY = 2.0
 DEFAULT_COMMISSION_RATE = 0.09
 COMMISSION_RATE_BY_CATEGORY = {
@@ -640,6 +641,13 @@ COMMISSION_RATE_BY_CATEGORY = {
     "女装": 0.12,
     "女士内衣": 0.12,
 }
+COMMISSION_KEYWORD_RULES: list[tuple[tuple[str, ...], float, str]] = [
+    (("宠物用品", "宠物", "猫", "狗", "犬", "pet", "cat", "dog", "ペット", "猫用", "犬用"), 0.12, "宠物用品"),
+    (("女装", "女士内衣", "男装", "男士内衣", "箱包", "时尚配件"), 0.12, "服饰箱包"),
+    (("母婴用品", "母婴", "婴儿", "宝宝", "儿童时尚"), 0.10, "母婴用品"),
+    (("美妆个护", "美容", "护肤", "化妆", "保健", "珠宝", "鞋靴", "运动与户外", "玩具和爱好"), 0.10, "10%类目"),
+    (("食品饮料", "食品", "饮料", "零食", "家电", "手机与数码", "电脑办公", "家具", "家装建材", "汽车与摩托车"), 0.07, "7%类目"),
+]
 
 
 def normalize_profit_rule(value: Any) -> str:
@@ -691,6 +699,16 @@ def package_weight_kg_from_g(weight_g: float | int | None) -> float:
     return round(value / 1000.0, 3)
 
 
+def normalize_miaoshou_weight_kg(weight_kg: Any, *, default_kg: float = 0.5) -> float:
+    try:
+        value = float(weight_kg or 0.0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value <= 0:
+        value = float(default_kg or 0.5)
+    return round(max(0.001, min(value, 100.0)), 3)
+
+
 def billable_weight_kg(
     actual_weight_g: float,
     length_cm: float,
@@ -733,6 +751,24 @@ def template_shipping_fee_cny(weight_kg: float, cargo_type: int = 1) -> float:
     return 0.0
 
 
+def detect_cargo_type(category_metadata: dict[str, Any], site_info: dict[str, Any], product: dict[str, Any]) -> tuple[int, str]:
+    blob = category_text_blob(category_metadata, site_info, product)
+    normalized = blob.lower()
+    special_keywords = (
+        "特货", "特貨", "敏货", "敏貨", "食品", "食物", "零食", "粮", "糧", "冻干", "凍乾", "肉", "鱼", "魚",
+        "鸡", "雞", "鸭", "鴨", "牛", "羊", "猫", "狗", "犬", "宠物", "寵物", "pet", "cat", "dog",
+        "液体", "液體", "凝胶", "凝膠", "膏", "粉", "粉末", "喷雾", "噴霧", "香水", "精油", "化妆", "化粧",
+        "电池", "電池", "磁", "刀", "药", "藥", "医疗", "醫療", "保健", "サプリ", "フード", "食品", "ペット",
+    )
+    regular_keywords = ("普货", "普貨", "普通货", "普通貨")
+    if any(keyword.lower() in normalized for keyword in regular_keywords):
+        return 1, "普货关键词"
+    for keyword in special_keywords:
+        if keyword.lower() in normalized:
+            return 2, f"特货/敏货关键词：{keyword}"
+    return 1, "默认普货"
+
+
 def category_text_blob(category_metadata: dict[str, Any], site_info: dict[str, Any], product: dict[str, Any]) -> str:
     values: list[str] = []
 
@@ -753,6 +789,16 @@ def category_text_blob(category_metadata: dict[str, Any], site_info: dict[str, A
     collect(site_info.get("categoryName"))
     collect(site_info.get("categoryNameAlias"))
     collect(product.get("category"))
+    collect(product.get("title"))
+    collect(product.get("optimized_title"))
+    collect(product.get("notes"))
+    collect(product.get("description"))
+    collect(product.get("properties"))
+    for sku in product.get("skus") or []:
+        if isinstance(sku, dict):
+            collect(sku.get("spec1"))
+            collect(sku.get("spec2"))
+            collect(sku.get("name"))
     return " ".join(values)
 
 
@@ -761,6 +807,10 @@ def commission_rate_from_category(category_metadata: dict[str, Any], site_info: 
     for category_name, rate in COMMISSION_RATE_BY_CATEGORY.items():
         if category_name and category_name in blob:
             return rate, category_name
+    lowered_blob = blob.lower()
+    for keywords, rate, source in COMMISSION_KEYWORD_RULES:
+        if any(keyword and keyword.lower() in lowered_blob for keyword in keywords):
+            return rate, f"{source}（关键词）"
     return DEFAULT_COMMISSION_RATE, "默认"
 
 
@@ -769,11 +819,12 @@ def calculate_template_sale_price_cny(
     billable_weight: float,
     commission_rate: float,
     profit_rule: str,
+    cargo_type: int = 1,
 ) -> dict[str, float | str]:
     parsed_rule = parse_profit_rule(profit_rule)
     if not parsed_rule:
         return {}
-    shipping_cny = template_shipping_fee_cny(billable_weight, cargo_type=1)
+    shipping_cny = template_shipping_fee_cny(billable_weight, cargo_type=cargo_type)
     base_cost = safe_price(origin_price_cny) + shipping_cny + PRICE_FORWARDER_FEE_CNY
     rule_type, rule_value = parsed_rule
     if rule_type == "rate":
@@ -792,6 +843,7 @@ def calculate_template_sale_price_cny(
         "base_cost_cny": round(base_cost, 2),
         "profit_rule_type": rule_type,
         "profit_rule_value": rule_value,
+        "cargo_type": int(cargo_type or 1),
     }
 
 
@@ -813,30 +865,60 @@ def apply_template_pricing_to_site_info(
         return site_info, {}
     currency = normalize_pricing_currency(pricing_currency)
     commission_rate, commission_source = commission_rate_from_category(category_metadata, site_info, product)
+    cargo_type, cargo_type_source = detect_cargo_type(category_metadata, site_info, product)
     billing_weight = billable_weight_kg(package_weight_g, package_length_cm, package_width_cm, package_height_cm)
     updated = dict(site_info)
     sku_map: dict[str, Any] = {}
     changed = 0
     first_calc: dict[str, Any] = {}
+    price_debug_rows: list[dict[str, Any]] = []
     for sku_key, sku_value in updated["skuMap"].items():
         if not isinstance(sku_value, dict):
             sku_map[sku_key] = sku_value
             continue
         current = dict(sku_value)
+        current["weight"] = normalize_miaoshou_weight_kg(
+            current.get("weight"),
+            default_kg=billing_weight,
+        )
         origin_price = safe_price(current.get("originPrice") or current.get("sourcePrice") or current.get("price"))
-        calc = calculate_template_sale_price_cny(origin_price, billing_weight, commission_rate, profit_rule)
+        calc = calculate_template_sale_price_cny(origin_price, billing_weight, commission_rate, profit_rule, cargo_type)
         if calc:
             old_price_jpy = safe_price(current.get("price"))
             old_price_include_vat = safe_price(current.get("priceIncludeVat"))
-            include_vat_ratio = old_price_include_vat / old_price_jpy if old_price_jpy > 0 and old_price_include_vat > 0 else 1.2375
             sale_cny = round(float(calc["sale_cny"]), 2)
             new_price = sale_cny if currency == "CNY" else round(sale_cny * JPY_CNY_EXCHANGE_RATE, 2)
+            display_jpy = round(sale_cny * MIAOSHOU_DISPLAY_JPY_PER_CNY, 2)
             current["price"] = new_price
-            current["priceIncludeVat"] = round(new_price * include_vat_ratio, 2)
+            current["priceIncludeVat"] = display_jpy if currency == "CNY" else new_price
             current["currency"] = currency
             current["priceCurrency"] = currency
             current["currencyCode"] = currency
             changed += 1
+            if len(price_debug_rows) < 50:
+                price_debug_rows.append(
+                    {
+                        "sku_key": str(sku_key),
+                        "sku_name": str(
+                            current.get("itemNum")
+                            or current.get("skuName")
+                            or current.get("name")
+                            or current.get("title")
+                            or sku_key
+                        ),
+                        "origin_price_cny": round(origin_price, 2),
+                        "template_sale_cny": sale_cny,
+                        "submitted_price": new_price,
+                        "submitted_currency": currency,
+                        "price_include_vat": current["priceIncludeVat"],
+                        "display_jpy": current["priceIncludeVat"],
+                        "billable_weight_kg": billing_weight,
+                        "commission_rate": commission_rate,
+                        "profit_rule": normalize_profit_rule(profit_rule),
+                        "cargo_type": cargo_type,
+                        "cargo_type_source": cargo_type_source,
+                    }
+                )
             if not first_calc:
                 first_calc = dict(calc) | {
                     "old_price_jpy": round(old_price_jpy, 2),
@@ -846,6 +928,8 @@ def apply_template_pricing_to_site_info(
                     "billable_weight_kg": billing_weight,
                     "commission_rate": commission_rate,
                     "commission_source": commission_source,
+                    "cargo_type": cargo_type,
+                    "cargo_type_source": cargo_type_source,
                 }
         sku_map[sku_key] = current
     updated["skuMap"] = sku_map
@@ -854,8 +938,11 @@ def apply_template_pricing_to_site_info(
         "billable_weight_kg": billing_weight,
         "commission_rate": commission_rate,
         "commission_source": commission_source,
+        "cargo_type": cargo_type,
+        "cargo_type_source": cargo_type_source,
         "pricing_currency": currency,
         "sample": first_calc,
+        "price_debug_rows": price_debug_rows,
     }
 
 
@@ -1288,6 +1375,8 @@ def run_single_offer_url_via_miaoshou_api(
             "package_length_cm": normalized_site_collect_item_info["packageLength"],
             "package_width_cm": normalized_site_collect_item_info["packageWidth"],
             "package_height_cm": normalized_site_collect_item_info["packageHeight"],
+            "profit_rule": normalize_profit_rule(profit_rule),
+            "pricing_currency": normalize_pricing_currency(pricing_currency),
         }
     )
 
@@ -1311,8 +1400,9 @@ def run_single_offer_url_via_miaoshou_api(
             category_data = category_metadata_response.get("data") if isinstance(category_metadata_response, dict) else {}
             category_metadata = category_data.get("categoryMetadata") if isinstance(category_data, dict) else {}
             steps.append("已获取类目属性信息。")
-        except MiaoshouOpenApiError:
+        except MiaoshouOpenApiError as exc:
             category_metadata = {}
+            steps.append(f"类目属性信息获取失败：{exc}")
     else:
         category_metadata = {}
 
@@ -1543,6 +1633,7 @@ def run_single_offer_url_via_miaoshou_api(
         "save_result": save_response,
         "publish_result": publish_result,
         "category_metadata": category_metadata,
+        "pricing_summary": pricing_summary,
         "oss_md5": oss_md5,
     }
 
@@ -1613,6 +1704,7 @@ def run_1688_publish_task(db: Session, task_id: str) -> dict[str, Any]:
             "selected_shops": result.get("selected_shops") or [],
             "save_result": result.get("save_result") or {},
             "publish_result": result.get("publish_result") or {},
+            "pricing_summary": result.get("pricing_summary") or {},
             "progress": {
                 "stage": "done",
                 "current": 1,
@@ -2151,11 +2243,17 @@ def apply_sku_property_list_to_site_info(
 def apply_sku_name_map_to_site_info(site_info: dict[str, Any], sku_name_map: dict[str, Any], target_language: str) -> dict[str, Any]:
     if not sku_name_map:
         return site_info
-    normalized_map = {
-        clean_html_text(str(old)).strip(): simplify_sku_name(str(new), target_language)
-        for old, new in sku_name_map.items()
-        if clean_html_text(str(old)).strip() and clean_html_text(str(new)).strip()
-    }
+    normalized_map: dict[str, str] = {}
+    for old, new in sku_name_map.items():
+        source = clean_html_text(str(old)).strip()
+        raw_target = clean_html_text(str(new)).strip()
+        if not source or not raw_target:
+            continue
+        mapped = simplify_sku_name(raw_target, target_language)
+        source_fallback = simplify_sku_name(source, target_language)
+        if is_low_quality_sku_translation(source, mapped, target_language) and source_fallback:
+            mapped = source_fallback
+        normalized_map[source] = mapped
     if not normalized_map:
         return site_info
 
@@ -2241,7 +2339,7 @@ def apply_doubao_listing_to_site_collect_info(
 
     if enable_description_optimization:
         description = str(ai_result.get("detail_description") or ai_result.get("description") or "").strip()
-        if not description or not looks_like_target_language(description, language):
+        if not description or not looks_like_target_language(description, language) or is_noise_heavy_text(description):
             description = build_description(product, language)
         site_info["notes"] = sanitize_listing_copy(description).strip()[:10000]
         steps.append("已优化并整理产品描述。")
@@ -2346,8 +2444,11 @@ def preserve_original_images_on_quota_limit(
             target = current_sku_map.get(sku_key)
             if isinstance(target, dict):
                 set_sku_image_fields(target, original_image)
+                target["weight"] = normalize_miaoshou_weight_kg(target.get("weight"), default_kg=updated.get("weight") or 0.5)
             else:
-                current_sku_map[sku_key] = dict(original_sku)
+                copied_sku = dict(original_sku)
+                copied_sku["weight"] = normalize_miaoshou_weight_kg(copied_sku.get("weight"), default_kg=updated.get("weight") or 0.5)
+                current_sku_map[sku_key] = copied_sku
         updated["skuMap"] = current_sku_map
 
     original_property_images = sku_property_image_by_value_id(
@@ -2435,7 +2536,10 @@ def normalize_tiktok_site_collect_item_info(
     normalized["title"] = clean_html_text(str(site_item_info.get("title") or product.get("title") or ""))
     normalized["notes"] = clean_html_text(str(site_item_info.get("notes") or ""))
     normalized["imgUrls"] = unique_urls(site_item_info.get("imgUrls", []) or [])[:15]
-    normalized["weight"] = package_weight_kg_from_g(package_weight_g) if package_weight_g is not None else float(site_item_info.get("weight") or 0.5)
+    normalized["weight"] = normalize_miaoshou_weight_kg(
+        package_weight_kg_from_g(package_weight_g) if package_weight_g is not None else site_item_info.get("weight"),
+        default_kg=package_weight_kg_from_g(package_weight_g) if package_weight_g is not None else 0.5,
+    )
     normalized["packageLength"] = float(package_length_cm or site_item_info.get("packageLength") or 10)
     normalized["packageWidth"] = float(package_width_cm or site_item_info.get("packageWidth") or 10)
     normalized["packageHeight"] = float(package_height_cm or site_item_info.get("packageHeight") or 10)
@@ -2451,6 +2555,20 @@ def normalize_tiktok_site_collect_item_info(
     normalized["skuPropertyList"] = product.get("sku_property_list") if isinstance(product.get("sku_property_list"), list) else []
     normalized["productAttributes"] = product.get("product_attributes") if isinstance(product.get("product_attributes"), list) else []
     normalized["targetLanguage"] = normalize_target_language(target_language)
+    sku_weight_default = normalized["weight"]
+    if isinstance(normalized.get("skuMap"), dict):
+        normalized_sku_map: dict[str, Any] = {}
+        for sku_key, sku_value in normalized["skuMap"].items():
+            if isinstance(sku_value, dict):
+                current_sku = dict(sku_value)
+                current_sku["weight"] = normalize_miaoshou_weight_kg(
+                    current_sku.get("weight"),
+                    default_kg=sku_weight_default,
+                )
+                normalized_sku_map[sku_key] = current_sku
+            else:
+                normalized_sku_map[sku_key] = sku_value
+        normalized["skuMap"] = normalized_sku_map
     return normalized
 
 
@@ -4059,14 +4177,165 @@ def is_bad_sku_name(value: str) -> bool:
         return True
     return bool(re.search(r"下单|采购车|属性|批量|收藏|分享|登录|注册|客服|联系|举报|库存|重量|尺寸|产地|专利|认证|报告|授权|出口|进口|平台|地区", normalized))
 
+
+def extract_sku_weight_label(value: str) -> str:
+    text = clean_html_text(value or "")
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(kg|KG|千克|公斤|g|G|克)", text)
+    if not match:
+        return ""
+    amount = match.group(1)
+    if "." in amount:
+        amount = amount.rstrip("0").rstrip(".")
+    unit = match.group(2).lower()
+    if unit in {"kg", "千克", "公斤"}:
+        return f"{amount}kg"
+    return f"{amount}g"
+
+
+def localize_pet_food_sku_name(value: str, target_language: str = "ja") -> str:
+    if normalize_target_language(target_language) != "ja":
+        return ""
+    raw = clean_html_text(value or "")
+    if not raw:
+        return ""
+    pet_markers = (
+        "鸡", "雞", "鸭", "鴨", "牛", "羊", "猫", "狗", "莓果", "蔬", "蛋黄",
+        "肝", "冻干", "凍乾", "鹌鹑", "鵪鶉", "猫草", "排毛", "鲜润", "營養",
+    )
+    if not any(marker in raw for marker in pet_markers):
+        return ""
+
+    weight = extract_sku_weight_label(raw)
+    name = re.sub(r"[【\[\(（]?\s*\d+(?:\.\d+)?\s*(?:kg|KG|千克|公斤|g|G|克)\s*[】\]\)）]?", " ", raw)
+    name = re.sub(r"[【】\[\]（）()]", " ", name)
+
+    replacements = (
+        ("鸡肉时蔬", "チキン野菜"),
+        ("雞肉時蔬", "チキン野菜"),
+        ("鸡肉莓果", "チキンベリー"),
+        ("雞肉莓果", "チキンベリー"),
+        ("羊奶猫草", "ヤギミルク猫草"),
+        ("羊奶貓草", "ヤギミルク猫草"),
+        ("整块鸡胸肉", "鶏むね肉ブロック"),
+        ("整塊雞胸肉", "鶏むね肉ブロック"),
+        ("原切鸭肉粒", "カット鴨肉粒"),
+        ("原切鴨肉粒", "カット鴨肉粒"),
+        ("鸡肉粒", "チキン粒"),
+        ("雞肉粒", "チキン粒"),
+        ("鸡肉碎", "チキン粒"),
+        ("雞肉碎", "チキン粒"),
+        ("鸡胸肉", "鶏むね肉"),
+        ("雞胸肉", "鶏むね肉"),
+        ("鸡胸", "鶏むね"),
+        ("雞胸", "鶏むね"),
+        ("鸡肉", "チキン"),
+        ("雞肉", "チキン"),
+        ("鸭肝", "鴨レバー"),
+        ("鴨肝", "鴨レバー"),
+        ("牛肝", "牛レバー"),
+        ("蛋黄碎", "卵黄粒"),
+        ("蛋黃碎", "卵黄粒"),
+        ("蛋黄", "卵黄"),
+        ("蛋黃", "卵黄"),
+        ("肝碎", "レバー粒"),
+        ("牛骨肉", "牛骨肉"),
+        ("鸭肉粒", "鴨肉粒"),
+        ("鴨肉粒", "鴨肉粒"),
+        ("鸭肉", "鴨肉"),
+        ("鴨肉", "鴨肉"),
+        ("鹌鹑", "ウズラ"),
+        ("鵪鶉", "ウズラ"),
+        ("时蔬", "野菜"),
+        ("時蔬", "野菜"),
+        ("莓果", "ベリー"),
+        ("冻干", "フリーズドライ"),
+        ("凍乾", "フリーズドライ"),
+        ("羊奶", "ヤギミルク"),
+        ("猫草", "猫草"),
+        ("貓草", "猫草"),
+        ("桶", "容器"),
+        ("轻养鲜润", ""),
+        ("輕養鮮潤", ""),
+        ("温和排毛", ""),
+        ("溫和排毛", ""),
+        ("营养均衡", ""),
+        ("營養均衡", ""),
+        ("鲜润", ""),
+        ("鮮潤", ""),
+    )
+    for source, target in replacements:
+        name = name.replace(source, target)
+
+    name = re.sub(r"[、，,;/|｜]+", "+", name)
+    name = re.sub(r"\s*\+\s*", "+", name)
+    name = re.sub(r"\++", "+", name).strip("+ ")
+    name = re.sub(r"(轻养|輕養|温和|溫和|排毛|营养|營養|均衡|鲜润|鮮潤)", " ", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    if not name or name in {"+", "標準"}:
+        return ""
+    localized = f"{weight} {name}".strip()
+    return truncate_sku_name(localized, 50)
+
+
+def sku_translation_lost_pet_terms(source: str, mapped: str) -> bool:
+    source_text = clean_html_text(source or "")
+    mapped_text = clean_html_text(mapped or "")
+    required_pairs = (
+        (("鸡", "雞"), ("チキン", "鶏")),
+        (("鸭", "鴨"), ("鴨", "アヒル")),
+        (("牛肝",), ("牛レバー",)),
+        (("鸭肝", "鴨肝"), ("鴨レバー",)),
+        (("蛋黄", "蛋黃"), ("卵黄",)),
+        (("羊奶",), ("ヤギミルク",)),
+        (("猫草", "貓草"), ("猫草",)),
+        (("莓果",), ("ベリー",)),
+        (("冻干", "凍乾"), ("フリーズドライ",)),
+        (("鹌鹑", "鵪鶉"), ("ウズラ",)),
+        (("蔬",), ("野菜",)),
+        (("肝",), ("レバー", "肝")),
+    )
+    for source_tokens, mapped_tokens in required_pairs:
+        if any(token in source_text for token in source_tokens) and not any(token in mapped_text for token in mapped_tokens):
+            return True
+    source_weight = extract_sku_weight_label(source_text)
+    if source_weight and source_weight.lower() not in mapped_text.lower().replace(" ", ""):
+        return True
+    return False
+
+
+def is_low_quality_sku_translation(source: str, mapped: str, target_language: str = "ja") -> bool:
+    language = normalize_target_language(target_language)
+    mapped_text = clean_html_text(mapped or "").strip()
+    if not mapped_text or mapped_text == target_language_meta(language)["standard_sku"]:
+        return True
+    if re.search(r"(?:\+\s*){2,}|\s\+\s*$|^\s*\+\s*", mapped_text):
+        return True
+    if language == "ja" and re.search(r"[\u4e00-\u9fff]", mapped_text):
+        # Japanese can contain kanji, but leftover Chinese-only words usually mean the SKU was not localized.
+        allowed = ("鶏", "鴨", "牛", "猫", "卵黄", "容器")
+        without_allowed = mapped_text
+        for token in allowed:
+            without_allowed = without_allowed.replace(token, "")
+        if re.search(r"[\u4e00-\u9fff]", without_allowed):
+            return True
+    if sku_translation_lost_pet_terms(source, mapped_text):
+        return True
+    return False
+
+
 def simplify_sku_name(value: str, target_language: str = "ja") -> str:
     value = sanitize_listing_copy(value or "")
     value = re.sub(r"[\[\]【】()（）]", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
-    if not value or is_bad_sku_name(value) or is_garbled_sku_spec(value):
+    if not value or is_bad_sku_name(value) or is_garbled_sku_spec(value) or is_noise_heavy_text(value):
         return target_language_meta(target_language)["standard_sku"]
+    pet_food_name = localize_pet_food_sku_name(value, target_language)
+    if pet_food_name:
+        return pet_food_name
     value = translate_common_sku_name(value)
     value = localize_sku_name(value, target_language)
+    if not value or is_noise_heavy_text(value, min_score=0.32):
+        return target_language_meta(target_language)["standard_sku"]
     return truncate_sku_name(value, 20) if value else target_language_meta(target_language)["standard_sku"]
 
 
@@ -4120,6 +4389,8 @@ def is_garbled_sku_spec(value: str) -> bool:
         return True
     meaningful = re.sub(r"[\s+\-_/|｜,，;；.0-9]+", "", value)
     if not meaningful:
+        return True
+    if text_meaningfulness_score(meaningful) < 0.22:
         return True
     return False
 
@@ -7503,6 +7774,7 @@ def call_listing_ai(db: Session, product: dict[str, Any], target_language: str =
     language = normalize_target_language(target_language)
     meta = target_language_meta(language)
     title_key = "english_title" if language == "en" else "japanese_title"
+    negative_words = listing_negative_words()
     try:
         client = get_miaoshou_openapi_client(db)
         product_title = clean_html_text(str(product.get("title") or ""))
@@ -7520,6 +7792,12 @@ def call_listing_ai(db: Session, product: dict[str, Any], target_language: str =
             "target_market": meta["market"],
             "target_language": meta["native"],
             "goal": f"使用妙手内部 AI 生成适合{meta['market']}的商品标题、详情描述和 SKU 名称。",
+            "rules": [
+                "不要出现季节、爆款、新款、品牌名称、电话、退货承诺、公司名称、网址、厂家、批发、1688、阿里巴巴等供应链和营销词。",
+                "不要编造品牌、认证、专利、售后承诺或到货时效。",
+                "SKU 名称必须保留原始重量和关键口味/规格信息。",
+            ],
+            "negative_words": negative_words,
             "title_key": title_key,
         }
         try:
@@ -7539,6 +7817,7 @@ def call_listing_ai(db: Session, product: dict[str, Any], target_language: str =
                     original_content=json.dumps(original_content | {"generate_types": generate_types}, ensure_ascii=False),
                     title_length_limit=120,
                     keywords_list=[product_title] if product_title else None,
+                    negative_words_list=negative_words,
                     category_name=str(product.get("category") or ""),
                     site=str(product.get("site") or ""),
                     cid=str(product.get("cid") or ""),
@@ -7579,6 +7858,7 @@ def call_listing_ai(db: Session, product: dict[str, Any], target_language: str =
                         original_content=json.dumps(original_content, ensure_ascii=False),
                         title_length_limit=120,
                         keywords_list=[product_title] if product_title else None,
+                        negative_words_list=negative_words,
                         category_name=str(product.get("category") or ""),
                         site=str(product.get("site") or ""),
                         cid=str(product.get("cid") or ""),
@@ -7614,7 +7894,7 @@ def call_listing_ai(db: Session, product: dict[str, Any], target_language: str =
         if merged.get("description_error"):
             warnings.append(f"妙手 AI 生成描述未完成：{merged.get('description_error')}")
         if title_value:
-            result[title_key] = ensure_miaoshou_site_title_length(str(title_value), product, language)
+            result[title_key] = ensure_miaoshou_site_title_length(sanitize_listing_copy(str(title_value)), product, language)
         if description_value:
             result["detail_description"] = sanitize_listing_copy(str(description_value))
         if generated_sku_property_list:
@@ -7815,6 +8095,30 @@ def looks_like_target_language(value: str, target_language: str = "ja") -> bool:
     return looks_like_japanese(value)
 
 
+def text_meaningfulness_score(value: str) -> float:
+    text = clean_html_text(value or "")
+    if not text:
+        return 0.0
+    meaningful = 0
+    for char in text:
+        if char.isascii() and char.isalnum():
+            meaningful += 1
+        elif re.match(r"[\u3040-\u30ff\u3400-\u9fff]", char):
+            meaningful += 1
+    return meaningful / max(len(text), 1)
+
+
+def is_noise_heavy_text(value: str, *, min_score: float = 0.28) -> bool:
+    text = sanitize_listing_copy(clean_html_text(value or ""))
+    if not text:
+        return True
+    if re.search(r"\d{6,}", text):
+        return True
+    if re.search(r"([*_/|｜=+])\1{1,}", text):
+        return True
+    return text_meaningfulness_score(text) < min_score
+
+
 def contains_cjk(value: str) -> bool:
     return bool(value and re.search(r"[\u4e00-\u9fff]", value))
 
@@ -7874,7 +8178,11 @@ def build_description(product: dict[str, Any], target_language: str = "ja") -> s
         for item in (product.get("skus") or [])[:6]
         if not is_bad_sku_name(str(item.get("spec1") or ""))
     ]
-    unique_sku_names = list(dict.fromkeys(name for name in sku_names if name and name not in {"標準", "Standard"}))
+    unique_sku_names = list(
+        dict.fromkeys(
+            name for name in sku_names if name and name not in {"標準", "Standard"} and not is_noise_heavy_text(name)
+        )
+    )
     sku_text = "、".join(unique_sku_names[:4])
     if normalize_target_language(target_language) == "en":
         title = safe_title_en
@@ -7905,10 +8213,28 @@ def build_description(product: dict[str, Any], target_language: str = "ja") -> s
 
 def banned_listing_pattern() -> str:
     return (
-        r"1688|阿里巴巴|アリババ|厂家|メーカー直送|批发|卸売|源头|仕入れ元|跨境|越境|"
-        r"一件代发|代行|现货|即納|爆款|爆売れ|新款|新作|北欧風|北欧风格|专利|專利|特許|専利|"
-        r"公式|正規品|Disney|ディズニー|Nike|ナイキ|Adidas|アディダス|Sanrio|サンリオ"
+        r"1688|阿里巴巴|アリババ|alibaba|厂家|廠家|工厂|工廠|メーカー直送|メーカー|批发|批發|卸売|源头|源頭|仕入れ元|供应商|供應商|"
+        r"跨境|越境|一件代发|一件代發|代行|现货|現貨|即納|爆款|爆売れ|热卖|熱賣|人気商品|新款|新作|新品|"
+        r"春夏|秋冬|春用|夏用|秋用|冬用|春季|夏季|秋季|冬季|季节|季節|seasonal|北欧風|北欧风格|"
+        r"专利|專利|特許|専利|认证|認証|证书|證書|授权|授權|公式|正規品|品牌|ブランド|brand|"
+        r"电话|電話|手机|手機|手机号|手機號|联系|聯繫|联系方式|聯繫方式|客服|微信|WeChat|LINE|WhatsApp|"
+        r"退货|退貨|返品|无理由|無理由|保証|保修|售后|售後|包邮|包郵|送料無料|到货|到貨|配送|发货|發貨|"
+        r"公司|有限公司|有限会社|株式会社|工贸|工貿|商贸|商貿|贸易|貿易|实业|實業|科技|"
+        r"Disney|ディズニー|Nike|ナイキ|Adidas|アディダス|Sanrio|サンリオ"
     )
+
+
+def listing_negative_words() -> list[str]:
+    return [
+        "季节", "季節", "春夏", "秋冬", "春季", "夏季", "秋季", "冬季", "seasonal",
+        "爆款", "爆売れ", "热卖", "熱賣", "人気商品", "新款", "新作", "新品",
+        "品牌", "品牌名称", "ブランド", "brand", "公式", "正規品",
+        "电话", "電話", "手机", "手机号", "联系方式", "客服", "微信", "WeChat", "LINE", "WhatsApp",
+        "退货", "退貨", "返品", "无理由退货", "無理由返品", "多少天无理由退货", "7天无理由退货", "15天无理由退货",
+        "公司", "公司名称", "有限公司", "有限会社", "株式会社", "工贸", "商贸", "贸易", "实业", "科技",
+        "网址", "URL", "http", "https", "www", ".com", ".cn", ".jp", ".net",
+        "厂家", "工厂", "批发", "1688", "阿里巴巴", "Alibaba", "一件代发", "源头", "供应商",
+    ]
 
 
 def sanitize_listing_copy(value: str) -> str:
@@ -7919,6 +8245,14 @@ def sanitize_listing_copy(value: str) -> str:
         value,
         flags=re.IGNORECASE,
     )
+    value = re.sub(r"(?:https?://|www\.)[^\s<>\"]+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "", value)
+    value = re.sub(r"(?:\+?\d[\d\s\-()]{7,}\d)", "", value)
+    value = re.sub(r"\d+\s*(?:天|日)\s*(?:无理由|無理由)?\s*(?:退货|退貨|返品)?", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b[A-Za-z0-9.-]+\.(?:com|cn|jp|net|org|co|shop|store|top)\b", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"(?:公司名称|公司名|品牌名称|品牌名|名称|網址|网址|URL)\s*[:：]\s*[\w\u4e00-\u9fffぁ-んァ-ヶー-]{0,30}", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"(?:公司名称|公司名|品牌名称|品牌名|名称|網址|网址|URL)", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"(?<!\d)[天日](?!\d)", "", value)
     value = re.sub(r"\s+", " ", value)
     value = re.sub(r">\s+<", "><", value)
     return value.strip()
@@ -7981,6 +8315,16 @@ def miaoshou_rows(product: dict[str, Any]) -> list[list[Any]]:
         skus = [{"spec1": "標準", "spec2": "", "price": product.get("price") or 0, "stock": 100, "image_url": main_images[0] if main_images else ""}]
     shipping_fee = safe_price(product.get("shipping_fee"))
     price_includes_shipping = bool(product.get("price_includes_shipping"))
+    profit_rule = normalize_profit_rule(product.get("profit_rule"))
+    pricing_currency = normalize_pricing_currency(product.get("pricing_currency") or "CNY")
+    commission_rate, _ = commission_rate_from_category({}, {}, product)
+    cargo_type, _ = detect_cargo_type({}, {}, product)
+    billable_weight = billable_weight_kg(
+        float(product.get("package_weight_g") or round(package_weight_kg * 1000.0)),
+        package_length_cm,
+        package_width_cm,
+        package_height_cm,
+    )
     rows: list[list[Any]] = []
     for index, sku in enumerate(skus[:40]):
         first = index == 0
@@ -8006,7 +8350,17 @@ def miaoshou_rows(product: dict[str, Any]) -> list[list[Any]]:
                 str(sku.get("spec1") or "標準"),
                 str(sku.get("spec2") or ""),
                 sku.get("platform_sku", ""),
-                template_sku_price(sku.get("price") or product.get("price"), shipping_fee, price_includes_shipping),
+                template_display_price(
+                    sku.get("price") or product.get("price"),
+                    shipping_fee,
+                    price_includes_shipping,
+                    profit_rule=profit_rule,
+                    pricing_currency=pricing_currency,
+                    commission_rate=commission_rate,
+                    billable_weight=billable_weight,
+                    cargo_type=cargo_type,
+                    product=product,
+                ),
                 sku_image,
                 int(float(sku.get("stock") or 100)),
                 package_weight_kg,
@@ -8086,6 +8440,38 @@ def template_sku_price(price: Any, shipping_fee: Any, price_includes_shipping: b
     if price_includes_shipping:
         return round(safe_price(price), 2)
     return price_with_shipping(price, shipping_fee)
+
+
+def template_display_price(
+    price: Any,
+    shipping_fee: Any,
+    price_includes_shipping: bool,
+    *,
+    profit_rule: str = "",
+    pricing_currency: str = "CNY",
+    commission_rate: float = DEFAULT_COMMISSION_RATE,
+    billable_weight: float | None = None,
+    cargo_type: int = 1,
+    product: dict[str, Any] | None = None,
+) -> float:
+    parsed_rule = parse_profit_rule(profit_rule)
+    if parsed_rule:
+        base_product = product or {}
+        weight_kg = float(billable_weight or 0.0)
+        if weight_kg <= 0:
+            weight_kg = package_weight_kg_from_g(base_product.get("package_weight_g") or base_product.get("weight") or 500)
+        sale_calc = calculate_template_sale_price_cny(
+            safe_price(price),
+            weight_kg,
+            commission_rate,
+            profit_rule,
+            cargo_type,
+        )
+        if sale_calc:
+            sale_cny = float(sale_calc.get("sale_cny") or 0)
+            currency = normalize_pricing_currency(pricing_currency)
+            return round(sale_cny if currency == "CNY" else sale_cny * JPY_CNY_EXCHANGE_RATE, 2)
+    return template_sku_price(price, shipping_fee, price_includes_shipping)
 
 
 def write_rows_to_xls(output_path: Path, rows: list[list[Any]]) -> None:

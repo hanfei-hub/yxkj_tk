@@ -356,6 +356,37 @@ def get_project(db: Session, project_id: int, user: dict[str, Any]) -> VideoProj
     return project
 
 
+def delete_project(db: Session, project: VideoProject) -> None:
+    asset_paths = [Path(asset.file_path or "") for asset in db.scalars(select(VideoAsset).where(VideoAsset.project_id == project.id)).all()]
+    task_paths = [Path(path) for path in db.scalars(select(VideoTask.local_video_path).where(VideoTask.project_id == project.id)).all() if isinstance(path, str) and path.strip()]
+    db.execute(delete(VideoTask).where(VideoTask.project_id == project.id))
+    db.execute(delete(VideoStoryboardFrame).where(VideoStoryboardFrame.project_id == project.id))
+    db.execute(delete(VideoAsset).where(VideoAsset.project_id == project.id))
+    db.delete(project)
+    db.commit()
+
+    for path in (*asset_paths, *task_paths):
+        try:
+            if path.exists() and path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
+
+def delete_asset(db: Session, project: VideoProject, asset_id: int) -> None:
+    asset = db.get(VideoAsset, asset_id)
+    if not asset or asset.project_id != project.id:
+        raise ValueError("Video asset not found.")
+    file_path = Path(asset.file_path or "")
+    db.delete(asset)
+    db.commit()
+    try:
+        if file_path.exists() and file_path.is_file():
+            file_path.unlink()
+    except OSError:
+        pass
+
+
 def save_asset(db: Session, project: VideoProject, source_path: str, role: str, description: str, is_primary: bool) -> VideoAsset:
     ensure_runtime_dirs()
     ext = Path(source_path).suffix or ".png"

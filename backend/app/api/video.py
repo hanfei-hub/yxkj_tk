@@ -15,6 +15,8 @@ from app.core.database import get_db
 from app.models.entities import ModelConfig, ThirdPartyConfig, VideoProject
 from app.services.video_generation_service import (
     create_video_task,
+    delete_asset,
+    delete_project,
     generate_script,
     get_project,
     list_projects,
@@ -265,6 +267,22 @@ def update_project(
     return project_to_dict(db, project)
 
 
+@router.delete("/projects/{project_id}")
+def remove_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_role("admin", "teacher", "student")),
+):
+    try:
+        project = get_project(db, project_id, user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    delete_project(db, project)
+    return {"ok": True, "project_id": project_id}
+
+
 @router.post("/projects/{project_id}/assets")
 def upload_asset(
     project_id: int,
@@ -319,6 +337,27 @@ def update_asset(
     asset.description = payload.description
     asset.is_primary = int(payload.is_primary or 0)
     db.commit()
+    db.refresh(project)
+    return project_to_dict(db, project)
+
+
+@router.delete("/projects/{project_id}/assets/{asset_id}")
+def remove_asset(
+    project_id: int,
+    asset_id: int,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_role("admin", "teacher", "student")),
+):
+    try:
+        project = get_project(db, project_id, user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        delete_asset(db, project, asset_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     db.refresh(project)
     return project_to_dict(db, project)
 
