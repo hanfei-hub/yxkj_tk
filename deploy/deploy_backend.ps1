@@ -21,7 +21,7 @@ try {
 
 ssh -i $KeyPath "${User}@${HostName}" "mkdir -p $RemoteDir"
 scp -i $KeyPath $Archive "${User}@${HostName}:/tmp/tk-selection-backend.tar.gz"
-ssh -i $KeyPath "${User}@${HostName}" "tar -xzf /tmp/tk-selection-backend.tar.gz -C $RemoteDir && sed -i 's/\r$//' $RemoteDir/deploy/install_backend_linux.sh $RemoteDir/deploy/tk-selection-backend.service && bash $RemoteDir/deploy/install_backend_linux.sh"
+ssh -i $KeyPath "${User}@${HostName}" "rm -rf $RemoteDir/backend/app $RemoteDir/backend/requirements.txt $RemoteDir/deploy && tar -xzf /tmp/tk-selection-backend.tar.gz -C $RemoteDir && sed -i 's/\r$//' $RemoteDir/deploy/install_backend_linux.sh $RemoteDir/deploy/tk-selection-backend.service && bash $RemoteDir/deploy/install_backend_linux.sh"
 
 Remove-Item -LiteralPath $Archive -Force -ErrorAction SilentlyContinue
 Write-Host "Uploaded backend to ${User}@${HostName}:${RemoteDir}"

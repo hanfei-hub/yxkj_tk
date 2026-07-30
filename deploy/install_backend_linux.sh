@@ -39,9 +39,10 @@ chown -R tkbackend:tkbackend /opt/ms-playwright
 cp "${APP_DIR}/deploy/tk-selection-backend.service" "${SERVICE_FILE}"
 systemctl daemon-reload
 systemctl enable tk-selection-backend
+systemctl restart tk-selection-backend
 
 echo "Backend installed."
 echo "Next:"
 echo "1. Edit ${ENV_FILE}"
 echo "2. Configure nginx using deploy/nginx-tk-selection.conf"
-echo "3. systemctl restart tk-selection-backend"
+echo "3. Check status: systemctl status tk-selection-backend --no-pager"

@@ -529,14 +529,6 @@ class DataGateway:
     def sync_fastmoss_products(self, region: str = "JP", list_type: str = "new") -> dict[str, Any]:
         return self.client.post(f"/api/fastmoss/sync-products?page=1&region={region}&list_type={list_type}")
 
-    def auto_publish_candidates(self) -> list[dict[str, Any]]:
-        if not self.user:
-            return []
-        return self.client.get("/api/auto-publish/candidates")
-
-    def create_auto_publish_task(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.client.post("/api/auto-publish/tasks", payload)
-
     def create_1688_auto_publish_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.post("/api/auto-publish/1688/tasks", payload, timeout=60)
 
@@ -549,10 +541,6 @@ class DataGateway:
 
     def reauthorize_miaoshou_picture_space(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.post("/api/auto-publish/miaoshou/reauthorize-picture-space", payload, timeout=600)
-
-    def run_auto_publish_task(self, task_id: str) -> dict[str, Any]:
-        return self.client.post(f"/api/auto-publish/tasks/{task_id}/run", timeout=1800)
-
 
     def start_auto_publish_task_async(self, task_id: str) -> dict[str, Any]:
         return self.client.post(f"/api/auto-publish/tasks/{task_id}/run-async", timeout=30)
@@ -668,7 +656,6 @@ class DataGateway:
 
     def search_1688_for_derived(self, derived_id: int, page: int = 1, page_size: int = 20) -> dict[str, Any]:
         return self.client.post(f"/api/suppliers/1688/derived-products/{derived_id}/search?page={page}&page_size={page_size}")
-
 
 def make_title(text: str, subtitle: str = "") -> QWidget:
     box = QFrame()
@@ -831,37 +818,43 @@ def metric_card(title: str, value: str, note: str) -> QWidget:
             return []
         return self.client.get("/api/video/projects")
 
+    def video_models(self) -> list[dict[str, Any]]:
+        if not self.user:
+            return []
+        return self.client.get("/api/video/models")
+
+    def sync_buming_video_models(self) -> dict[str, Any]:
+        return self.client.post("/api/video/models/buming/sync", {}, timeout=60)
 
     def create_video_project(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.post("/api/video/projects", payload)
 
-
     def update_video_project(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.put(f"/api/video/projects/{project_id}", payload)
-
 
     def upload_video_asset(self, project_id: int, file_path: str, fields: dict[str, Any]) -> dict[str, Any]:
         return self.client.upload(f"/api/video/projects/{project_id}/assets", file_path, fields, timeout=180)
 
-
     def update_video_asset(self, project_id: int, asset_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.put(f"/api/video/projects/{project_id}/assets/{asset_id}", payload)
 
+    def delete_video_asset(self, project_id: int, asset_id: int) -> dict[str, Any]:
+        return self.client.delete(f"/api/video/projects/{project_id}/assets/{asset_id}")
 
     def generate_video_script(self, project_id: int) -> dict[str, Any]:
         return self.client.post(f"/api/video/projects/{project_id}/script/generate", timeout=240)
 
-
     def save_video_script(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.put(f"/api/video/projects/{project_id}/script", payload)
-
 
     def create_video_task(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.post(f"/api/video/projects/{project_id}/tasks", payload, timeout=300)
 
-
     def refresh_video_task(self, project_id: int, task_id: int) -> dict[str, Any]:
         return self.client.post(f"/api/video/projects/{project_id}/tasks/{task_id}/refresh", timeout=180)
+
+    def delete_video_project(self, project_id: int) -> dict[str, Any]:
+        return self.client.delete(f"/api/video/projects/{project_id}")
 
 
 def make_title(text: str, subtitle: str = "") -> QWidget:
@@ -1570,6 +1563,9 @@ class MainWindow(QMainWindow):
     def on_page_changed(self, index: int) -> None:
         item = self.nav.item(index)
         page_data = item.data(Qt.UserRole) if item else None
+        if not item or item.isHidden():
+            self.apply_menu_permissions()
+            return
         page_index = int(page_data) if page_data is not None else -1
         if page_index < 0:
             return
@@ -1918,6 +1914,7 @@ class VideoGenerationPage(Page):
         return box
 
     def activate(self) -> None:
+        self.refresh_video_models()
         if not self.loaded:
             self.refresh_projects()
             self.loaded = True
@@ -1955,10 +1952,13 @@ class VideoGenerationPage(Page):
         actions = QHBoxLayout()
         create = QPushButton("保存为新项目")
         save = QPushButton("保存当前产品信息")
+        delete_button = QPushButton("删除当前项目")
         create.clicked.connect(self.create_project)
         save.clicked.connect(lambda: self.save_project(False))
+        delete_button.clicked.connect(self.delete_current_project)
         actions.addWidget(create)
         actions.addWidget(save)
+        actions.addWidget(delete_button)
         actions.addStretch()
         layout.addLayout(actions)
         self.project_table = table(["ID", "项目", "市场", "语言", "状态"])
@@ -1978,12 +1978,15 @@ class VideoGenerationPage(Page):
         self.primary_asset = QCheckBox("主参考图")
         upload = QPushButton("上传产品图")
         save_asset = QPushButton("保存图片说明")
+        delete_asset = QPushButton("删除图片")
         upload.clicked.connect(self.upload_assets)
         save_asset.clicked.connect(self.save_selected_asset)
+        delete_asset.clicked.connect(self.delete_selected_asset)
         row.addWidget(self.asset_role)
         row.addWidget(self.asset_desc, 1)
         row.addWidget(self.primary_asset)
         row.addWidget(save_asset)
+        row.addWidget(delete_asset)
         row.addWidget(upload)
         layout.addLayout(row)
         self.asset_table = table(["ID", "角色", "说明", "主图", "地址"])
@@ -2023,57 +2026,61 @@ class VideoGenerationPage(Page):
     def build_generate_step(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.addWidget(self.hint("第 4 步：生成视频", "系统会用产品图、分镜画面和脚本生成视频。产品图优先级最高。"))
+        layout.addWidget(self.hint("第 4 步：生成视频", "选一个生成方案，确认图片和脚本后直接提交。"))
         row = QHBoxLayout()
-        self.image_mode_label = QLabel("产品参考视频")
-        self.image_mode_label.setObjectName("CardTitle")
+        self.video_model_label = QLabel("生成方案")
+        self.video_model_label.setObjectName("CardTitle")
         self.video_model = QComboBox()
-        self.video_model.addItem("Seedance 2.0 mini", "doubao-seedance-2-0-mini-260615")
-        self.video_model.addItem("Seedance 2.0 Fast", "doubao-seedance-2-0-fast")
+        self.video_model.setMinimumWidth(260)
+        self.video_model.currentIndexChanged.connect(self.update_video_model_hint)
+        self.video_model_hint = QLabel("默认推荐会自动选择当前可用的视频方案。")
+        self.video_model_hint.setObjectName("Muted")
+        self.video_model_hint.setWordWrap(False)
         self.submit_video_button = QPushButton("提交生成视频")
         self.refresh_task_button = QPushButton("刷新任务")
         self.download_video_button = QPushButton("下载视频")
         self.submit_video_button.clicked.connect(self.create_video_task)
         self.refresh_task_button.clicked.connect(self.refresh_selected_video_task)
         self.download_video_button.clicked.connect(self.download_current_video)
-        row.addWidget(self.image_mode_label)
+        row.addWidget(self.video_model_label)
         row.addWidget(self.video_model)
         row.addWidget(self.submit_video_button)
         row.addWidget(self.refresh_task_button)
         row.addWidget(self.download_video_button)
         row.addStretch()
         layout.addLayout(row)
+        layout.addWidget(self.video_model_hint)
 
         content = QHBoxLayout()
         left = QVBoxLayout()
         self.generate_status = QLabel("准备就绪：确认脚本和产品图后提交。")
         self.generate_status.setObjectName("Muted")
-        self.generate_status.setWordWrap(True)
+        self.generate_status.setWordWrap(False)
         left.addWidget(self.generate_status)
         self.video_progress = QProgressBar()
         self.video_progress.setRange(0, 0)
         self.video_progress.hide()
-        self.video_progress_label = QLabel("模型任务已提交，正在生成中；页面会自动刷新状态。")
+        self.video_progress_label = QLabel("任务已提交，正在生成中；页面会自动刷新状态。")
         self.video_progress_label.setObjectName("Muted")
-        self.video_progress_label.setWordWrap(True)
+        self.video_progress_label.setWordWrap(False)
         self.video_progress_label.hide()
         left.addWidget(self.video_progress)
         left.addWidget(self.video_progress_label)
         self.video_storage_label = QLabel("存放位置：-")
         self.video_storage_label.setObjectName("Muted")
-        self.video_storage_label.setWordWrap(True)
+        self.video_storage_label.setWordWrap(False)
         left.addWidget(self.video_storage_label)
         self.video_usage_label = QLabel("消耗：-")
         self.video_usage_label.setObjectName("Muted")
-        self.video_usage_label.setWordWrap(True)
+        self.video_usage_label.setWordWrap(False)
         left.addWidget(self.video_usage_label)
         self.task_table = table(["任务ID", "状态", "消耗", "结果"])
-        self.task_table.setMaximumHeight(190)
+        self.task_table.setMaximumHeight(150)
         self.task_table.itemSelectionChanged.connect(self.preview_selected_task)
         left.addWidget(self.task_table)
         self.video_result = QTextEdit()
         self.video_result.setReadOnly(True)
-        self.video_result.setMaximumHeight(120)
+        self.video_result.setMaximumHeight(84)
         self.video_result.setPlaceholderText("任务摘要会显示在这里。")
         left.addWidget(self.video_result)
 
@@ -2082,9 +2089,9 @@ class VideoGenerationPage(Page):
         preview_title.setObjectName("CardTitle")
         self.video_preview_status = QLabel("生成完成后会在这里播放 9:16 视频。")
         self.video_preview_status.setObjectName("Muted")
-        self.video_preview_status.setWordWrap(True)
+        self.video_preview_status.setWordWrap(False)
         self.video_widget = QVideoWidget()
-        self.video_widget.setFixedSize(300, 533)
+        self.video_widget.setFixedSize(240, 426)
         self.video_widget.setAspectRatioMode(Qt.KeepAspectRatio)
         self.video_player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
@@ -2097,11 +2104,47 @@ class VideoGenerationPage(Page):
         preview.addWidget(self.video_widget, 0, Qt.AlignHCenter)
         preview.addStretch(1)
 
-        content.setSpacing(22)
+        content.setSpacing(14)
         content.addLayout(left, 2)
         content.addLayout(preview, 1)
         layout.addLayout(content, 1)
         self.stack.addWidget(page)
+
+    def refresh_video_models(self) -> None:
+        if not hasattr(self, "video_model"):
+            return
+        current_value = str(self.video_model.currentData() or "")
+        self.video_model.blockSignals(True)
+        self.video_model.clear()
+        for label, value in [
+            ("默认推荐", "auto"),
+            ("Seedance 2.0 Fast", "doubao-seedance-2-0-fast"),
+            ("Seedance 2.0 mini", "doubao-seedance-2-0-mini-260615"),
+            ("即梦特价 · 电商特价", "buming:seedance-2-0-ecom-special"),
+            ("即梦特价 · 自研-全能视频2.0", "buming:ecom-allpurpose-video"),
+            ("即梦特价 · 特价按秒", "buming:seedance-2-0-promo"),
+        ]:
+            self.video_model.addItem(label, value)
+        for index in range(self.video_model.count()):
+            if str(self.video_model.itemData(index) or "") == current_value:
+                self.video_model.setCurrentIndex(index)
+                break
+        if self.video_model.currentIndex() < 0:
+            self.video_model.setCurrentIndex(0)
+        self.video_model.blockSignals(False)
+        self.update_video_model_hint()
+
+    def update_video_model_hint(self, *_args: Any) -> None:
+        if not hasattr(self, "video_model_hint"):
+            return
+        label = str(self.video_model.currentText() or "默认推荐").strip()
+        value = str(self.video_model.currentData() or "").strip()
+        if value == "auto":
+            self.video_model_hint.setText("默认推荐：系统会自动选择当前可用的视频方案。")
+        elif value.startswith("buming:"):
+            self.video_model_hint.setText(f"当前方案：{label}。由系统自动读取可用的即梦模型。")
+        else:
+            self.video_model_hint.setText(f"当前方案：{label}。适合希望固定使用某个 Seedance 模型的用户。")
 
     def strategy_label(self) -> str:
         return self.video_strategy.currentText().strip() or "自动稳妥"
@@ -2166,12 +2209,96 @@ class VideoGenerationPage(Page):
             QMessageBox.warning(self, "保存失败", str(exc))
             return False
 
+    def clear_project_editor(self) -> None:
+        self.current_project = None
+        self.video_title.clear()
+        self.market.setCurrentIndex(0)
+        self.language.setCurrentIndex(0)
+        self.video_strategy.setCurrentIndex(0)
+        self.product_details.clear()
+        self.asset_role.clear()
+        self.asset_desc.clear()
+        self.primary_asset.setChecked(False)
+        self.script_text.clear()
+        self.shot_table.setRowCount(0)
+        self.asset_table.setRowCount(0)
+        self.task_table.setRowCount(0)
+        self.video_result.clear()
+        self.video_poll_timer.stop()
+        self.video_task_busy = False
+        self.video_refresh_busy = False
+        self.set_video_progress(False)
+        self.generate_status.setText("准备就绪：确认脚本和产品图后提交。")
+        self.video_storage_label.setText("存放位置：-")
+        self.video_usage_label.setText("消耗：-")
+        self.video_preview_status.setText("生成完成后会在这里播放 9:16 视频。")
+        self.current_video_url = ""
+        self.current_video_storage = ""
+        try:
+            self.video_player.stop()
+        except Exception:
+            pass
+        self.refresh_generate_summary()
+
+    def selected_project(self) -> dict[str, Any] | None:
+        row = self.project_table.currentRow() if hasattr(self, "project_table") else -1
+        if hasattr(self, "projects") and 0 <= row < len(self.projects):
+            return self.projects[row]
+        if self.current_project:
+            current_id = int(self.current_project.get("id") or 0)
+            for project in getattr(self, "projects", []) or []:
+                if int(project.get("id") or 0) == current_id:
+                    return project
+            return self.current_project
+        if hasattr(self, "projects") and self.projects:
+            return self.projects[0]
+        return None
+
+    def delete_current_project(self) -> None:
+        selected_row = self.project_table.currentRow() if hasattr(self, "project_table") else -1
+        try:
+            self.refresh_projects()
+        except Exception:
+            pass
+        if hasattr(self, "project_table") and 0 <= selected_row < self.project_table.rowCount():
+            self.project_table.setCurrentCell(selected_row, 0)
+        project = self.selected_project()
+        if not project:
+            QMessageBox.information(self, "提示", "请先选择一个视频项目。")
+            return
+        title = str(project.get("title") or "未命名视频项目")
+        reply = QMessageBox.question(
+            self,
+            "删除项目",
+            f"确定删除视频项目「{title}」吗？\n删除后，图片、脚本、任务记录都会一起清理。",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.gateway.delete_video_project(int(project["id"]))
+            self.clear_project_editor()
+            self.refresh_projects()
+            QMessageBox.information(self, "删除成功", "视频项目已删除。")
+        except Exception as exc:
+            QMessageBox.warning(self, "删除失败", str(exc))
+
     def refresh_projects(self) -> None:
         try:
             self.projects = self.gateway.video_projects()
         except Exception:
             self.projects = []
         fill_table(self.project_table, [[p.get("id"), p.get("title"), p.get("target_market"), p.get("video_language"), p.get("status")] for p in self.projects])
+        if self.projects:
+            selected_row = self.project_table.currentRow()
+            if 0 <= selected_row < len(self.projects):
+                self.current_project = self.projects[selected_row]
+            elif self.current_project:
+                current_id = int(self.current_project.get("id") or 0)
+                matched = next((project for project in self.projects if int(project.get("id") or 0) == current_id), None)
+                if matched:
+                    self.current_project = matched
+        elif not self.projects:
+            self.current_project = None
 
     def load_selected_project(self) -> None:
         row = self.project_table.currentRow()
@@ -2217,6 +2344,37 @@ class VideoGenerationPage(Page):
             if int(asset.get("id") or 0) == asset_id:
                 return asset
         return None
+
+    def delete_selected_asset(self) -> None:
+        project_row = self.project_table.currentRow() if hasattr(self, "project_table") else -1
+        try:
+            self.refresh_projects()
+        except Exception:
+            pass
+        if hasattr(self, "project_table") and 0 <= project_row < self.project_table.rowCount():
+            self.project_table.setCurrentCell(project_row, 0)
+        project = self.selected_project()
+        if not project:
+            QMessageBox.information(self, "提示", "请先选择一个视频项目。")
+            return
+        asset = self.selected_asset()
+        if not asset:
+            QMessageBox.information(self, "提示", "请先选中要删除的图片。")
+            return
+        title = str(asset.get("role") or asset.get("description") or "未命名图片")
+        reply = QMessageBox.question(
+            self,
+            "删除图片",
+            f"确定删除选中的图片「{title}」吗？",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.current_project = self.gateway.delete_video_asset(int(project["id"]), int(asset["id"]))
+            self.render_assets()
+            QMessageBox.information(self, "删除成功", "图片已删除。")
+        except Exception as exc:
+            QMessageBox.warning(self, "删除失败", str(exc))
 
     def load_selected_asset(self) -> None:
         asset = self.selected_asset()
@@ -2397,7 +2555,7 @@ class VideoGenerationPage(Page):
         if active:
             self.video_progress.show()
             self.video_progress_label.show()
-            self.video_progress_label.setText(text or "模型任务已提交，正在生成中；页面会自动刷新状态。")
+            self.video_progress_label.setText(text or "任务已提交，正在生成中；页面会自动刷新状态。")
         else:
             self.video_progress.hide()
             self.video_progress_label.hide()
@@ -2432,9 +2590,10 @@ class VideoGenerationPage(Page):
             QMessageBox.information(self, "提示", "请先上传至少 1 张产品图，再生成视频。")
             return
         mode = "image_to_video"
-        payload = {"generation_mode": mode, "model_name": str(self.video_model.currentData() or self.video_model.currentText()).strip()}
-        self.generate_status.setText("正在提交给视频模型。系统会先生成分镜画面，请稍候。")
-        self.set_video_progress(True, "正在调用视频模型，任务创建中...")
+        model_name = str(self.video_model.currentData() or self.video_model.currentText()).strip() or "auto"
+        payload = {"generation_mode": mode, "model_name": model_name}
+        self.generate_status.setText("正在提交视频任务，请稍候。")
+        self.set_video_progress(True, "正在创建视频任务...")
         self.set_video_buttons_busy(True)
         self.video_submit_signals = VideoTaskSignals()
         self.video_submit_signals.finished.connect(self.on_video_task_created)
@@ -2451,7 +2610,7 @@ class VideoGenerationPage(Page):
         self.preview_task_video(task)
         if self.task_is_active(task):
             self.generate_status.setText(f"视频任务已提交，模型正在生成。任务号：{task.get('provider_task_id') or task.get('id')}")
-            self.set_video_progress(True, "模型正在生成视频，系统会自动刷新任务状态。")
+            self.set_video_progress(True, "视频正在生成，系统会自动刷新状态。")
             self.video_poll_timer.start()
         else:
             self.set_video_progress(False)
@@ -2459,7 +2618,7 @@ class VideoGenerationPage(Page):
     def on_video_task_failed(self, message: str) -> None:
         self.set_video_buttons_busy(False)
         self.set_video_progress(False)
-        self.generate_status.setText("提交失败，请检查模型配置、第三方 API 和余额。")
+        self.generate_status.setText("提交失败，请稍后重试或切换生成方案。")
         QMessageBox.warning(self, "提交失败", message)
 
     def refresh_selected_video_task(self) -> None:
@@ -2477,9 +2636,9 @@ class VideoGenerationPage(Page):
             return
         self.video_refresh_busy = True
         if manual:
-            self.generate_status.setText("正在刷新视频任务结果和 token 消耗。")
+            self.generate_status.setText("正在刷新视频任务结果。")
         if self.task_is_active(task):
-            self.set_video_progress(True, "模型正在生成视频，系统会自动刷新任务状态。")
+            self.set_video_progress(True, "视频正在生成，系统会自动刷新状态。")
         self.video_refresh_signals = VideoTaskSignals()
         self.video_refresh_signals.finished.connect(self.on_video_task_refreshed)
         self.video_refresh_signals.failed.connect(lambda message: self.on_video_refresh_failed(message, manual))
@@ -2551,7 +2710,7 @@ class VideoGenerationPage(Page):
         active_task = next((task for task in project.get("tasks") or [] if self.task_is_active(task)), None)
         if active_task:
             self.generate_status.setText(f"视频生成中：{active_task.get('status') or 'running'}。任务号：{active_task.get('provider_task_id') or active_task.get('id')}")
-            self.set_video_progress(True, "模型正在生成视频，系统会自动刷新任务状态。")
+            self.set_video_progress(True, "视频正在生成，系统会自动刷新状态。")
             if not self.video_poll_timer.isActive():
                 self.video_poll_timer.start()
         elif hasattr(self, "video_poll_timer") and self.video_poll_timer.isActive():
@@ -3244,7 +3403,7 @@ class AdminUsersPage(Page):
         self.layout.addWidget(action_bar)
         self.user_table = table(["ID", "账号", "姓名", "角色", "状态", "积分", "最后登录"])
         self.layout.addWidget(self.user_table)
-        self.refresh()
+        self.items: list[dict[str, Any]] = []
 
     def activate(self) -> None:
         self.refresh()
@@ -3384,7 +3543,7 @@ class SimpleConfigPage(Page):
         if config_type == "third" and gateway:
             self.threshold_panel = BusinessThresholdPanel(gateway)
             self.layout.addWidget(self.threshold_panel)
-        self.refresh()
+        self.items: list[dict[str, Any]] = []
 
     def activate(self) -> None:
         self.refresh()
@@ -3428,8 +3587,8 @@ class SimpleConfigPage(Page):
     def model_fields(self) -> list[tuple[str, str, str]]:
         return [
             ("config_name", "配置名称", "DeepSeek 选品模型"),
-            ("provider", "服务商", "doubao/openai/deepseek/qwen/custom"),
-            ("model_type", "模型类型", "general/text_translation/product_vision/image_translation/image_generation"),
+            ("provider", "服务商", "buming_ai/doubao/openai/deepseek/qwen/custom"),
+            ("model_type", "模型类型", "general/text_translation/product_vision/image_translation/image_generation/video_generation"),
             ("base_url", "Base URL", "https://api.deepseek.com/v1"),
             ("api_key_encrypted", "API Key", "DeepSeek API Key"),
             ("model_name", "模型名称", "deepseek-chat"),
@@ -3442,7 +3601,7 @@ class SimpleConfigPage(Page):
     def third_fields(self) -> list[tuple[str, str, str]]:
         return [
             ("config_name", "配置名称", "阿里云短信"),
-            ("service_type", "服务类型", "aliyun_sms/fastmoss/1688_api/custom_api/oxylabs/miaoshou/volcengine-mediakit"),
+            ("service_type", "服务类型", "aliyun_sms/buming_ai/miaoshou_api/fastmoss/1688_api/custom_api/oxylabs/miaoshou/volcengine-mediakit"),
             ("api_base_url", "API 地址", "https://example.com"),
             ("access_key_encrypted", "Access Key", "API Key 或 Bearer Token"),
             ("secret_key_encrypted", "Secret Key", "可选"),
@@ -3687,12 +3846,17 @@ class ModelTestPage(Page):
         self.result_edit.setLineWrapMode(QTextEdit.WidgetWidth)
         self.result_edit.setMinimumHeight(420)
         self.layout.addWidget(self.result_edit, 1)
-        self.refresh_models()
+        self.items: list[dict[str, Any]] = []
 
     def activate(self) -> None:
         self.refresh_models()
 
     def refresh_models(self) -> None:
+        if str((self.gateway.user or {}).get("role") or "").lower() != "admin":
+            self.items = []
+            self.model_combo.clear()
+            self.status_label.setText("模型测试仅管理员可用。")
+            return
         try:
             self.items = self.gateway.model_configs()
         except Exception as exc:
@@ -7245,23 +7409,53 @@ class AutoPublishPage(Page):
         self.page_content.setObjectName("AutoPublishSection")
         self.layout = QVBoxLayout(self.page_content)
         self.layout.setContentsMargins(22, 20, 22, 20)
-        self.layout.setSpacing(12)
+        self.layout.setSpacing(14)
         self.page_scroll.setWidget(self.page_content)
         root_layout.addWidget(self.page_scroll)
 
         self.layout.addWidget(
             make_title(
                 "自动上架",
-                "1688 链接进入妙手开放平台采集箱，标题、规格、产品描述、图片翻译与智能抹除均可按需勾选。",
+                "配置店铺后，填写链接并开始执行。",
             )
         )
+
+        overview_card = QFrame()
+        overview_card.setObjectName("AutoPublishCard")
+        overview_layout = QHBoxLayout(overview_card)
+        overview_layout.setContentsMargins(18, 14, 18, 14)
+        overview_layout.setSpacing(12)
+        overview_title = QLabel("当前状态")
+        overview_title.setObjectName("CardTitle")
+        overview_layout.addWidget(overview_title)
+        self.overview_link_label = QLabel("链接：0 条")
+        self.overview_link_label.setObjectName("AutoPublishPill")
+        self.overview_link_label.setAlignment(Qt.AlignCenter)
+        self.overview_link_label.setMinimumHeight(24)
+        self.overview_link_label.setMinimumWidth(86)
+        overview_layout.addWidget(self.overview_link_label)
+        self.overview_mode_label = QLabel("仅保存不发布")
+        self.overview_mode_label.setObjectName("AutoPublishPill")
+        self.overview_mode_label.setAlignment(Qt.AlignCenter)
+        self.overview_mode_label.setMinimumHeight(24)
+        self.overview_mode_label.setMinimumWidth(104)
+        overview_layout.addWidget(self.overview_mode_label)
+        self.overview_shop_label = QLabel("店铺：")
+        self.overview_shop_label.setObjectName("AutoPublishHint")
+        overview_layout.addWidget(self.overview_shop_label)
+        overview_layout.addStretch(1)
+        overview_tip = QLabel("先填链接，再选店铺和利润；再勾选文案、图片处理后提交。")
+        overview_tip.setObjectName("AutoPublishHint")
+        overview_tip.setWordWrap(False)
+        overview_layout.addWidget(overview_tip, 2)
+        self.layout.addWidget(overview_card)
 
         self.offer_url_input = QTextEdit()
         self.offer_url_input.setObjectName("AutoPublishInput")
         self.offer_url_input.setPlaceholderText(
-            "粘贴 1688 商品链接，每行一个。\n也可以只粘贴 offerId，例如 123456789012。"
+            "粘贴 1688 商品链接，每行一个。"
         )
-        self.offer_url_input.setFixedHeight(112)
+        self.offer_url_input.setFixedHeight(102)
         self.offer_url_input.textChanged.connect(self.schedule_offer_meta_sync)
 
         self.language_select = QComboBox()
@@ -7339,27 +7533,28 @@ class AutoPublishPage(Page):
 
         self.miaoshou_shop_combo = QComboBox()
         self.miaoshou_shop_combo.setObjectName("AutoPublishShopCombo")
-        self.miaoshou_shop_combo.setMinimumHeight(30)
-        self.miaoshou_shop_combo.setMinimumWidth(180)
-        self.miaoshou_shop_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.miaoshou_shop_combo.setFixedHeight(32)
+        self.miaoshou_shop_combo.setMinimumWidth(280)
+        self.miaoshou_shop_combo.setMaximumWidth(360)
+        self.miaoshou_shop_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.miaoshou_shop_combo.currentIndexChanged.connect(self.update_summary_state)
         self.miaoshou_app_key_input = QLineEdit()
         self.miaoshou_app_key_input.setObjectName("AutoPublishMiaoshouAppKey")
         self.miaoshou_app_key_input.setPlaceholderText("填写妙手 AppKey")
         self.miaoshou_app_key_input.setMinimumHeight(30)
-        self.miaoshou_app_key_input.setMinimumWidth(180)
+        self.miaoshou_app_key_input.setMinimumWidth(220)
         self.miaoshou_app_secret_input = QLineEdit()
         self.miaoshou_app_secret_input.setObjectName("AutoPublishMiaoshouAppSecret")
         self.miaoshou_app_secret_input.setPlaceholderText("填写妙手 AppSecret")
         self.miaoshou_app_secret_input.setMinimumHeight(30)
-        self.miaoshou_app_secret_input.setMinimumWidth(180)
+        self.miaoshou_app_secret_input.setMinimumWidth(220)
         self.miaoshou_app_secret_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.miaoshou_api_base_url_input = QLineEdit()
         self.miaoshou_api_base_url_input.setObjectName("AutoPublishMiaoshouApiBaseUrl")
         self.miaoshou_api_base_url_input.setPlaceholderText("https://openapi-erp.91miaoshou.com")
         self.miaoshou_api_base_url_input.setText("https://openapi-erp.91miaoshou.com")
         self.miaoshou_api_base_url_input.setMinimumHeight(30)
-        self.miaoshou_api_base_url_input.setMinimumWidth(260)
+        self.miaoshou_api_base_url_input.setMinimumWidth(320)
         self.miaoshou_shop_refresh_button = QPushButton("刷新店铺")
         self.miaoshou_shop_refresh_button.setObjectName("AutoPublishShopRefresh")
         self.miaoshou_shop_refresh_button.setFixedSize(76, 30)
@@ -7371,7 +7566,7 @@ class AutoPublishPage(Page):
         self.profit_rule_input = QLineEdit()
         self.profit_rule_input.setObjectName("AutoPublishProfitInput")
         self.profit_rule_input.setPlaceholderText("20 或 20%")
-        self.profit_rule_input.setFixedSize(86, 30)
+        self.profit_rule_input.setFixedSize(160, 32)
         self.profit_rule_input.textChanged.connect(self.update_summary_state)
         self.refresh_button = QPushButton("重置")
         self.refresh_button.setObjectName("AutoPublishSecondaryAction")
@@ -7384,13 +7579,13 @@ class AutoPublishPage(Page):
 
         self.offer_meta_scroll = QScrollArea()
         self.offer_meta_scroll.setWidgetResizable(True)
-        self.offer_meta_scroll.setFixedHeight(198)
+        self.offer_meta_scroll.setFixedHeight(188)
         self.offer_meta_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.offer_meta_content = QWidget()
         self.offer_meta_layout = QVBoxLayout(self.offer_meta_content)
         self.offer_meta_layout.setContentsMargins(0, 0, 0, 0)
         self.offer_meta_layout.setSpacing(8)
-        meta_empty = QLabel("识别到链接后，这里会出现每个商品的重量和尺寸。默认 500g / 10 x 10 x 40cm。")
+        meta_empty = QLabel("识别到链接后，这里会显示每个商品的重量和尺寸。")
         meta_empty.setObjectName("AutoPublishHint")
         meta_empty.setWordWrap(True)
         self.offer_meta_layout.addWidget(meta_empty)
@@ -7401,7 +7596,7 @@ class AutoPublishPage(Page):
         workspace.setObjectName("AutoPublishCard")
         workspace_layout = QGridLayout(workspace)
         workspace_layout.setContentsMargins(18, 16, 18, 16)
-        workspace_layout.setHorizontalSpacing(18)
+        workspace_layout.setHorizontalSpacing(14)
         workspace_layout.setVerticalSpacing(12)
         workspace_layout.setColumnStretch(0, 1)
 
@@ -7417,69 +7612,130 @@ class AutoPublishPage(Page):
         workspace_layout.addWidget(self.offer_url_input, 1, 0)
 
         api_row = QHBoxLayout()
-        api_row.setSpacing(8)
+        api_row.setSpacing(10)
         api_label = QLabel("妙手 API")
         api_label.setObjectName("AutoPublishHint")
         api_row.addWidget(api_label)
-        api_row.addWidget(self.miaoshou_app_key_input)
-        api_row.addWidget(self.miaoshou_app_secret_input)
-        api_row.addWidget(self.miaoshou_api_base_url_input)
+        api_row.addWidget(self.miaoshou_app_key_input, 1)
+        api_row.addWidget(self.miaoshou_app_secret_input, 1)
+        api_row.addWidget(self.miaoshou_api_base_url_input, 2)
         api_row.addStretch(1)
         workspace_layout.addLayout(api_row, 2, 0)
 
-        action_row = QHBoxLayout()
-        action_row.setSpacing(8)
-        action_row.addWidget(self.dry_run)
-        action_row.addWidget(self.image_translation_checkbox)
-        action_row.addStretch(1)
-        profit_label = QLabel("目标利润")
-        profit_label.setObjectName("AutoPublishHint")
-        action_row.addWidget(profit_label)
-        action_row.addWidget(self.profit_rule_input)
-        shop_label = QLabel("目标店铺")
-        shop_label.setObjectName("AutoPublishHint")
-        action_row.addWidget(shop_label)
-        action_row.addWidget(self.miaoshou_shop_combo)
-        action_row.addWidget(self.miaoshou_shop_refresh_button)
-        action_row.addWidget(self.miaoshou_reauth_button)
-        action_row.addWidget(self.refresh_button)
-        action_row.addWidget(self.create_button)
-        workspace_layout.addLayout(action_row, 3, 0)
+        publish_card = QFrame()
+        publish_card.setObjectName("AutoPublishOfferCard")
+        publish_layout = QVBoxLayout(publish_card)
+        publish_layout.setContentsMargins(12, 10, 12, 10)
+        publish_layout.setSpacing(10)
 
-        listing_row = QHBoxLayout()
-        listing_row.setSpacing(8)
+        top_row = QHBoxLayout()
+        top_row.setSpacing(8)
+        profit_label = QLabel("目标利润")
+        profit_label.setObjectName("AutoPublishFieldLabel")
+        profit_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        profit_label.setMinimumWidth(68)
+        profit_label.setFixedHeight(32)
+        top_row.addWidget(profit_label)
+        top_row.addWidget(self.profit_rule_input)
+        shop_label = QLabel("目标店铺")
+        shop_label.setObjectName("AutoPublishFieldLabel")
+        shop_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        shop_label.setMinimumWidth(68)
+        shop_label.setFixedHeight(32)
+        top_row.addWidget(shop_label)
+        top_row.addWidget(self.miaoshou_shop_combo)
+        publish_layout.addLayout(top_row)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+        button_row.addStretch(1)
+        button_row.addWidget(self.miaoshou_shop_refresh_button)
+        button_row.addWidget(self.miaoshou_reauth_button)
+        button_row.addSpacing(8)
+        button_row.addWidget(self.refresh_button)
+        button_row.addWidget(self.create_button)
+        publish_layout.addLayout(button_row)
+        workspace_layout.addWidget(publish_card, 3, 0)
+
+        processing_card = QFrame()
+        processing_card.setObjectName("AutoPublishOfferCard")
+        processing_layout = QVBoxLayout(processing_card)
+        processing_layout.setContentsMargins(12, 10, 12, 10)
+        processing_layout.setSpacing(8)
+
+        base_settings = QFrame()
+        base_settings.setObjectName("AutoPublishOfferCard")
+        base_settings_layout = QHBoxLayout(base_settings)
+        base_settings_layout.setContentsMargins(10, 8, 10, 8)
+        base_settings_layout.setSpacing(12)
+        base_label = QLabel("基础设置")
+        base_label.setObjectName("AutoPublishHint")
+        base_settings_layout.addWidget(base_label)
+        base_settings_layout.addWidget(self.dry_run)
+        base_settings_layout.addWidget(self.image_translation_checkbox)
+        base_settings_layout.addStretch(1)
+        processing_layout.addWidget(base_settings)
+
+        text_card = QFrame()
+        text_card.setObjectName("AutoPublishOfferCard")
+        text_card_layout = QVBoxLayout(text_card)
+        text_card_layout.setContentsMargins(10, 8, 10, 8)
+        text_card_layout.setSpacing(8)
+        listing_head = QHBoxLayout()
+        listing_head.setSpacing(8)
         listing_label = QLabel("文案处理")
         listing_label.setObjectName("AutoPublishHint")
-        listing_row.addWidget(listing_label)
-        listing_row.addWidget(self.listing_text_master_checkbox)
-        listing_row.addWidget(self.listing_title_checkbox)
-        listing_row.addWidget(self.listing_sku_checkbox)
-        listing_row.addWidget(self.listing_description_checkbox)
-        listing_row.addStretch(1)
-        workspace_layout.addLayout(listing_row, 4, 0)
+        listing_head.addWidget(listing_label)
+        listing_head.addWidget(self.listing_text_master_checkbox)
+        listing_head.addStretch(1)
+        text_card_layout.addLayout(listing_head)
 
-        removal_row = QHBoxLayout()
-        removal_row.setSpacing(8)
+        listing_grid = QGridLayout()
+        listing_grid.setHorizontalSpacing(14)
+        listing_grid.setVerticalSpacing(4)
+        listing_grid.setContentsMargins(0, 0, 0, 0)
+        listing_grid.addWidget(self.listing_title_checkbox, 0, 0)
+        listing_grid.addWidget(self.listing_sku_checkbox, 0, 1)
+        listing_grid.addWidget(self.listing_description_checkbox, 0, 2)
+        text_card_layout.addLayout(listing_grid)
+        processing_layout.addWidget(text_card)
+
+        removal_card = QFrame()
+        removal_card.setObjectName("AutoPublishOfferCard")
+        removal_card_layout = QVBoxLayout(removal_card)
+        removal_card_layout.setContentsMargins(10, 8, 10, 8)
+        removal_card_layout.setSpacing(8)
+        removal_head = QHBoxLayout()
+        removal_head.setSpacing(8)
         removal_label = QLabel("智能抹除")
         removal_label.setObjectName("AutoPublishHint")
-        removal_row.addWidget(removal_label)
-        removal_row.addWidget(self.image_removal_master_checkbox)
-        removal_row.addWidget(self.remove_logo_checkbox)
-        removal_row.addWidget(self.remove_transparent_text_checkbox)
-        removal_row.addWidget(self.remove_text_checkbox)
-        removal_row.addWidget(self.remove_psoriasis_checkbox)
-        removal_row.addStretch(1)
-        workspace_layout.addLayout(removal_row, 5, 0)
+        removal_head.addWidget(removal_label)
+        removal_head.addWidget(self.image_removal_master_checkbox)
+        removal_head.addStretch(1)
+        removal_card_layout.addLayout(removal_head)
 
-        self.shop_info_label = QLabel("店铺信息：请先在上方填写妙手 AppKey / AppSecret，再刷新店铺。")
+        removal_grid = QGridLayout()
+        removal_grid.setHorizontalSpacing(14)
+        removal_grid.setVerticalSpacing(4)
+        removal_grid.setContentsMargins(0, 0, 0, 0)
+        removal_grid.addWidget(self.remove_logo_checkbox, 0, 0)
+        removal_grid.addWidget(self.remove_transparent_text_checkbox, 0, 1)
+        removal_grid.addWidget(self.remove_text_checkbox, 0, 2)
+        removal_grid.addWidget(self.remove_psoriasis_checkbox, 0, 3)
+        removal_card_layout.addLayout(removal_grid)
+        processing_layout.addWidget(removal_card)
+
+        workspace_layout.addWidget(processing_card, 4, 0)
+
+        self.shop_info_label = QLabel("店铺信息：请先填写妙手 AppKey / AppSecret，再刷新店铺。")
         self.shop_info_label.setObjectName("AutoPublishShopInfo")
         self.shop_info_label.setWordWrap(True)
-        workspace_layout.addWidget(self.shop_info_label, 6, 0)
+        workspace_layout.addWidget(self.shop_info_label, 5, 0)
 
         meta_title = QLabel("重量与尺寸")
         meta_title.setObjectName("CardTitle")
-        workspace_layout.addWidget(meta_title, 7, 0)
-        workspace_layout.addWidget(self.offer_meta_scroll, 8, 0)
+        workspace_layout.addWidget(meta_title, 6, 0)
+        workspace_layout.addWidget(self.offer_meta_scroll, 7, 0)
         self.layout.addWidget(workspace)
 
         status_row = QHBoxLayout()
@@ -7506,52 +7762,25 @@ class AutoPublishPage(Page):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setFixedHeight(12)
+        self.price_debug_output = QTextEdit()
+        self.price_debug_output.setObjectName("AutoPublishPriceDebug")
+        self.price_debug_output.setReadOnly(True)
+        self.price_debug_output.setAcceptRichText(False)
+        self.price_debug_output.setMaximumHeight(130)
+        self.price_debug_output.hide()
         progress_layout.addWidget(self.progress_label)
         progress_layout.addWidget(self.progress_bar)
+        progress_layout.addWidget(self.price_debug_output)
         status_row.addWidget(progress_card, 1)
 
-        usage_card = QFrame()
-        usage_card.setObjectName("AutoPublishCard")
-        usage_layout = QVBoxLayout(usage_card)
-        usage_layout.setContentsMargins(16, 12, 16, 12)
-        usage_layout.setSpacing(8)
-        usage_head = QHBoxLayout()
-        usage_title = QLabel("API 用量统计")
-        usage_title.setObjectName("CardTitle")
-        usage_head.addWidget(usage_title)
-        usage_head.addStretch()
-        self.api_usage_summary = QLabel("等待任务完成后显示调用次数、图片数量和 Token 用量。")
-        self.api_usage_summary.setObjectName("AutoPublishHint")
-        self.api_usage_summary.setWordWrap(True)
-        self.api_usage_detail = QLabel("暂无数据")
-        self.api_usage_detail.setObjectName("ProductMuted")
-        self.api_usage_detail.setWordWrap(True)
-        usage_layout.addLayout(usage_head)
-        usage_layout.addWidget(self.api_usage_summary)
-        usage_layout.addWidget(self.api_usage_detail)
-        status_row.addWidget(usage_card, 1)
         self.layout.addLayout(status_row)
-
-        result_card = QFrame()
-        result_card.setObjectName("AutoPublishCard")
-        result_layout = QVBoxLayout(result_card)
-        result_layout.setContentsMargins(16, 12, 16, 12)
-        result_layout.setSpacing(8)
-        result_title = QLabel("执行结果")
-        result_title.setObjectName("CardTitle")
-        self.result = QTextEdit()
-        self.result.setReadOnly(True)
-        self.result.setMinimumHeight(170)
-        self.result.setPlaceholderText("任务执行结果会显示在这里。")
-        result_layout.addWidget(result_title)
-        result_layout.addWidget(self.result)
-        self.layout.addWidget(result_card, 1)
+        self.layout.addSpacing(4)
         self.update_summary_state()
         self.refresh_miaoshou_shop_options(silent=True)
 
     def activate(self) -> None:
         if not self.loaded:
-            self.result.setPlaceholderText("粘贴 1688 商品链接后点击开始上架。长任务会在后台执行，窗口不会卡住。")
+            self.offer_url_input.setPlaceholderText("粘贴 1688 商品链接，每行一个；也可只贴商品编号。")
             self.loaded = True
         self.update_summary_state()
         if not self.miaoshou_shop_options:
@@ -7561,13 +7790,16 @@ class AutoPublishPage(Page):
         self.current_task = None
         self.progress_timer.stop()
         self.reset_flow()
-        self.result.clear()
         self.update_miaoshou_shop_summary()
         self.update_summary_state()
 
     def update_summary_state(self, *_args: Any) -> None:
         offer_count = len(self.extract_offer_urls(self.offer_url_input.toPlainText()))
         self.link_count_label.setText(f"{offer_count} 条")
+        if hasattr(self, "overview_link_label"):
+            self.overview_link_label.setText(f"链接：{offer_count} 条")
+        if hasattr(self, "overview_mode_label"):
+            self.overview_mode_label.setText("仅保存不发布" if self.dry_run.isChecked() else "直接发布")
         self.update_miaoshou_shop_summary()
 
     def current_shop_option(self) -> dict[str, Any] | None:
@@ -7593,7 +7825,7 @@ class AutoPublishPage(Page):
     def current_shop_label(self) -> str:
         option = self.current_shop_option()
         if not option:
-            return "未选择店铺"
+            return ""
         shop_name = str(option.get("shop_name") or "").strip()
         shop_id = option.get("shop_id")
         if shop_name and shop_id is not None:
@@ -7660,13 +7892,27 @@ class AutoPublishPage(Page):
         return self.remove_psoriasis_checkbox.isChecked()
 
     def update_miaoshou_shop_summary(self) -> None:
+        credentials = self._collect_miaoshou_credentials_from_inputs()
+        if not credentials:
+            if self.miaoshou_shop_options:
+                self.miaoshou_shop_options = []
+                self.miaoshou_shop_combo.blockSignals(True)
+                self.miaoshou_shop_combo.clear()
+                self.miaoshou_shop_combo.blockSignals(False)
+            self.shop_info_label.setText("店铺：请先填写妙手 AppKey / AppSecret 再刷新。")
+            self.miaoshou_shop_combo.setEnabled(False)
+            if hasattr(self, "overview_shop_label"):
+                self.overview_shop_label.setText("店铺：")
+            return
         count = len(self.miaoshou_shop_options)
         if count:
-            self.shop_info_label.setText(f"店铺信息：已加载 {count} 个店铺，当前选择 {self.current_shop_label()}。")
-            self.miaoshou_shop_combo.setEnabled(True)
+            self.shop_info_label.setText(f"店铺：已加载 {count} 个，当前 {self.current_shop_label()}。")
         else:
-            self.shop_info_label.setText("店铺信息：请先在页面顶部填写妙手 AppKey / AppSecret，再刷新店铺。")
-            self.miaoshou_shop_combo.setEnabled(False)
+            self.shop_info_label.setText("店铺：已填写妙手 API，请点击刷新店铺。")
+        self.miaoshou_shop_combo.setEnabled(True)
+        if hasattr(self, "overview_shop_label"):
+            current_shop_label = self.current_shop_label()
+            self.overview_shop_label.setText(f"店铺：{current_shop_label}" if current_shop_label else "店铺：")
 
     @staticmethod
     def _first_nonempty(*values: Any) -> str:
@@ -7697,20 +7943,6 @@ class AutoPublishPage(Page):
         direct_credentials = self._collect_miaoshou_credentials_from_inputs()
         if direct_credentials:
             return direct_credentials
-        for config in self.gateway.third_party_configs():
-            if str(config.get("service_type") or "").strip() != "miaoshou_api":
-                continue
-            if int(config.get("status") or 0) != 1:
-                continue
-            app_key = self._first_nonempty(config.get("access_key_encrypted"))
-            app_secret = self._first_nonempty(config.get("secret_key_encrypted"))
-            base_url = self._first_nonempty(config.get("api_base_url"), "https://openapi-erp.91miaoshou.com")
-            if app_key and app_secret:
-                return {
-                    "app_key": app_key,
-                    "app_secret": app_secret,
-                    "base_url": base_url.rstrip("/"),
-                }
         return {}
 
     def _load_miaoshou_shop_options_direct(self, target_site: str = "JP") -> list[dict[str, Any]]:
@@ -7989,7 +8221,7 @@ class AutoPublishPage(Page):
                     "remove_text": self.smart_removal_remove_text_enabled(),
                     "remove_psoriasis": self.smart_removal_remove_psoriasis_enabled(),
                     "profit_rule": self.profit_rule_input.text().strip(),
-                    "pricing_currency": "JPY",
+                    "pricing_currency": "CNY",
                     "target_site": "JP",
                     "target_shop_id": self.current_shop_id(),
                 }
@@ -8030,10 +8262,11 @@ class AutoPublishPage(Page):
         self.create_button.setText("处理中...")
         self.progress_timer.stop()
         self.progress_bar.setValue(0)
+        self.clear_price_debug_output()
         self.progress_phase.setText("创建中")
         self.progress_label.setText("正在创建任务")
         self.reset_api_usage_panel("任务已开始，正在等待进度回传。")
-        self.result.setPlainText("任务已提交，正在后台处理。完成后会自动弹出提示。")
+        self.shop_info_label.setText("店铺信息：任务已提交，正在后台处理。完成后会自动弹出提示。")
         self.task_signals = AutoPublishSignals()
         self.task_signals.created.connect(self.on_task_created)
         self.task_signals.finished.connect(self.on_task_finished)
@@ -8046,12 +8279,11 @@ class AutoPublishPage(Page):
         self.progress_timer.stop()
         self.current_task = None
         self.progress_bar.setValue(0)
+        self.clear_price_debug_output()
         self.progress_phase.setText("创建中")
         self.progress_label.setText(f"批量任务已开始：{len(payloads)} 个链接")
         self.reset_api_usage_panel(f"批量任务已开始：{len(payloads)} 个链接，正在等待进度回传。")
-        self.result.setPlainText(
-            f"批量任务已提交，共 {len(payloads)} 条链接。完成后会自动弹出提示。"
-        )
+        self.shop_info_label.setText(f"店铺信息：批量任务已提交，共 {len(payloads)} 条链接。完成后会自动弹出提示。")
         self.task_signals = AutoPublishSignals()
         self.task_signals.created.connect(self.on_task_created)
         self.task_signals.finished.connect(self.on_task_finished)
@@ -8169,10 +8401,17 @@ class AutoPublishPage(Page):
         self.progress_animation_timer.stop()
         self.progress_target_value = 0
         self.progress_bar.setValue(0)
+        self.clear_price_debug_output()
         self.progress_label.setText("待开始，输入 1688 链接后点击开始执行。")
         self.progress_phase.setText("待开始")
         self.reset_api_usage_panel()
         self.update_miaoshou_shop_summary()
+
+    def clear_price_debug_output(self) -> None:
+        if not hasattr(self, "price_debug_output"):
+            return
+        self.price_debug_output.clear()
+        self.price_debug_output.hide()
 
     @staticmethod
     def format_shop_summary(result: dict[str, Any]) -> str:
@@ -8204,70 +8443,79 @@ class AutoPublishPage(Page):
             return f"店铺信息：已选店铺ID {', '.join(shop_ids)}。"
         return "店铺信息：未获取到店铺列表。"
 
+    def render_price_debug_output(self, result: dict[str, Any]) -> None:
+        if not hasattr(self, "price_debug_output"):
+            return
+        pricing = result.get("pricing_summary") if isinstance(result.get("pricing_summary"), dict) else {}
+        rows = pricing.get("price_debug_rows") if isinstance(pricing.get("price_debug_rows"), list) else []
+        if not rows:
+            self.clear_price_debug_output()
+            return
+        header = (
+            "妙手价格提交明细："
+            f"SKU {pricing.get('changed', len(rows))} 个，"
+            f"计费重量 {pricing.get('billable_weight_kg', '-')}kg，"
+            f"佣金 {round(float(pricing.get('commission_rate') or 0) * 100, 2)}%，"
+            f"提交币种 {pricing.get('pricing_currency') or '-'}"
+        )
+        lines = [header]
+        for index, row in enumerate(rows[:20], start=1):
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("sku_name") or row.get("sku_key") or f"SKU {index}").strip()
+            if len(name) > 34:
+                name = f"{name[:34]}..."
+            lines.append(
+                f"{index}. {name} | 货源 CNY {row.get('origin_price_cny')} | "
+                f"模板 CNY {row.get('template_sale_cny')} | "
+                f"提交 price={row.get('submitted_price')} {row.get('submitted_currency')} | "
+                f"priceIncludeVat/JPY={row.get('price_include_vat')}"
+            )
+        if len(rows) > 20:
+            lines.append(f"... 还有 {len(rows) - 20} 个 SKU 未展开。")
+        self.price_debug_output.setPlainText("\n".join(lines))
+        self.price_debug_output.show()
+
     def render_result(self, result: dict[str, Any]) -> None:
         if isinstance(result.get("batch_results"), list):
             self.render_batch_result(result)
             return
-        self.update_api_usage_panel(result)
         self.shop_info_label.setText(self.format_shop_summary(result))
         progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
         progress_text = str(progress.get("message") or result.get("message") or "-")
-        lines = [
+        errors = result.get("errors") or []
+        product_infos = result.get("product_infos") or []
+        status_lines = [
             f"状态：{result.get('status', '-')}",
             f"消息：{result.get('message', '-')}",
             f"店铺：{self.format_shop_summary(result).replace('店铺信息：', '')}",
             f"进度：{progress_text}",
-            "",
             f"结果：{('成功' if result.get('ok') else '失败')}",
         ]
-        errors = result.get("errors") or []
         if errors:
-            lines.append("")
-            lines.append("错误：")
-            lines.extend([f"- {error}" for error in errors[:3]])
-        product_infos = result.get("product_infos") or []
+            status_lines.append(f"错误：{str(errors[0])}")
         if len(product_infos) > 1:
-            lines.append("")
-            lines.append(f"商品数：{len(product_infos)}")
-            for index, product in enumerate(product_infos, start=1):
-                title = str(product.get("optimized_title") or product.get("title") or product.get("offer_url") or "-")
-                offer_id = str(product.get("offer_id") or "-")
-                sku_count = len(product.get("optimized_skus") or product.get("skus") or [])
-                lines.append(f"- {index}. {title}（货源ID：{offer_id}，SKU：{sku_count} 个）")
+            status_lines.append(f"商品数：{len(product_infos)}")
         if result.get("template_path"):
-            lines.append("")
-            lines.append(f"模板文件：{result.get('template_path')}")
-        self.append_api_usage_lines(lines, result)
-        import_result = result.get("import_result") or {}
-        screenshots = import_result.get("screenshots") or []
-        if screenshots:
-            lines.append("")
-            lines.append("失败截图：")
-            lines.extend([f"- {path}" for path in screenshots])
-        self.result.setPlainText("\n".join(lines))
+            status_lines.append(f"模板文件：{result.get('template_path')}")
+        self.progress_label.setText("；".join(status_lines[:3]) if status_lines else "任务已完成。")
+        self.render_price_debug_output(result)
 
     def render_batch_result(self, result: dict[str, Any]) -> None:
         batch_results = [item for item in result.get("batch_results", []) if isinstance(item, dict)]
         ok_count = sum(1 for item in batch_results if item.get("ok"))
         failed_count = len(batch_results) - ok_count
-        self.update_api_usage_panel(result)
         self.shop_info_label.setText(self.format_shop_summary(result))
         progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
         progress_text = str(progress.get("message") or result.get("message") or "-")
-        lines = [
-            f"状态：{result.get('status', '-')}",
-            f"消息：{result.get('message', '-')}",
-            f"店铺：{self.format_shop_summary(result).replace('店铺信息：', '')}",
-            f"进度：{progress_text}",
-            "",
-            f"汇总：成功 {ok_count} 个，失败 {failed_count} 个。",
-            "",
-            "说明：批量任务只显示总览，不展开每一步。",
-        ]
-        self.append_api_usage_lines(lines, result)
-        self.result.setPlainText("\n".join(lines).strip())
+        self.progress_label.setText(
+            f"状态：{result.get('status', '-')}；消息：{result.get('message', '-')}；"
+            f"汇总：成功 {ok_count} 个，失败 {failed_count} 个；进度：{progress_text}"
+        )
 
     def reset_api_usage_panel(self, message: str | None = None) -> None:
+        if not hasattr(self, "api_usage_summary") or not hasattr(self, "api_usage_detail"):
+            return
         self.api_usage_summary.setText(message or "等待任务完成后显示调用次数、图片数量、Token 用量和预估费用。")
         self.api_usage_detail.setText("暂无数据")
 
@@ -8281,6 +8529,8 @@ class AutoPublishPage(Page):
         return f"¥{cost:.2f}"
 
     def update_api_usage_panel(self, result: dict[str, Any]) -> None:
+        if not hasattr(self, "api_usage_summary") or not hasattr(self, "api_usage_detail"):
+            return
         usage = result.get("api_usage") if isinstance(result.get("api_usage"), dict) else {}
         totals = usage.get("totals") if isinstance(usage.get("totals"), dict) else {}
         if not totals:
@@ -9333,6 +9583,21 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #AutoPublishHint {
             background: transparent; color: $muted; font-size: 12px; line-height: 1.35;
         }
+        #AutoPublishPriceDebug {
+            background: rgba(243, 250, 248, 0.92);
+            color: $text;
+            border: 1px solid rgba(22, 160, 133, 0.20);
+            border-radius: 10px;
+            padding: 8px 10px;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+        #AutoPublishFieldLabel {
+            background: transparent;
+            color: $muted;
+            font-size: 14px;
+            font-weight: 600;
+        }
         #AutoPublishShopInfo {
             background: #f3faf8;
             color: $text;
@@ -9428,6 +9693,18 @@ def apply_style(app: QApplication, theme_name: str = "light") -> None:
         #AutoPublishInput {
             background: $input; color: $text; border: 1px solid $border; border-radius: 12px;
             padding: 12px 14px; font-size: 14px;
+        }
+        #AutoPublishProfitInput {
+            background: $input;
+            color: $text;
+            border: 1px solid $border;
+            border-radius: 12px;
+            min-height: 38px;
+            padding: 8px 14px;
+            font-size: 14px;
+        }
+        #AutoPublishProfitInput:focus {
+            border: 1px solid $accent;
         }
         #AutoPublishSpecBox {
             background: $input; border: 1px solid $border; border-radius: 10px;

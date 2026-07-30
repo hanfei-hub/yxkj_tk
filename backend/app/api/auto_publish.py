@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -11,16 +11,13 @@ from app.core.database import SessionLocal, get_db
 from app.services.auto_publish_service import (
     create_1688_batch_publish_task,
     create_1688_publish_task,
-    create_task,
     list_miaoshou_shop_options,
     get_task_result,
     get_latest_result,
     list_history,
-    list_publish_candidates,
     save_miaoshou_picture_space_storage_state,
     mark_task_runtime_failure,
     run_1688_publish_task,
-    run_task,
 )
 
 
@@ -43,13 +40,6 @@ def run_auto_publish_task_in_background(task_id: str) -> None:
         mark_task_runtime_failure(task_id, str(exc))
     finally:
         db.close()
-
-
-class AutoPublishTaskRequest(BaseModel):
-    derived_id: int
-    publish_count: int = 1
-    target_channel: str = "TikTok Shop Japan"
-    dry_run: bool = True
 
 
 class AutoPublish1688ItemRequest(BaseModel):
@@ -126,11 +116,6 @@ class MiaoshouReauthorizeRequest(BaseModel):
     storage_state: dict[str, Any]
 
 
-@router.get("/candidates")
-def candidates(limit: int = Query(50, ge=1, le=100), db: Session = Depends(get_db)):
-    return list_publish_candidates(db, limit=limit)
-
-
 @router.get("/latest")
 def latest(user: dict = Depends(require_role("admin", "teacher"))):
     user_id, role = user_id_and_role(user)
@@ -174,18 +159,6 @@ def get_auto_publish_task(task_id: str, user: dict = Depends(require_role("admin
     if not result:
         raise HTTPException(status_code=404, detail="Auto publish task not found.")
     return result
-
-
-@router.post("/tasks")
-def create_auto_publish_task(
-    payload: AutoPublishTaskRequest,
-    user: dict = Depends(require_role("admin", "teacher")),
-    db: Session = Depends(get_db),
-):
-    try:
-        return create_task(db, payload.model_dump(), user_id=user.get("id"))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/tasks/{task_id}/run")

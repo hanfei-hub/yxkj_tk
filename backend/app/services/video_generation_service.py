@@ -21,12 +21,20 @@ VIDEO_RUNTIME_DIR = BASE_DIR / "runtime" / "video_generation"
 VIDEO_ASSET_DIR = VIDEO_RUNTIME_DIR / "assets"
 DEFAULT_ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 DEFAULT_SEEDANCE_MODEL = "doubao-seedance-2-0-mini-260615"
+DEFAULT_BUMING_BASE_URL = "https://buming.token6688.com"
 SEEDANCE_MODEL_ALIASES = {
     "Doubao-Seedance-2.0-mini": "doubao-seedance-2-0-mini-260615",
     "Doubao-Seedance-2.0-Fast": "doubao-seedance-2-0-fast",
     "seedance-2.0-mini": "doubao-seedance-2-0-mini-260615",
     "seedance-2.0-fast": "doubao-seedance-2-0-fast",
 }
+BUMING_MODEL_ALIASES = {
+    "buming_ai",
+    "buming",
+    "tokengo",
+    "token_go",
+}
+MODEL_TYPE_VIDEO_GENERATION = "video_generation"
 DEFAULT_IMAGE_MODEL = "ep-20260710161912-qq7gf"
 SEEDANCE_MINI_CNY_PER_1000_TOKENS = float(os.getenv("SEEDANCE_MINI_CNY_PER_1000_TOKENS", "0.023"))
 
@@ -213,6 +221,24 @@ def first_text_value(data: Any, keys: tuple[str, ...]) -> str:
     return ""
 
 
+def first_bool_value(data: Any, keys: tuple[str, ...]) -> bool | None:
+    if isinstance(data, dict):
+        for key in keys:
+            value = data.get(key)
+            if isinstance(value, bool):
+                return value
+        for value in data.values():
+            found = first_bool_value(value, keys)
+            if found is not None:
+                return found
+    elif isinstance(data, list):
+        for item in data:
+            found = first_bool_value(item, keys)
+            if found is not None:
+                return found
+    return None
+
+
 def apply_video_response(task: VideoTask, project: VideoProject, data: dict[str, Any]) -> None:
     task.response_payload = json.dumps(data, ensure_ascii=False)
     task.response_snapshot = json.dumps(data, ensure_ascii=False)
@@ -224,7 +250,7 @@ def apply_video_response(task: VideoTask, project: VideoProject, data: dict[str,
     task.usage_note = str(usage["note"])
     task.usage_raw = json.dumps(usage["raw"], ensure_ascii=False)
     task.provider_task_id = task.provider_task_id or first_text_value(data, ("id", "task_id"))
-    video_url = first_text_value(data, ("video_url", "result_video_url", "url", "output_url"))
+    video_url = first_text_value(data, ("result_url", "video_url", "result_video_url", "url", "output_url"))
     if video_url:
         task.video_url = video_url
         task.result_video_url = video_url
@@ -328,6 +354,37 @@ def get_project(db: Session, project_id: int, user: dict[str, Any]) -> VideoProj
     if user.get("role") != "admin" and project.user_id != int(user.get("id") or 0):
         raise PermissionError("No permission for this video project.")
     return project
+
+
+def delete_project(db: Session, project: VideoProject) -> None:
+    asset_paths = [Path(asset.file_path or "") for asset in db.scalars(select(VideoAsset).where(VideoAsset.project_id == project.id)).all()]
+    task_paths = [Path(path) for path in db.scalars(select(VideoTask.local_video_path).where(VideoTask.project_id == project.id)).all() if isinstance(path, str) and path.strip()]
+    db.execute(delete(VideoTask).where(VideoTask.project_id == project.id))
+    db.execute(delete(VideoStoryboardFrame).where(VideoStoryboardFrame.project_id == project.id))
+    db.execute(delete(VideoAsset).where(VideoAsset.project_id == project.id))
+    db.delete(project)
+    db.commit()
+
+    for path in (*asset_paths, *task_paths):
+        try:
+            if path.exists() and path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
+
+def delete_asset(db: Session, project: VideoProject, asset_id: int) -> None:
+    asset = db.get(VideoAsset, asset_id)
+    if not asset or asset.project_id != project.id:
+        raise ValueError("Video asset not found.")
+    file_path = Path(asset.file_path or "")
+    db.delete(asset)
+    db.commit()
+    try:
+        if file_path.exists() and file_path.is_file():
+            file_path.unlink()
+    except OSError:
+        pass
 
 
 def save_asset(db: Session, project: VideoProject, source_path: str, role: str, description: str, is_primary: bool) -> VideoAsset:
@@ -491,6 +548,79 @@ def ark_config(db: Session) -> ThirdPartyConfig:
     return config
 
 
+def is_buming_model(model_name: str | None) -> bool:
+    value = (model_name or "").strip().lower()
+    return value in BUMING_MODEL_ALIASES or value.startswith("buming:") or value.startswith("tokengo:")
+
+
+def buming_api_config(db: Session) -> ThirdPartyConfig:
+    service_types = ["buming_ai", "buming", "tokengo", "token_go"]
+    config = db.scalar(
+        select(ThirdPartyConfig)
+        .where(
+            ThirdPartyConfig.status == 1,
+            ThirdPartyConfig.service_type.in_(service_types),
+            ThirdPartyConfig.access_key_encrypted != "",
+        )
+        .order_by(ThirdPartyConfig.id.desc())
+    )
+    if not config or not config.access_key_encrypted:
+        raise ValueError("请先在第三方 API 配置中启用视频生成平台，service_type 填 buming_ai。")
+    return config
+
+
+def buming_model_config(db: Session, selected_model: str | None) -> tuple[ModelConfig, str]:
+    selected = (selected_model or "").strip()
+    explicit_model = selected.split(":", 1)[1].strip() if ":" in selected else ""
+    query = (
+        select(ModelConfig)
+        .where(
+            ModelConfig.status == 1,
+            ModelConfig.provider == "buming_ai",
+            ModelConfig.model_type == MODEL_TYPE_VIDEO_GENERATION,
+            ModelConfig.model_name != "",
+        )
+        .order_by(ModelConfig.is_default.desc(), ModelConfig.id.desc())
+    )
+    if explicit_model:
+        query = query.where(ModelConfig.model_name == explicit_model)
+    config = db.scalar(query)
+    if not config:
+        if explicit_model:
+            raise ValueError("当前选择的视频模型未启用，请先在模型配置中启用该模型。")
+        raise ValueError("请先在模型配置中启用 provider=buming_ai、model_type=video_generation 的视频模型。")
+    return config, str(config.model_name or "").strip()
+
+
+def buming_api_base(config: ThirdPartyConfig) -> str:
+    base_url = (config.api_base_url or DEFAULT_BUMING_BASE_URL).rstrip("/")
+    return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
+
+
+def buming_params_from_model(config: ModelConfig, reference_urls: list[str]) -> dict[str, Any]:
+    raw_params = safe_json_loads(config.remark, {}) if config.remark else {}
+    if not isinstance(raw_params, dict):
+        raw_params = {}
+    mode_options = [str(item) for item in raw_params.pop("_mode_options", []) if str(item).strip()]
+    upload_params = [str(item) for item in raw_params.pop("_upload_params", []) if str(item).strip()]
+    params = dict(raw_params)
+    params.setdefault("aspect_ratio", "9:16")
+    params.setdefault("count", 1)
+    params.setdefault("duration", "15")
+    if reference_urls and (not upload_params or "images" in upload_params):
+        params["images"] = reference_urls[:9]
+        if str(params.get("mode") or "").strip() in {"", "text-to-video"}:
+            if "reference" in mode_options:
+                params["mode"] = "reference"
+            elif "first-frame" in mode_options:
+                params["mode"] = "first-frame"
+            elif "first-last" in mode_options and len(reference_urls) >= 2:
+                params["mode"] = "first-last"
+    else:
+        params.setdefault("mode", "text-to-video")
+    return {key: value for key, value in params.items() if not str(key).startswith("_")}
+
+
 def image_generation_config(db: Session) -> tuple[ThirdPartyConfig, str]:
     config = ark_config(db)
     model_config = db.scalar(
@@ -529,34 +659,6 @@ def product_assets(db: Session, project_id: int) -> list[VideoAsset]:
         .where(VideoAsset.project_id == project_id, VideoAsset.asset_type.in_(["product", "product_image", "storyboard_sheet"]))
         .order_by(VideoAsset.id)
     ).all()
-
-
-def storyboard_prompt(project: VideoProject, assets: list[VideoAsset]) -> str:
-    image_notes = "\n".join(
-        f"- {asset.role or '产品图'}：{asset.description or '未填写'}，参考地址：{absolute_public_url(asset.public_url or asset.url)}"
-        for asset in assets
-        if asset.asset_type in {"product", "product_image"}
-    )
-    return f"""
-请根据产品图、脚本和图片说明，生成一张 9:16 电商短视频分镜头拼图。
-
-要求：
-1. 拼图中展示 5 个连续分镜，按时间轴从上到下或从左到右清晰排列。
-2. 每个分镜都要能看出画面主体、产品细节和场景动作。
-3. 保持产品外观、颜色、结构、材质一致，不要改造产品。
-4. 画面用于后续视频生成，不要做海报，不要加大段说明文字。
-5. 可以在每个分镜角落保留很短的时间标记，但不要遮挡产品。
-6. 画面质感真实、清晰、适合 TikTok 竖版带货短视频。
-
-产品详情：
-{project.product_details}
-
-产品图说明：
-{image_notes or "无"}
-
-完整脚本：
-{project.script_text}
-""".strip()
 
 
 def image_url_from_response(data: dict[str, Any]) -> tuple[str, str]:
@@ -741,12 +843,165 @@ The final video must include matching {project.video_language} subtitles and voi
 """.strip()
 
 
+def build_buming_prompt(project: VideoProject, assets: list[VideoAsset], generation_mode: str) -> str:
+    product_refs = []
+    for index, asset in enumerate(assets, start=1):
+        if asset.asset_type == "storyboard_sheet":
+            continue
+        product_refs.append(
+            f"Image {index}: role={asset.role or asset.asset_type}; description={asset.description}; url={absolute_public_url(asset.public_url or asset.url)}"
+        )
+    return f"""
+Create a clean 9:16 ecommerce product video, about 15 seconds.
+
+Product details:
+{project.product_details}
+
+Script and storyboard:
+{project.script_text}
+
+Reference product images:
+{chr(10).join(product_refs) or '- missing product image'}
+
+Requirements:
+1. Keep the product appearance, color, structure, material, and visible details consistent with the reference images.
+2. Use simple product-display shots: clean tabletop, slow push-in, close-up details, organized usage scene, final product beauty shot.
+3. Keep the video safe, family-friendly, commercial, and suitable for an ecommerce listing.
+4. Do not add people, faces, watermarks, brand logos, medical claims, certificates, factory scenes, promotional banners, or large text blocks.
+5. Do not change the product into another category or invent extra accessories.
+6. Use a bright, premium, realistic style with stable camera movement.
+7. If subtitles or voiceover are supported, use {project.video_language}; otherwise keep the scene clean without extra text.
+
+Mode: {generation_mode}
+""".strip()
+
+
 def normalize_seedance_model(model_name: str | None) -> str:
     value = (model_name or "").strip()
     return SEEDANCE_MODEL_ALIASES.get(value, value or DEFAULT_SEEDANCE_MODEL)
 
 
+def apply_buming_response(task: VideoTask, project: VideoProject, data: dict[str, Any]) -> None:
+    task.response_payload = json.dumps(data, ensure_ascii=False)
+    task.response_snapshot = json.dumps(data, ensure_ascii=False)
+    usage = extract_token_usage(data, task.model_name)
+    task.usage_prompt_tokens = int(usage["prompt_tokens"])
+    task.usage_completion_tokens = int(usage["completion_tokens"])
+    task.usage_total_tokens = int(usage["total_tokens"])
+    task.usage_cost_cny = float(usage["cost_cny"])
+    task.usage_note = str(usage["note"])
+    task.usage_raw = json.dumps(usage["raw"], ensure_ascii=False)
+    task.provider_task_id = task.provider_task_id or first_text_value(data, ("task_id", "id"))
+    video_url = first_text_value(data, ("result_url", "video_url", "result_video_url", "url", "output_url"))
+    state = first_text_value(data, ("state", "status")).lower()
+    is_final = first_bool_value(data, ("is_final", "terminal"))
+    if video_url:
+        task.video_url = video_url
+        task.result_video_url = video_url
+        project.result_video_url = video_url
+        task.status = "succeeded"
+        project.status = "video_ready"
+    elif state == "success":
+        task.status = "succeeded"
+        project.status = "video_ready"
+    elif state in {"failed", "fail", "error", "cancelled", "canceled"}:
+        task.status = "failed"
+        project.status = "video_failed"
+        task.error_message = first_text_value(data, ("message", "error", "error_message", "detail")) or "Video generation failed."
+    elif is_final is False or state:
+        task.status = "processing"
+        project.status = "video_submitted"
+
+
+def create_buming_video_task(db: Session, project: VideoProject, user_id: int, generation_mode: str, selected_model: str | None) -> dict[str, Any]:
+    api_config = buming_api_config(db)
+    model_config, model = buming_model_config(db, selected_model)
+    generation_mode = "image_to_video"
+    assets = product_assets(db, project.id)
+    reference_urls = [
+        absolute_public_url(asset.public_url or asset.url)
+        for asset in assets
+        if asset.asset_type in {"product", "product_image"}
+    ]
+    if not reference_urls:
+        raise ValueError("图生视频至少需要上传 1 张产品图。")
+    prompt = build_buming_prompt(project, assets, generation_mode)
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "params": buming_params_from_model(model_config, reference_urls),
+    }
+    task = VideoTask(
+        project_id=project.id,
+        user_id=user_id,
+        mode=generation_mode,
+        provider="buming_ai",
+        generation_mode=generation_mode,
+        model_name=model,
+        status="submitted",
+        request_snapshot=json.dumps(payload, ensure_ascii=False),
+        request_payload=json.dumps(payload, ensure_ascii=False),
+    )
+    db.add(task)
+    db.flush()
+    try:
+        response = request_session().post(
+            f"{buming_api_base(api_config)}/media/generate",
+            headers={"Authorization": f"Bearer {api_config.access_key_encrypted}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=300,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as exc:
+        response_text = ""
+        if getattr(exc, "response", None) is not None:
+            response_text = (exc.response.text or "")[:1200]
+        detail = f": {response_text}" if response_text else ""
+        task.status = "failed"
+        task.error_message = f"{exc}{detail}"
+        project.status = "video_failed"
+        db.commit()
+        raise ValueError(f"Video API request failed: {exc}{detail}") from exc
+    except ValueError as exc:
+        task.status = "failed"
+        task.error_message = "Video API returned non-JSON response."
+        project.status = "video_failed"
+        db.commit()
+        raise ValueError("Video API returned non-JSON response.") from exc
+    apply_buming_response(task, project, data)
+    if not task.provider_task_id:
+        task.status = "failed"
+        task.error_message = "Video API did not return task_id."
+        project.status = "video_failed"
+        db.commit()
+        raise ValueError("Video API did not return task_id.")
+    if not task.status or task.status == "submitted":
+        task.status = "submitted"
+        project.status = "video_submitted"
+    db.commit()
+    db.refresh(task)
+    return task_to_dict(task)
+
+
 def create_video_task(db: Session, project: VideoProject, user_id: int, generation_mode: str, model_name: str | None = None) -> dict[str, Any]:
+    selected_model = (model_name or "").strip()
+    selected_key = selected_model.lower()
+    if selected_key in {"", "auto", "default"}:
+        configured_buming_model = db.scalar(
+            select(ModelConfig.id)
+            .where(
+                ModelConfig.status == 1,
+                ModelConfig.provider == "buming_ai",
+                ModelConfig.model_type == MODEL_TYPE_VIDEO_GENERATION,
+                ModelConfig.model_name != "",
+            )
+            .order_by(ModelConfig.is_default.desc(), ModelConfig.id.desc())
+        )
+        if configured_buming_model:
+            return create_buming_video_task(db, project, user_id, generation_mode, "buming_ai")
+    if is_buming_model(selected_model):
+        return create_buming_video_task(db, project, user_id, generation_mode, selected_model)
     config = ark_config(db)
     generation_mode = "image_to_video"
     assets = product_assets(db, project.id)
@@ -844,6 +1099,25 @@ def refresh_video_task(db: Session, project: VideoProject, task_id: int) -> dict
         raise ValueError("Video task not found.")
     if not task.provider_task_id:
         raise ValueError("Video task has no provider task id yet.")
+    if (task.provider or "").lower() == "buming_ai":
+        config = buming_api_config(db)
+        try:
+            response = request_session().get(
+                f"{buming_api_base(config)}/skills/task-status",
+                params={"task_id": task.provider_task_id},
+                headers={"Authorization": f"Bearer {config.access_key_encrypted}", "Content-Type": "application/json"},
+                timeout=120,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except requests.RequestException as exc:
+            raise ValueError(f"Video status query failed: {exc}") from exc
+        except ValueError as exc:
+            raise ValueError("Video status API returned non-JSON response.") from exc
+        apply_buming_response(task, project, data)
+        db.commit()
+        db.refresh(task)
+        return task_to_dict(task)
     config = ark_config(db)
     endpoint = (config.api_base_url or DEFAULT_ARK_BASE_URL).rstrip("/")
     if endpoint.endswith("/contents/generations/tasks"):

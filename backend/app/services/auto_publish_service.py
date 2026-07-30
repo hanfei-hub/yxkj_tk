@@ -22,7 +22,7 @@ import requests
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps, UnidentifiedImageError
 from requests.adapters import HTTPAdapter
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 from urllib3.util.retry import Retry
 try:
     import pytesseract
@@ -31,9 +31,6 @@ except Exception:  # pragma: no cover - optional OCR dependency
 
 from app.core.database import SessionLocal
 from app.models.entities import (
-    DerivedProductAttributeScore,
-    DerivedProductRecommendation,
-    FmProduct,
     ModelConfig,
     ThirdPartyConfig,
 )
@@ -47,15 +44,10 @@ from app.services.miaoshou_openapi_service import (
     get_miaoshou_openapi_client_optional,
     get_miaoshou_openapi_client_from_credentials,
 )
-from app.services.serializers import derived_to_dict, product_to_dict
-
-
 RUNTIME_DIR = Path(__file__).resolve().parents[2] / "runtime" / "auto_publish"
 LATEST_RESULT_FILE = RUNTIME_DIR / "latest_result.json"
 HISTORY_FILE = RUNTIME_DIR / "history.json"
 API_USAGE_FILE = RUNTIME_DIR / "api_usage.json"
-DEFAULT_TEMPLATE_PATH = Path(os.getenv("MIAOSHOU_IMPORT_TEMPLATE", r"C:\Users\Gao\Downloads\导入产品模板 (1).xls"))
-DEFAULT_OXYLABS_REALTIME_URL = "https://realtime.oxylabs.io/v1/queries"
 AIMEDIAKIT_IMAGE_TRANSLATE_URL = "https://mediakit.cn-beijing.volces.com/api/v1/tools-sync/translate-image-text"
 AIMEDIAKIT_REMOVE_ELEMENTS_URL = "https://mediakit.cn-beijing.volces.com/api/v1/tools-sync/remove-image-elements"
 DEFAULT_ASSET_BASE_URL = os.getenv("AUTO_PUBLISH_ASSET_BASE_URL", "https://120.26.207.89/auto_publish").strip()
@@ -423,26 +415,6 @@ def attach_api_usage(task: dict[str, Any] | None) -> dict[str, Any] | None:
     return task | {"api_usage": api_usage_for_task(task_id)}
 
 
-def list_publish_candidates(db: Session, limit: int = 50) -> list[dict[str, Any]]:
-    items = db.scalars(
-        select(DerivedProductRecommendation)
-        .options(
-            selectinload(DerivedProductRecommendation.source_product).selectinload(FmProduct.derived_products),
-            selectinload(DerivedProductRecommendation.attributes).selectinload(DerivedProductAttributeScore.attribute),
-        )
-        .where(DerivedProductRecommendation.review_status == "approved")
-        .order_by(DerivedProductRecommendation.weighted_score.desc(), DerivedProductRecommendation.id.desc())
-        .limit(limit)
-    ).all()
-    return [
-        {
-            "derived": derived_to_dict(item),
-            "source_product": product_to_dict(item.source_product) if item.source_product else None,
-        }
-        for item in items
-    ]
-
-
 def empty_latest_result() -> dict[str, Any]:
     return {
         "ok": True,
@@ -608,89 +580,6 @@ def update_task_progress(
     _record_task(task)
 
 
-def create_task(db: Session, payload: dict[str, Any], user_id: int | None = None) -> dict[str, Any]:
-    derived_id = int(payload.get("derived_id") or 0)
-    derived = db.scalar(
-        select(DerivedProductRecommendation)
-        .options(
-            selectinload(DerivedProductRecommendation.source_product).selectinload(FmProduct.derived_products),
-            selectinload(DerivedProductRecommendation.attributes).selectinload(DerivedProductAttributeScore.attribute),
-        )
-        .where(DerivedProductRecommendation.id == derived_id)
-    )
-    if not derived:
-        raise ValueError("衍生品不存在，无法创建自动上架任务。")
-    if derived.review_status != "approved":
-        raise ValueError("只有教师审核通过的衍生品可以进入自动上架。")
-
-    quantity = max(1, min(int(payload.get("publish_count") or 1), 20))
-    dry_run = bool(payload.get("dry_run", True))
-    now = datetime.utcnow().replace(microsecond=0).isoformat()
-    task = {
-        "task_id": uuid4().hex,
-        "created_at": now,
-        "created_by": user_id,
-        "status": "created",
-        "dry_run": dry_run,
-        "publish_count": quantity,
-        "target_channel": str(payload.get("target_channel") or "TikTok Shop Japan"),
-        "erp_url": str(payload.get("erp_url") or "https://erp.91miaoshou.com/?ac=1og270"),
-        "derived": derived_to_dict(derived),
-        "source_product": product_to_dict(derived.source_product) if derived.source_product else None,
-        "steps": ["已创建自动上架任务，等待执行。"],
-        "errors": [],
-        "product_infos": [],
-    }
-    _record_task(task)
-    return task
-
-
-def run_task(task_id: str) -> dict[str, Any]:
-    history = list_history()
-    task = next((item for item in history if item.get("task_id") == task_id), None)
-    if not task:
-        raise ValueError("自动上架任务不存在。")
-
-    title = task.get("derived", {}).get("derived_title") or "未命名商品"
-    source_title = (task.get("source_product") or {}).get("title") or "未知原商品"
-    product_info = {
-        "title": title,
-        "source_title": source_title,
-        "target_channel": task.get("target_channel"),
-        "suggested_price_min": task.get("derived", {}).get("suggested_price_min"),
-        "suggested_price_max": task.get("derived", {}).get("suggested_price_max"),
-        "search_keywords": task.get("derived", {}).get("search_keywords"),
-    }
-
-    steps = [
-        f"已读取审核通过的衍生品：{title}",
-        f"已生成上架草稿，目标渠道：{task.get('target_channel')}",
-        "已整理标题、卖点、适用场景、风险提示和供运营复核的商品资料。",
-    ]
-    if task.get("dry_run", True):
-        steps.append("当前为 dry-run 模式：未登录 ERP，未提交真实上架。")
-        status = "draft_ready"
-        ok = True
-        message = "自动上架草稿已生成，可交由运营复核后接入真实 ERP 自动化。"
-    else:
-        steps.append("真实 ERP 自动化适配器尚未启用，本次未提交外部平台。")
-        status = "adapter_not_configured"
-        ok = False
-        message = "已阻止真实提交：请先配置稳定的 ERP 自动化适配器。"
-
-    result = task | {
-        "status": status,
-        "ok": ok,
-        "message": message,
-        "finished_at": datetime.utcnow().replace(microsecond=0).isoformat(),
-        "steps": steps,
-        "errors": [] if ok else ["ERP 自动化适配器未配置。"],
-        "product_infos": [product_info],
-    }
-    _record_task(result)
-    return result
-
-
 def normalize_package_metadata(payload: dict[str, Any] | None) -> dict[str, float]:
     source = payload or {}
 
@@ -716,6 +605,7 @@ def normalize_package_metadata(payload: dict[str, Any] | None) -> dict[str, floa
 
 
 JPY_CNY_EXCHANGE_RATE = 23.2
+MIAOSHOU_DISPLAY_JPY_PER_CNY = float(os.getenv("AUTO_PUBLISH_MIAOSHOU_DISPLAY_JPY_PER_CNY", "24.185"))
 PRICE_FORWARDER_FEE_CNY = 2.0
 DEFAULT_COMMISSION_RATE = 0.09
 COMMISSION_RATE_BY_CATEGORY = {
@@ -751,6 +641,13 @@ COMMISSION_RATE_BY_CATEGORY = {
     "女装": 0.12,
     "女士内衣": 0.12,
 }
+COMMISSION_KEYWORD_RULES: list[tuple[tuple[str, ...], float, str]] = [
+    (("宠物用品", "宠物", "猫", "狗", "犬", "pet", "cat", "dog", "ペット", "猫用", "犬用"), 0.12, "宠物用品"),
+    (("女装", "女士内衣", "男装", "男士内衣", "箱包", "时尚配件"), 0.12, "服饰箱包"),
+    (("母婴用品", "母婴", "婴儿", "宝宝", "儿童时尚"), 0.10, "母婴用品"),
+    (("美妆个护", "美容", "护肤", "化妆", "保健", "珠宝", "鞋靴", "运动与户外", "玩具和爱好"), 0.10, "10%类目"),
+    (("食品饮料", "食品", "饮料", "零食", "家电", "手机与数码", "电脑办公", "家具", "家装建材", "汽车与摩托车"), 0.07, "7%类目"),
+]
 
 
 def normalize_profit_rule(value: Any) -> str:
@@ -802,6 +699,16 @@ def package_weight_kg_from_g(weight_g: float | int | None) -> float:
     return round(value / 1000.0, 3)
 
 
+def normalize_miaoshou_weight_kg(weight_kg: Any, *, default_kg: float = 0.5) -> float:
+    try:
+        value = float(weight_kg or 0.0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value <= 0:
+        value = float(default_kg or 0.5)
+    return round(max(0.001, min(value, 100.0)), 3)
+
+
 def billable_weight_kg(
     actual_weight_g: float,
     length_cm: float,
@@ -844,6 +751,24 @@ def template_shipping_fee_cny(weight_kg: float, cargo_type: int = 1) -> float:
     return 0.0
 
 
+def detect_cargo_type(category_metadata: dict[str, Any], site_info: dict[str, Any], product: dict[str, Any]) -> tuple[int, str]:
+    blob = category_text_blob(category_metadata, site_info, product)
+    normalized = blob.lower()
+    special_keywords = (
+        "特货", "特貨", "敏货", "敏貨", "食品", "食物", "零食", "粮", "糧", "冻干", "凍乾", "肉", "鱼", "魚",
+        "鸡", "雞", "鸭", "鴨", "牛", "羊", "猫", "狗", "犬", "宠物", "寵物", "pet", "cat", "dog",
+        "液体", "液體", "凝胶", "凝膠", "膏", "粉", "粉末", "喷雾", "噴霧", "香水", "精油", "化妆", "化粧",
+        "电池", "電池", "磁", "刀", "药", "藥", "医疗", "醫療", "保健", "サプリ", "フード", "食品", "ペット",
+    )
+    regular_keywords = ("普货", "普貨", "普通货", "普通貨")
+    if any(keyword.lower() in normalized for keyword in regular_keywords):
+        return 1, "普货关键词"
+    for keyword in special_keywords:
+        if keyword.lower() in normalized:
+            return 2, f"特货/敏货关键词：{keyword}"
+    return 1, "默认普货"
+
+
 def category_text_blob(category_metadata: dict[str, Any], site_info: dict[str, Any], product: dict[str, Any]) -> str:
     values: list[str] = []
 
@@ -864,6 +789,16 @@ def category_text_blob(category_metadata: dict[str, Any], site_info: dict[str, A
     collect(site_info.get("categoryName"))
     collect(site_info.get("categoryNameAlias"))
     collect(product.get("category"))
+    collect(product.get("title"))
+    collect(product.get("optimized_title"))
+    collect(product.get("notes"))
+    collect(product.get("description"))
+    collect(product.get("properties"))
+    for sku in product.get("skus") or []:
+        if isinstance(sku, dict):
+            collect(sku.get("spec1"))
+            collect(sku.get("spec2"))
+            collect(sku.get("name"))
     return " ".join(values)
 
 
@@ -872,6 +807,10 @@ def commission_rate_from_category(category_metadata: dict[str, Any], site_info: 
     for category_name, rate in COMMISSION_RATE_BY_CATEGORY.items():
         if category_name and category_name in blob:
             return rate, category_name
+    lowered_blob = blob.lower()
+    for keywords, rate, source in COMMISSION_KEYWORD_RULES:
+        if any(keyword and keyword.lower() in lowered_blob for keyword in keywords):
+            return rate, f"{source}（关键词）"
     return DEFAULT_COMMISSION_RATE, "默认"
 
 
@@ -880,11 +819,12 @@ def calculate_template_sale_price_cny(
     billable_weight: float,
     commission_rate: float,
     profit_rule: str,
+    cargo_type: int = 1,
 ) -> dict[str, float | str]:
     parsed_rule = parse_profit_rule(profit_rule)
     if not parsed_rule:
         return {}
-    shipping_cny = template_shipping_fee_cny(billable_weight, cargo_type=1)
+    shipping_cny = template_shipping_fee_cny(billable_weight, cargo_type=cargo_type)
     base_cost = safe_price(origin_price_cny) + shipping_cny + PRICE_FORWARDER_FEE_CNY
     rule_type, rule_value = parsed_rule
     if rule_type == "rate":
@@ -903,6 +843,7 @@ def calculate_template_sale_price_cny(
         "base_cost_cny": round(base_cost, 2),
         "profit_rule_type": rule_type,
         "profit_rule_value": rule_value,
+        "cargo_type": int(cargo_type or 1),
     }
 
 
@@ -924,30 +865,60 @@ def apply_template_pricing_to_site_info(
         return site_info, {}
     currency = normalize_pricing_currency(pricing_currency)
     commission_rate, commission_source = commission_rate_from_category(category_metadata, site_info, product)
+    cargo_type, cargo_type_source = detect_cargo_type(category_metadata, site_info, product)
     billing_weight = billable_weight_kg(package_weight_g, package_length_cm, package_width_cm, package_height_cm)
     updated = dict(site_info)
     sku_map: dict[str, Any] = {}
     changed = 0
     first_calc: dict[str, Any] = {}
+    price_debug_rows: list[dict[str, Any]] = []
     for sku_key, sku_value in updated["skuMap"].items():
         if not isinstance(sku_value, dict):
             sku_map[sku_key] = sku_value
             continue
         current = dict(sku_value)
+        current["weight"] = normalize_miaoshou_weight_kg(
+            current.get("weight"),
+            default_kg=billing_weight,
+        )
         origin_price = safe_price(current.get("originPrice") or current.get("sourcePrice") or current.get("price"))
-        calc = calculate_template_sale_price_cny(origin_price, billing_weight, commission_rate, profit_rule)
+        calc = calculate_template_sale_price_cny(origin_price, billing_weight, commission_rate, profit_rule, cargo_type)
         if calc:
             old_price_jpy = safe_price(current.get("price"))
             old_price_include_vat = safe_price(current.get("priceIncludeVat"))
-            include_vat_ratio = old_price_include_vat / old_price_jpy if old_price_jpy > 0 and old_price_include_vat > 0 else 1.2375
             sale_cny = round(float(calc["sale_cny"]), 2)
             new_price = sale_cny if currency == "CNY" else round(sale_cny * JPY_CNY_EXCHANGE_RATE, 2)
+            display_jpy = round(sale_cny * MIAOSHOU_DISPLAY_JPY_PER_CNY, 2)
             current["price"] = new_price
-            current["priceIncludeVat"] = round(new_price * include_vat_ratio, 2)
+            current["priceIncludeVat"] = display_jpy if currency == "CNY" else new_price
             current["currency"] = currency
             current["priceCurrency"] = currency
             current["currencyCode"] = currency
             changed += 1
+            if len(price_debug_rows) < 50:
+                price_debug_rows.append(
+                    {
+                        "sku_key": str(sku_key),
+                        "sku_name": str(
+                            current.get("itemNum")
+                            or current.get("skuName")
+                            or current.get("name")
+                            or current.get("title")
+                            or sku_key
+                        ),
+                        "origin_price_cny": round(origin_price, 2),
+                        "template_sale_cny": sale_cny,
+                        "submitted_price": new_price,
+                        "submitted_currency": currency,
+                        "price_include_vat": current["priceIncludeVat"],
+                        "display_jpy": current["priceIncludeVat"],
+                        "billable_weight_kg": billing_weight,
+                        "commission_rate": commission_rate,
+                        "profit_rule": normalize_profit_rule(profit_rule),
+                        "cargo_type": cargo_type,
+                        "cargo_type_source": cargo_type_source,
+                    }
+                )
             if not first_calc:
                 first_calc = dict(calc) | {
                     "old_price_jpy": round(old_price_jpy, 2),
@@ -957,6 +928,8 @@ def apply_template_pricing_to_site_info(
                     "billable_weight_kg": billing_weight,
                     "commission_rate": commission_rate,
                     "commission_source": commission_source,
+                    "cargo_type": cargo_type,
+                    "cargo_type_source": cargo_type_source,
                 }
         sku_map[sku_key] = current
     updated["skuMap"] = sku_map
@@ -965,8 +938,11 @@ def apply_template_pricing_to_site_info(
         "billable_weight_kg": billing_weight,
         "commission_rate": commission_rate,
         "commission_source": commission_source,
+        "cargo_type": cargo_type,
+        "cargo_type_source": cargo_type_source,
         "pricing_currency": currency,
         "sample": first_calc,
+        "price_debug_rows": price_debug_rows,
     }
 
 
@@ -1231,7 +1207,7 @@ def create_1688_publish_task(db: Session, payload: dict[str, Any], user_id: int 
         "target_site": normalize_tiktok_site(payload.get("target_site") or "JP"),
         "steps": [
             "已创建 1688 链接自动上架任务，等待执行。",
-            "主链路仅使用妙手开放平台 API，不启用方案 1/3 的浏览器、Oxylabs 或本地回退兜底。",
+        "主链路仅使用妙手开放平台 API，不启用浏览器采集或本地回退兜底。",
         ],
         "errors": [],
         "product_infos": [],
@@ -1310,7 +1286,7 @@ def create_1688_batch_publish_task(db: Session, payload: dict[str, Any], user_id
         "steps": [
             f"已创建批量自动上架任务，共 {len(items)} 个 1688 链接。",
             "多个商品会写入同一个妙手模板；产品主编号用于区分不同商品。",
-            "妙手开放平台 API 会串行执行，且不会回退到浏览器自动化或 Oxylabs 方案。",
+        "妙手开放平台 API 会串行执行，且不会回退到浏览器自动化采集。",
         ],
         "errors": [],
         "product_infos": [],
@@ -1399,6 +1375,8 @@ def run_single_offer_url_via_miaoshou_api(
             "package_length_cm": normalized_site_collect_item_info["packageLength"],
             "package_width_cm": normalized_site_collect_item_info["packageWidth"],
             "package_height_cm": normalized_site_collect_item_info["packageHeight"],
+            "profit_rule": normalize_profit_rule(profit_rule),
+            "pricing_currency": normalize_pricing_currency(pricing_currency),
         }
     )
 
@@ -1422,8 +1400,9 @@ def run_single_offer_url_via_miaoshou_api(
             category_data = category_metadata_response.get("data") if isinstance(category_metadata_response, dict) else {}
             category_metadata = category_data.get("categoryMetadata") if isinstance(category_data, dict) else {}
             steps.append("已获取类目属性信息。")
-        except MiaoshouOpenApiError:
+        except MiaoshouOpenApiError as exc:
             category_metadata = {}
+            steps.append(f"类目属性信息获取失败：{exc}")
     else:
         category_metadata = {}
 
@@ -1654,6 +1633,7 @@ def run_single_offer_url_via_miaoshou_api(
         "save_result": save_response,
         "publish_result": publish_result,
         "category_metadata": category_metadata,
+        "pricing_summary": pricing_summary,
         "oss_md5": oss_md5,
     }
 
@@ -1666,7 +1646,7 @@ def run_1688_publish_task(db: Session, task_id: str) -> dict[str, Any]:
     if task.get("workflow") == "1688_batch_to_miaoshou":
         return run_1688_batch_publish_task(db, task)
     if task.get("workflow") != "1688_to_miaoshou":
-        return run_task(task_id)
+        raise ValueError("不支持旧版自动上架任务，请使用 1688 妙手开放平台流程重新创建任务。")
 
     target_language = normalize_target_language(task.get("target_language"))
     target_site = normalize_tiktok_site(task.get("target_site") or "JP")
@@ -1724,6 +1704,7 @@ def run_1688_publish_task(db: Session, task_id: str) -> dict[str, Any]:
             "selected_shops": result.get("selected_shops") or [],
             "save_result": result.get("save_result") or {},
             "publish_result": result.get("publish_result") or {},
+            "pricing_summary": result.get("pricing_summary") or {},
             "progress": {
                 "stage": "done",
                 "current": 1,
@@ -2262,11 +2243,17 @@ def apply_sku_property_list_to_site_info(
 def apply_sku_name_map_to_site_info(site_info: dict[str, Any], sku_name_map: dict[str, Any], target_language: str) -> dict[str, Any]:
     if not sku_name_map:
         return site_info
-    normalized_map = {
-        clean_html_text(str(old)).strip(): simplify_sku_name(str(new), target_language)
-        for old, new in sku_name_map.items()
-        if clean_html_text(str(old)).strip() and clean_html_text(str(new)).strip()
-    }
+    normalized_map: dict[str, str] = {}
+    for old, new in sku_name_map.items():
+        source = clean_html_text(str(old)).strip()
+        raw_target = clean_html_text(str(new)).strip()
+        if not source or not raw_target:
+            continue
+        mapped = simplify_sku_name(raw_target, target_language)
+        source_fallback = simplify_sku_name(source, target_language)
+        if is_low_quality_sku_translation(source, mapped, target_language) and source_fallback:
+            mapped = source_fallback
+        normalized_map[source] = mapped
     if not normalized_map:
         return site_info
 
@@ -2352,7 +2339,7 @@ def apply_doubao_listing_to_site_collect_info(
 
     if enable_description_optimization:
         description = str(ai_result.get("detail_description") or ai_result.get("description") or "").strip()
-        if not description or not looks_like_target_language(description, language):
+        if not description or not looks_like_target_language(description, language) or is_noise_heavy_text(description):
             description = build_description(product, language)
         site_info["notes"] = sanitize_listing_copy(description).strip()[:10000]
         steps.append("已优化并整理产品描述。")
@@ -2457,8 +2444,11 @@ def preserve_original_images_on_quota_limit(
             target = current_sku_map.get(sku_key)
             if isinstance(target, dict):
                 set_sku_image_fields(target, original_image)
+                target["weight"] = normalize_miaoshou_weight_kg(target.get("weight"), default_kg=updated.get("weight") or 0.5)
             else:
-                current_sku_map[sku_key] = dict(original_sku)
+                copied_sku = dict(original_sku)
+                copied_sku["weight"] = normalize_miaoshou_weight_kg(copied_sku.get("weight"), default_kg=updated.get("weight") or 0.5)
+                current_sku_map[sku_key] = copied_sku
         updated["skuMap"] = current_sku_map
 
     original_property_images = sku_property_image_by_value_id(
@@ -2546,7 +2536,10 @@ def normalize_tiktok_site_collect_item_info(
     normalized["title"] = clean_html_text(str(site_item_info.get("title") or product.get("title") or ""))
     normalized["notes"] = clean_html_text(str(site_item_info.get("notes") or ""))
     normalized["imgUrls"] = unique_urls(site_item_info.get("imgUrls", []) or [])[:15]
-    normalized["weight"] = package_weight_kg_from_g(package_weight_g) if package_weight_g is not None else float(site_item_info.get("weight") or 0.5)
+    normalized["weight"] = normalize_miaoshou_weight_kg(
+        package_weight_kg_from_g(package_weight_g) if package_weight_g is not None else site_item_info.get("weight"),
+        default_kg=package_weight_kg_from_g(package_weight_g) if package_weight_g is not None else 0.5,
+    )
     normalized["packageLength"] = float(package_length_cm or site_item_info.get("packageLength") or 10)
     normalized["packageWidth"] = float(package_width_cm or site_item_info.get("packageWidth") or 10)
     normalized["packageHeight"] = float(package_height_cm or site_item_info.get("packageHeight") or 10)
@@ -2562,6 +2555,20 @@ def normalize_tiktok_site_collect_item_info(
     normalized["skuPropertyList"] = product.get("sku_property_list") if isinstance(product.get("sku_property_list"), list) else []
     normalized["productAttributes"] = product.get("product_attributes") if isinstance(product.get("product_attributes"), list) else []
     normalized["targetLanguage"] = normalize_target_language(target_language)
+    sku_weight_default = normalized["weight"]
+    if isinstance(normalized.get("skuMap"), dict):
+        normalized_sku_map: dict[str, Any] = {}
+        for sku_key, sku_value in normalized["skuMap"].items():
+            if isinstance(sku_value, dict):
+                current_sku = dict(sku_value)
+                current_sku["weight"] = normalize_miaoshou_weight_kg(
+                    current_sku.get("weight"),
+                    default_kg=sku_weight_default,
+                )
+                normalized_sku_map[sku_key] = current_sku
+            else:
+                normalized_sku_map[sku_key] = sku_value
+        normalized["skuMap"] = normalized_sku_map
     return normalized
 
 
@@ -2958,39 +2965,6 @@ def normalize_1688_url(url: str) -> str:
     return url
 
 
-def get_oxylabs_credentials(db: Session) -> tuple[str, str]:
-    username, password, _endpoint = get_oxylabs_config(db)
-    return username, password
-
-
-def get_oxylabs_config(db: Session) -> tuple[str, str, str]:
-    configs = get_oxylabs_config_pool(db)
-    if not configs:
-        raise AutoPublishError("Oxylabs 账号未配置：请在第三方 API 配置 oxylabs，或设置 OXYLABS_USERNAME/OXYLABS_PASSWORD。")
-    username, password, endpoint = pick_from_pool("oxylabs", configs)
-    return username, password, endpoint.rstrip("/")
-
-
-def get_oxylabs_config_pool(db: Session) -> list[tuple[str, str, str]]:
-    rows = db.scalars(
-        select(ThirdPartyConfig)
-        .where(ThirdPartyConfig.service_type == "oxylabs", ThirdPartyConfig.status == 1)
-        .order_by(ThirdPartyConfig.id.desc())
-    ).all()
-    configs: list[tuple[str, str, str]] = []
-    for row in rows:
-        username = str(row.access_key_encrypted or "").strip()
-        password = str(row.secret_key_encrypted or "").strip()
-        endpoint = str(row.api_base_url or DEFAULT_OXYLABS_REALTIME_URL).strip()
-        if username and password:
-            configs.append((username, password, endpoint.rstrip("/")))
-    env_username = os.getenv("OXYLABS_USERNAME", "").strip()
-    env_password = os.getenv("OXYLABS_PASSWORD", "").strip()
-    if env_username and env_password:
-        configs.append((env_username, env_password, os.getenv("OXYLABS_REALTIME_URL", DEFAULT_OXYLABS_REALTIME_URL).rstrip("/")))
-    return dedupe_tuple_pool(configs)
-
-
 def get_miaoshou_credentials(db: Session, task_id: str | None = None) -> tuple[str, str]:
     if task_id and task_id in MIAOSHOU_TASK_CREDENTIALS:
         return MIAOSHOU_TASK_CREDENTIALS[task_id]
@@ -3132,80 +3106,6 @@ def save_miaoshou_credentials_from_payload(db: Session, payload: dict[str, Any])
     return True
 
 
-def post_oxylabs_with_powershell(endpoint: str, username: str, password: str, payload: dict[str, Any], original_error: str) -> dict[str, Any]:
-    _ensure_runtime_dir()
-    temp_prefix = RUNTIME_DIR / f"oxylabs_request_{uuid4().hex}"
-    payload_path = temp_prefix.with_suffix(".json")
-    response_path = temp_prefix.with_suffix(".response.json")
-    error_path = temp_prefix.with_suffix(".error.txt")
-    script_path = temp_prefix.with_suffix(".ps1")
-    payload_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    script_path.write_text(
-        r'''
-$ErrorActionPreference = "Stop"
-$endpoint = $args[0]
-$username = $args[1]
-$password = $args[2]
-$payloadPath = $args[3]
-$responsePath = $args[4]
-$errorPath = $args[5]
-try {
-  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
-} catch {
-  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-}
-$pair = "${username}:${password}"
-$bytes = [System.Text.Encoding]::ASCII.GetBytes($pair)
-$auth = [Convert]::ToBase64String($bytes)
-$headers = @{ Authorization = "Basic $auth"; "Content-Type" = "application/json"; "Accept" = "application/json" }
-$body = Get-Content -LiteralPath $payloadPath -Raw -Encoding UTF8
-try {
-  $result = Invoke-RestMethod -Uri $endpoint -Method Post -Headers $headers -Body $body -ContentType "application/json" -TimeoutSec 120
-  $result | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $responsePath -Encoding UTF8
-} catch {
-  $message = $_.Exception.Message
-  if ($_.Exception.Response) {
-    $message = "HTTP " + [int]$_.Exception.Response.StatusCode + " " + $message
-  }
-  Set-Content -LiteralPath $errorPath -Value $message -Encoding UTF8
-  exit 1
-}
-'''.strip(),
-        encoding="utf-8",
-    )
-    try:
-        subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(script_path),
-                endpoint,
-                username,
-                password,
-                str(payload_path),
-                str(response_path),
-                str(error_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=140,
-        )
-        return json.loads(response_path.read_text(encoding="utf-8-sig"))
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as exc:
-        detail = error_path.read_text(encoding="utf-8", errors="ignore") if error_path.exists() else ""
-        raise AutoPublishError(f"Oxylabs 请求失败：Python TLS 失败：{original_error}；系统网络兜底也失败：{detail or exc}") from exc
-    finally:
-        for path in (payload_path, response_path, error_path, script_path):
-            try:
-                path.unlink()
-            except OSError:
-                pass
-
-
 def post_aimediakit_with_powershell(endpoint: str, api_key: str, payload: dict[str, Any], original_error: str) -> dict[str, Any]:
     _ensure_runtime_dir()
     temp_prefix = RUNTIME_DIR / f"aimediakit_request_{uuid4().hex}"
@@ -3322,87 +3222,6 @@ try {
                 path.unlink()
             except OSError:
                 pass
-
-
-def import_template_to_miaoshou(
-    db: Session,
-    template_path: Path,
-    erp_url: str,
-    task_id: str | None = None,
-) -> dict[str, Any]:
-    steps: list[str] = []
-    errors: list[str] = []
-    screenshots: list[str] = []
-
-    try:
-        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        return {"ok": False, "steps": [], "errors": [f"Playwright 未安装：{exc}"], "screenshots": []}
-
-    headless = should_run_miaoshou_headless()
-    target_url = erp_url or "https://erp.91miaoshou.com/?ac=1og270"
-    try:
-        username, password = get_miaoshou_credentials(db, task_id)
-    except AutoPublishError as exc:
-        return {"ok": False, "steps": steps, "errors": [str(exc)], "screenshots": []}
-    storage_path = miaoshou_storage_state_path_for_username(username)
-    storage_path.parent.mkdir(parents=True, exist_ok=True)
-    with sync_playwright() as playwright:
-        try:
-            browser = playwright.chromium.launch(**browser_launch_options(headless))
-        except Exception as exc:  # noqa: BLE001 - surface browser setup as a normal import failure.
-            return {"ok": False, "steps": steps, "errors": [f"妙手浏览器启动失败：{exc}"], "screenshots": []}
-        context_kwargs: dict[str, Any] = {"viewport": {"width": 1440, "height": 900}}
-        using_saved_state = storage_path.exists()
-        if using_saved_state:
-            context_kwargs["storage_state"] = str(storage_path)
-        context = browser.new_context(**context_kwargs)
-        page = context.new_page()
-        try:
-            page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-            steps.append(f"已打开妙手 ERP：{target_url}")
-            close_miaoshou_popups(page)
-            if using_saved_state:
-                steps.append("已使用本次保存的妙手登录态进入导入流程。")
-                if not is_miaoshou_logged_in(page):
-                    steps.append("保存的妙手登录态已失效，正在重新填写账号密码登录。")
-                    login_miaoshou(page, username, password, force=True)
-                    page.wait_for_timeout(2000)
-                    close_miaoshou_popups(page)
-                    context.storage_state(path=str(storage_path))
-                    steps.append("已重新登录并更新妙手登录态。")
-            else:
-                login_miaoshou(page, username, password, force=True)
-                steps.append("已填写妙手账号密码；如页面出现验证码，请在妙手窗口手动完成验证。")
-                page.wait_for_timeout(2000)
-                close_miaoshou_popups(page)
-                context.storage_state(path=str(storage_path))
-                steps.append("已保存妙手登录态。")
-            open_miaoshou_public_collection(page)
-            steps.append("已进入公用采集箱/导入入口。")
-            upload_miaoshou_template(page, template_path)
-            steps.append("已上传妙手产品导入模板。")
-            submit_miaoshou_import(page)
-            context.storage_state(path=str(storage_path))
-            steps.append("已提交导入任务，请在妙手后台确认导入结果。")
-            return {"ok": True, "steps": steps, "errors": [], "screenshots": []}
-        except Exception as exc:  # noqa: BLE001 - automation must preserve page evidence.
-            screenshot = RUNTIME_DIR / f"miaoshou_import_failed_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.png"
-            try:
-                page.screenshot(path=str(screenshot), full_page=True)
-                screenshots.append(str(screenshot))
-            except Exception:
-                pass
-            if isinstance(exc, PlaywrightTimeoutError):
-                errors.append(f"妙手页面等待超时：{exc}")
-            else:
-                errors.append(f"妙手自动导入失败：{exc}")
-            return {"ok": False, "steps": steps, "errors": errors, "screenshots": screenshots}
-        finally:
-            keep_open = os.getenv("MIAOSHOU_KEEP_BROWSER_ON_ERROR", "1") == "1" and errors
-            if not keep_open:
-                browser.close()
 
 
 def browser_launch_options(headless: bool) -> dict[str, Any]:
@@ -3605,124 +3424,6 @@ def is_miaoshou_public_collection_page(page: Any) -> bool:
         return False
 
 
-def upload_miaoshou_template(page: Any, template_path: Path) -> None:
-    if not template_path.exists():
-        raise AutoPublishError(f"模板文件不存在：{template_path}")
-    close_miaoshou_popups(page)
-    if click_text_if_visible(page, "导入产品", exact=False, timeout=5000):
-        page.wait_for_timeout(800)
-    if click_miaoshou_import_dropdown_item(page):
-        page.wait_for_timeout(1200)
-    else:
-        for text in ("导入商品", "导入产品"):
-            if click_text_if_visible(page, text, exact=True, timeout=3000):
-                page.wait_for_timeout(1200)
-                break
-    file_inputs = page.locator("input[type='file']")
-    if file_inputs.count():
-        file_inputs.first.set_input_files(str(template_path), timeout=10000)
-        page.wait_for_timeout(2500)
-        return
-    for text in ("点击或拖拽文件导入", "上传文件", "选择文件", "导入文件", "上传"):
-        try:
-            with page.expect_file_chooser(timeout=5000) as chooser_info:
-                page.get_by_text(text, exact=False).first.click(timeout=3000)
-            chooser_info.value.set_files(str(template_path))
-            page.wait_for_timeout(2500)
-            return
-        except Exception:
-            pass
-    raise AutoPublishError("没有找到妙手模板上传控件。")
-
-
-def click_miaoshou_import_dropdown_item(page: Any) -> bool:
-    for selector in (
-        ".el-dropdown-menu__item",
-        ".ant-dropdown-menu-item",
-        "[role='menuitem']",
-        ".dropdown-menu li",
-        ".el-popper li",
-        ".popper li",
-    ):
-        try:
-            locator = page.locator(selector)
-            for index in range(locator.count()):
-                item = locator.nth(index)
-                if not item.is_visible(timeout=500):
-                    continue
-                text = re.sub(r"\s+", "", item.inner_text(timeout=1000))
-                if text not in {"导入产品", "导入商品"}:
-                    continue
-                box = item.bounding_box(timeout=1000)
-                if not box:
-                    continue
-                if box["x"] < 900 or box["y"] < 250:
-                    continue
-                page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-                return True
-        except Exception:
-            pass
-    try:
-        return bool(
-            page.evaluate(
-                """() => {
-                    const normalize = (value) => (value || "").replace(/\\s+/g, "").trim();
-                    const isVisible = (el) => {
-                        const style = window.getComputedStyle(el);
-                        const rect = el.getBoundingClientRect();
-                        return style && style.visibility !== "hidden" && style.display !== "none"
-                            && rect.width > 1 && rect.height > 1
-                            && rect.bottom >= 0 && rect.right >= 0
-                            && rect.top <= window.innerHeight && rect.left <= window.innerWidth;
-                    };
-                    const wanted = new Set(["导入产品", "导入商品"]);
-                    const importButtons = Array.from(document.querySelectorAll("button, a, div, span"))
-                        .filter((el) => isVisible(el) && normalize(el.innerText || el.textContent || "") === "导入产品")
-                        .map((el) => el.getBoundingClientRect())
-                        .filter((rect) => rect.left > window.innerWidth * 0.55)
-                        .sort((a, b) => a.top - b.top);
-                    const buttonBottom = importButtons.length ? importButtons[0].bottom : 250;
-                    const candidates = Array.from(document.querySelectorAll(
-                        ".el-dropdown-menu__item, .ant-dropdown-menu-item, [role='menuitem'], .dropdown-menu li, .el-popper li, .popper li"
-                    )).filter((el) => {
-                        if (!isVisible(el)) return false;
-                        const rect = el.getBoundingClientRect();
-                        const text = normalize(el.innerText || el.textContent || "");
-                        return wanted.has(text)
-                            && rect.left > window.innerWidth * 0.55
-                            && rect.top > buttonBottom
-                            && rect.width < 260
-                            && rect.height < 80;
-                    }).sort((a, b) => {
-                        const ar = a.getBoundingClientRect();
-                        const br = b.getBoundingClientRect();
-                        return ar.top - br.top || br.left - ar.left;
-                    });
-                    if (!candidates.length) return false;
-                    const el = candidates[0];
-                    el.scrollIntoView({ block: "center", inline: "center" });
-                    el.click();
-                    return true;
-                }"""
-            )
-        )
-    except Exception:
-        return False
-
-
-def submit_miaoshou_import(page: Any) -> None:
-    for text in ("确定", "确认导入", "开始导入", "提交", "导入"):
-        try:
-            locator = page.get_by_text(text, exact=False)
-            if locator.count():
-                locator.last.click(timeout=5000)
-                page.wait_for_timeout(3500)
-                return
-        except Exception:
-            pass
-    raise AutoPublishError("模板已选择，但没有找到提交导入按钮。")
-
-
 def fill_first_visible(page: Any, selectors: list[str], value: str) -> None:
     for selector in selectors:
         locator = page.locator(selector)
@@ -3810,106 +3511,6 @@ def click_visible_text_by_script(page: Any, text: str, exact: bool = False, max_
         )
     except Exception:
         return False
-
-
-def fetch_1688_page_with_oxylabs(db: Session, offer_url: str, task_id: str = "") -> dict[str, Any]:
-    configs = get_oxylabs_config_pool(db)
-    if not configs:
-        raise AutoPublishError("Oxylabs credentials not configured: add enabled third-party configs with service_type=oxylabs or set OXYLABS_USERNAME/OXYLABS_PASSWORD.")
-    payload = {
-        "source": "universal",
-        "url": offer_url,
-        "geo_location": "China",
-        "render": "html",
-        "parse": False,
-    }
-    errors: list[str] = []
-    first_config = pick_from_pool("oxylabs", configs)
-    ordered_configs = [first_config] + [item for item in configs if item != first_config]
-    data: dict[str, Any] | None = None
-    for config_index, (username, password, endpoint) in enumerate(ordered_configs, start=1):
-        status_code: int | None = None
-        usage_meta = {
-            "pool_index": config_index,
-            "pool_size": len(configs),
-            "key_label": usage_key_label(f"oxylabs-{config_index}", username),
-        }
-        try:
-            response = requests.post(endpoint, auth=(username, password), json=payload, timeout=90)
-            status_code = response.status_code
-            if response.status_code >= 400:
-                error_text = f"HTTP {response.status_code} {response.text[:300]}"
-                record_api_usage(
-                    task_id,
-                    provider="oxylabs",
-                    purpose="fetch_1688_page",
-                    model="universal_html_render",
-                    endpoint=endpoint,
-                    success=False,
-                    status_code=status_code,
-                    error=error_text,
-                    meta=usage_meta,
-                )
-                errors.append(f"??{config_index}/{len(configs)} {error_text}")
-                if retryable_external_error(error_text) and config_index < len(ordered_configs):
-                    time.sleep(0.8 * config_index)
-                    continue
-                raise AutoPublishError("Oxylabs request failed: " + " | ".join(errors[-3:]))
-            data = response.json()
-            record_api_usage(
-                task_id,
-                provider="oxylabs",
-                purpose="fetch_1688_page",
-                model="universal_html_render",
-                endpoint=endpoint,
-                success=True,
-                status_code=status_code,
-                meta=usage_meta,
-            )
-            break
-        except requests.RequestException as exc:
-            try:
-                data = post_oxylabs_with_powershell(endpoint, username, password, payload, str(exc))
-                record_api_usage(
-                    task_id,
-                    provider="oxylabs",
-                    purpose="fetch_1688_page",
-                    model="universal_html_render",
-                    endpoint=endpoint,
-                    success=True,
-                    request_count=2,
-                    status_code=status_code,
-                    meta={**usage_meta, "fallback": "powershell"},
-                )
-                break
-            except Exception as fallback_exc:
-                error_text = sanitize_secret_error(str(fallback_exc))
-                errors.append(f"??{config_index}/{len(configs)} {error_text}")
-                record_api_usage(
-                    task_id,
-                    provider="oxylabs",
-                    purpose="fetch_1688_page",
-                    model="universal_html_render",
-                    endpoint=endpoint,
-                    success=False,
-                    request_count=2,
-                    status_code=status_code,
-                    error=error_text,
-                    meta={**usage_meta, "fallback": "powershell"},
-                )
-                if retryable_external_error(error_text) and config_index < len(ordered_configs):
-                    time.sleep(0.8 * config_index)
-                    continue
-                raise AutoPublishError("Oxylabs request failed: " + " | ".join(errors[-3:])) from fallback_exc
-    if not data:
-        raise AutoPublishError("Oxylabs request failed: " + " | ".join(errors[-3:]))
-    result = (data.get("results") or [{}])[0] if isinstance(data, dict) else {}
-    content = result.get("content") or data.get("content") if isinstance(data, dict) else ""
-    if isinstance(content, dict):
-        html = json.dumps(content, ensure_ascii=False)
-    else:
-        html = str(content or "")
-    return {"html": html, "raw": data}
 
 
 def extract_1688_product(offer_url: str, html: str, raw: dict[str, Any]) -> dict[str, Any]:
@@ -4576,14 +4177,165 @@ def is_bad_sku_name(value: str) -> bool:
         return True
     return bool(re.search(r"下单|采购车|属性|批量|收藏|分享|登录|注册|客服|联系|举报|库存|重量|尺寸|产地|专利|认证|报告|授权|出口|进口|平台|地区", normalized))
 
+
+def extract_sku_weight_label(value: str) -> str:
+    text = clean_html_text(value or "")
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(kg|KG|千克|公斤|g|G|克)", text)
+    if not match:
+        return ""
+    amount = match.group(1)
+    if "." in amount:
+        amount = amount.rstrip("0").rstrip(".")
+    unit = match.group(2).lower()
+    if unit in {"kg", "千克", "公斤"}:
+        return f"{amount}kg"
+    return f"{amount}g"
+
+
+def localize_pet_food_sku_name(value: str, target_language: str = "ja") -> str:
+    if normalize_target_language(target_language) != "ja":
+        return ""
+    raw = clean_html_text(value or "")
+    if not raw:
+        return ""
+    pet_markers = (
+        "鸡", "雞", "鸭", "鴨", "牛", "羊", "猫", "狗", "莓果", "蔬", "蛋黄",
+        "肝", "冻干", "凍乾", "鹌鹑", "鵪鶉", "猫草", "排毛", "鲜润", "營養",
+    )
+    if not any(marker in raw for marker in pet_markers):
+        return ""
+
+    weight = extract_sku_weight_label(raw)
+    name = re.sub(r"[【\[\(（]?\s*\d+(?:\.\d+)?\s*(?:kg|KG|千克|公斤|g|G|克)\s*[】\]\)）]?", " ", raw)
+    name = re.sub(r"[【】\[\]（）()]", " ", name)
+
+    replacements = (
+        ("鸡肉时蔬", "チキン野菜"),
+        ("雞肉時蔬", "チキン野菜"),
+        ("鸡肉莓果", "チキンベリー"),
+        ("雞肉莓果", "チキンベリー"),
+        ("羊奶猫草", "ヤギミルク猫草"),
+        ("羊奶貓草", "ヤギミルク猫草"),
+        ("整块鸡胸肉", "鶏むね肉ブロック"),
+        ("整塊雞胸肉", "鶏むね肉ブロック"),
+        ("原切鸭肉粒", "カット鴨肉粒"),
+        ("原切鴨肉粒", "カット鴨肉粒"),
+        ("鸡肉粒", "チキン粒"),
+        ("雞肉粒", "チキン粒"),
+        ("鸡肉碎", "チキン粒"),
+        ("雞肉碎", "チキン粒"),
+        ("鸡胸肉", "鶏むね肉"),
+        ("雞胸肉", "鶏むね肉"),
+        ("鸡胸", "鶏むね"),
+        ("雞胸", "鶏むね"),
+        ("鸡肉", "チキン"),
+        ("雞肉", "チキン"),
+        ("鸭肝", "鴨レバー"),
+        ("鴨肝", "鴨レバー"),
+        ("牛肝", "牛レバー"),
+        ("蛋黄碎", "卵黄粒"),
+        ("蛋黃碎", "卵黄粒"),
+        ("蛋黄", "卵黄"),
+        ("蛋黃", "卵黄"),
+        ("肝碎", "レバー粒"),
+        ("牛骨肉", "牛骨肉"),
+        ("鸭肉粒", "鴨肉粒"),
+        ("鴨肉粒", "鴨肉粒"),
+        ("鸭肉", "鴨肉"),
+        ("鴨肉", "鴨肉"),
+        ("鹌鹑", "ウズラ"),
+        ("鵪鶉", "ウズラ"),
+        ("时蔬", "野菜"),
+        ("時蔬", "野菜"),
+        ("莓果", "ベリー"),
+        ("冻干", "フリーズドライ"),
+        ("凍乾", "フリーズドライ"),
+        ("羊奶", "ヤギミルク"),
+        ("猫草", "猫草"),
+        ("貓草", "猫草"),
+        ("桶", "容器"),
+        ("轻养鲜润", ""),
+        ("輕養鮮潤", ""),
+        ("温和排毛", ""),
+        ("溫和排毛", ""),
+        ("营养均衡", ""),
+        ("營養均衡", ""),
+        ("鲜润", ""),
+        ("鮮潤", ""),
+    )
+    for source, target in replacements:
+        name = name.replace(source, target)
+
+    name = re.sub(r"[、，,;/|｜]+", "+", name)
+    name = re.sub(r"\s*\+\s*", "+", name)
+    name = re.sub(r"\++", "+", name).strip("+ ")
+    name = re.sub(r"(轻养|輕養|温和|溫和|排毛|营养|營養|均衡|鲜润|鮮潤)", " ", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    if not name or name in {"+", "標準"}:
+        return ""
+    localized = f"{weight} {name}".strip()
+    return truncate_sku_name(localized, 50)
+
+
+def sku_translation_lost_pet_terms(source: str, mapped: str) -> bool:
+    source_text = clean_html_text(source or "")
+    mapped_text = clean_html_text(mapped or "")
+    required_pairs = (
+        (("鸡", "雞"), ("チキン", "鶏")),
+        (("鸭", "鴨"), ("鴨", "アヒル")),
+        (("牛肝",), ("牛レバー",)),
+        (("鸭肝", "鴨肝"), ("鴨レバー",)),
+        (("蛋黄", "蛋黃"), ("卵黄",)),
+        (("羊奶",), ("ヤギミルク",)),
+        (("猫草", "貓草"), ("猫草",)),
+        (("莓果",), ("ベリー",)),
+        (("冻干", "凍乾"), ("フリーズドライ",)),
+        (("鹌鹑", "鵪鶉"), ("ウズラ",)),
+        (("蔬",), ("野菜",)),
+        (("肝",), ("レバー", "肝")),
+    )
+    for source_tokens, mapped_tokens in required_pairs:
+        if any(token in source_text for token in source_tokens) and not any(token in mapped_text for token in mapped_tokens):
+            return True
+    source_weight = extract_sku_weight_label(source_text)
+    if source_weight and source_weight.lower() not in mapped_text.lower().replace(" ", ""):
+        return True
+    return False
+
+
+def is_low_quality_sku_translation(source: str, mapped: str, target_language: str = "ja") -> bool:
+    language = normalize_target_language(target_language)
+    mapped_text = clean_html_text(mapped or "").strip()
+    if not mapped_text or mapped_text == target_language_meta(language)["standard_sku"]:
+        return True
+    if re.search(r"(?:\+\s*){2,}|\s\+\s*$|^\s*\+\s*", mapped_text):
+        return True
+    if language == "ja" and re.search(r"[\u4e00-\u9fff]", mapped_text):
+        # Japanese can contain kanji, but leftover Chinese-only words usually mean the SKU was not localized.
+        allowed = ("鶏", "鴨", "牛", "猫", "卵黄", "容器")
+        without_allowed = mapped_text
+        for token in allowed:
+            without_allowed = without_allowed.replace(token, "")
+        if re.search(r"[\u4e00-\u9fff]", without_allowed):
+            return True
+    if sku_translation_lost_pet_terms(source, mapped_text):
+        return True
+    return False
+
+
 def simplify_sku_name(value: str, target_language: str = "ja") -> str:
     value = sanitize_listing_copy(value or "")
     value = re.sub(r"[\[\]【】()（）]", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
-    if not value or is_bad_sku_name(value) or is_garbled_sku_spec(value):
+    if not value or is_bad_sku_name(value) or is_garbled_sku_spec(value) or is_noise_heavy_text(value):
         return target_language_meta(target_language)["standard_sku"]
+    pet_food_name = localize_pet_food_sku_name(value, target_language)
+    if pet_food_name:
+        return pet_food_name
     value = translate_common_sku_name(value)
     value = localize_sku_name(value, target_language)
+    if not value or is_noise_heavy_text(value, min_score=0.32):
+        return target_language_meta(target_language)["standard_sku"]
     return truncate_sku_name(value, 20) if value else target_language_meta(target_language)["standard_sku"]
 
 
@@ -4637,6 +4389,8 @@ def is_garbled_sku_spec(value: str) -> bool:
         return True
     meaningful = re.sub(r"[\s+\-_/|｜,，;；.0-9]+", "", value)
     if not meaningful:
+        return True
+    if text_meaningfulness_score(meaningful) < 0.22:
         return True
     return False
 
@@ -4866,7 +4620,7 @@ def image_failure_diagnostics(
         diagnostics.append("诊断：主图处理/上传后为空，商品无法生成可用主图。")
     elif main_count < main_target:
         if main_source_count < main_target:
-            diagnostics.append(f"诊断：1688/Oxylabs 只解析到主图源图 {main_source_count}/{main_target}；按当前规则允许主图不足 5 张继续上架，并会尽量用干净 SKU/详情图或重复链接补足模板。")
+            diagnostics.append(f"诊断：当前采集结果只解析到主图源图 {main_source_count}/{main_target}；按当前规则允许主图不足 5 张继续上架，并会尽量用干净 SKU/详情图补足。")
         else:
             diagnostics.append(f"诊断：主图源图足够，但处理后只剩 {main_count}/{main_target}；按当前规则允许继续上架。")
     if detail_count == 0 and detail_source_count > 0:
@@ -8020,6 +7774,7 @@ def call_listing_ai(db: Session, product: dict[str, Any], target_language: str =
     language = normalize_target_language(target_language)
     meta = target_language_meta(language)
     title_key = "english_title" if language == "en" else "japanese_title"
+    negative_words = listing_negative_words()
     try:
         client = get_miaoshou_openapi_client(db)
         product_title = clean_html_text(str(product.get("title") or ""))
@@ -8037,6 +7792,12 @@ def call_listing_ai(db: Session, product: dict[str, Any], target_language: str =
             "target_market": meta["market"],
             "target_language": meta["native"],
             "goal": f"使用妙手内部 AI 生成适合{meta['market']}的商品标题、详情描述和 SKU 名称。",
+            "rules": [
+                "不要出现季节、爆款、新款、品牌名称、电话、退货承诺、公司名称、网址、厂家、批发、1688、阿里巴巴等供应链和营销词。",
+                "不要编造品牌、认证、专利、售后承诺或到货时效。",
+                "SKU 名称必须保留原始重量和关键口味/规格信息。",
+            ],
+            "negative_words": negative_words,
             "title_key": title_key,
         }
         try:
@@ -8056,6 +7817,7 @@ def call_listing_ai(db: Session, product: dict[str, Any], target_language: str =
                     original_content=json.dumps(original_content | {"generate_types": generate_types}, ensure_ascii=False),
                     title_length_limit=120,
                     keywords_list=[product_title] if product_title else None,
+                    negative_words_list=negative_words,
                     category_name=str(product.get("category") or ""),
                     site=str(product.get("site") or ""),
                     cid=str(product.get("cid") or ""),
@@ -8096,6 +7858,7 @@ def call_listing_ai(db: Session, product: dict[str, Any], target_language: str =
                         original_content=json.dumps(original_content, ensure_ascii=False),
                         title_length_limit=120,
                         keywords_list=[product_title] if product_title else None,
+                        negative_words_list=negative_words,
                         category_name=str(product.get("category") or ""),
                         site=str(product.get("site") or ""),
                         cid=str(product.get("cid") or ""),
@@ -8131,7 +7894,7 @@ def call_listing_ai(db: Session, product: dict[str, Any], target_language: str =
         if merged.get("description_error"):
             warnings.append(f"妙手 AI 生成描述未完成：{merged.get('description_error')}")
         if title_value:
-            result[title_key] = ensure_miaoshou_site_title_length(str(title_value), product, language)
+            result[title_key] = ensure_miaoshou_site_title_length(sanitize_listing_copy(str(title_value)), product, language)
         if description_value:
             result["detail_description"] = sanitize_listing_copy(str(description_value))
         if generated_sku_property_list:
@@ -8332,6 +8095,30 @@ def looks_like_target_language(value: str, target_language: str = "ja") -> bool:
     return looks_like_japanese(value)
 
 
+def text_meaningfulness_score(value: str) -> float:
+    text = clean_html_text(value or "")
+    if not text:
+        return 0.0
+    meaningful = 0
+    for char in text:
+        if char.isascii() and char.isalnum():
+            meaningful += 1
+        elif re.match(r"[\u3040-\u30ff\u3400-\u9fff]", char):
+            meaningful += 1
+    return meaningful / max(len(text), 1)
+
+
+def is_noise_heavy_text(value: str, *, min_score: float = 0.28) -> bool:
+    text = sanitize_listing_copy(clean_html_text(value or ""))
+    if not text:
+        return True
+    if re.search(r"\d{6,}", text):
+        return True
+    if re.search(r"([*_/|｜=+])\1{1,}", text):
+        return True
+    return text_meaningfulness_score(text) < min_score
+
+
 def contains_cjk(value: str) -> bool:
     return bool(value and re.search(r"[\u4e00-\u9fff]", value))
 
@@ -8391,7 +8178,11 @@ def build_description(product: dict[str, Any], target_language: str = "ja") -> s
         for item in (product.get("skus") or [])[:6]
         if not is_bad_sku_name(str(item.get("spec1") or ""))
     ]
-    unique_sku_names = list(dict.fromkeys(name for name in sku_names if name and name not in {"標準", "Standard"}))
+    unique_sku_names = list(
+        dict.fromkeys(
+            name for name in sku_names if name and name not in {"標準", "Standard"} and not is_noise_heavy_text(name)
+        )
+    )
     sku_text = "、".join(unique_sku_names[:4])
     if normalize_target_language(target_language) == "en":
         title = safe_title_en
@@ -8422,10 +8213,28 @@ def build_description(product: dict[str, Any], target_language: str = "ja") -> s
 
 def banned_listing_pattern() -> str:
     return (
-        r"1688|阿里巴巴|アリババ|厂家|メーカー直送|批发|卸売|源头|仕入れ元|跨境|越境|"
-        r"一件代发|代行|现货|即納|爆款|爆売れ|新款|新作|北欧風|北欧风格|专利|專利|特許|専利|"
-        r"公式|正規品|Disney|ディズニー|Nike|ナイキ|Adidas|アディダス|Sanrio|サンリオ"
+        r"1688|阿里巴巴|アリババ|alibaba|厂家|廠家|工厂|工廠|メーカー直送|メーカー|批发|批發|卸売|源头|源頭|仕入れ元|供应商|供應商|"
+        r"跨境|越境|一件代发|一件代發|代行|现货|現貨|即納|爆款|爆売れ|热卖|熱賣|人気商品|新款|新作|新品|"
+        r"春夏|秋冬|春用|夏用|秋用|冬用|春季|夏季|秋季|冬季|季节|季節|seasonal|北欧風|北欧风格|"
+        r"专利|專利|特許|専利|认证|認証|证书|證書|授权|授權|公式|正規品|品牌|ブランド|brand|"
+        r"电话|電話|手机|手機|手机号|手機號|联系|聯繫|联系方式|聯繫方式|客服|微信|WeChat|LINE|WhatsApp|"
+        r"退货|退貨|返品|无理由|無理由|保証|保修|售后|售後|包邮|包郵|送料無料|到货|到貨|配送|发货|發貨|"
+        r"公司|有限公司|有限会社|株式会社|工贸|工貿|商贸|商貿|贸易|貿易|实业|實業|科技|"
+        r"Disney|ディズニー|Nike|ナイキ|Adidas|アディダス|Sanrio|サンリオ"
     )
+
+
+def listing_negative_words() -> list[str]:
+    return [
+        "季节", "季節", "春夏", "秋冬", "春季", "夏季", "秋季", "冬季", "seasonal",
+        "爆款", "爆売れ", "热卖", "熱賣", "人気商品", "新款", "新作", "新品",
+        "品牌", "品牌名称", "ブランド", "brand", "公式", "正規品",
+        "电话", "電話", "手机", "手机号", "联系方式", "客服", "微信", "WeChat", "LINE", "WhatsApp",
+        "退货", "退貨", "返品", "无理由退货", "無理由返品", "多少天无理由退货", "7天无理由退货", "15天无理由退货",
+        "公司", "公司名称", "有限公司", "有限会社", "株式会社", "工贸", "商贸", "贸易", "实业", "科技",
+        "网址", "URL", "http", "https", "www", ".com", ".cn", ".jp", ".net",
+        "厂家", "工厂", "批发", "1688", "阿里巴巴", "Alibaba", "一件代发", "源头", "供应商",
+    ]
 
 
 def sanitize_listing_copy(value: str) -> str:
@@ -8436,48 +8245,17 @@ def sanitize_listing_copy(value: str) -> str:
         value,
         flags=re.IGNORECASE,
     )
+    value = re.sub(r"(?:https?://|www\.)[^\s<>\"]+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "", value)
+    value = re.sub(r"(?:\+?\d[\d\s\-()]{7,}\d)", "", value)
+    value = re.sub(r"\d+\s*(?:天|日)\s*(?:无理由|無理由)?\s*(?:退货|退貨|返品)?", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\b[A-Za-z0-9.-]+\.(?:com|cn|jp|net|org|co|shop|store|top)\b", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"(?:公司名称|公司名|品牌名称|品牌名|名称|網址|网址|URL)\s*[:：]\s*[\w\u4e00-\u9fffぁ-んァ-ヶー-]{0,30}", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"(?:公司名称|公司名|品牌名称|品牌名|名称|網址|网址|URL)", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"(?<!\d)[天日](?!\d)", "", value)
     value = re.sub(r"\s+", " ", value)
     value = re.sub(r">\s+<", "><", value)
     return value.strip()
-
-def build_miaoshou_import_xls(task_id: str, product: dict[str, Any]) -> Path:
-    if not DEFAULT_TEMPLATE_PATH.exists():
-        raise AutoPublishError(f"妙手导入模板不存在：{DEFAULT_TEMPLATE_PATH}")
-    _ensure_runtime_dir()
-    output_path = RUNTIME_DIR / f"miaoshou_import_{task_id}.xls"
-    shutil.copyfile(DEFAULT_TEMPLATE_PATH, output_path)
-    rows = miaoshou_rows(product)
-    write_rows_to_xls(output_path, rows)
-    return output_path
-
-
-def build_miaoshou_import_xls_multi(task_id: str, products: list[dict[str, Any]]) -> Path:
-    if not DEFAULT_TEMPLATE_PATH.exists():
-        raise AutoPublishError(f"妙手导入模板不存在：{DEFAULT_TEMPLATE_PATH}")
-    _ensure_runtime_dir()
-    output_path = RUNTIME_DIR / f"miaoshou_import_batch_{task_id}.xls"
-    shutil.copyfile(DEFAULT_TEMPLATE_PATH, output_path)
-
-    rows: list[list[Any]] = []
-    used_main_no: set[str] = set()
-    for product_index, product in enumerate(products, start=1):
-        product_rows = miaoshou_rows(product)
-        if not product_rows:
-            continue
-        base_main_no = str(product_rows[0][0] or f"A{product_index:03d}").strip() or f"A{product_index:03d}"
-        main_no = base_main_no
-        if main_no in used_main_no:
-            main_no = f"{base_main_no}-{product_index:02d}"
-        used_main_no.add(main_no)
-        for row in product_rows:
-            row[0] = main_no
-        rows.extend(product_rows)
-
-    if not rows:
-        raise AutoPublishError("没有可写入妙手模板的商品行。")
-    write_rows_to_xls(output_path, rows)
-    return output_path
-
 
 def validate_template_images_from_miaoshou_space(product: dict[str, Any]) -> list[str]:
     image_result = product.get("image_result") if isinstance(product.get("image_result"), dict) else {}
@@ -8537,6 +8315,16 @@ def miaoshou_rows(product: dict[str, Any]) -> list[list[Any]]:
         skus = [{"spec1": "標準", "spec2": "", "price": product.get("price") or 0, "stock": 100, "image_url": main_images[0] if main_images else ""}]
     shipping_fee = safe_price(product.get("shipping_fee"))
     price_includes_shipping = bool(product.get("price_includes_shipping"))
+    profit_rule = normalize_profit_rule(product.get("profit_rule"))
+    pricing_currency = normalize_pricing_currency(product.get("pricing_currency") or "CNY")
+    commission_rate, _ = commission_rate_from_category({}, {}, product)
+    cargo_type, _ = detect_cargo_type({}, {}, product)
+    billable_weight = billable_weight_kg(
+        float(product.get("package_weight_g") or round(package_weight_kg * 1000.0)),
+        package_length_cm,
+        package_width_cm,
+        package_height_cm,
+    )
     rows: list[list[Any]] = []
     for index, sku in enumerate(skus[:40]):
         first = index == 0
@@ -8562,7 +8350,17 @@ def miaoshou_rows(product: dict[str, Any]) -> list[list[Any]]:
                 str(sku.get("spec1") or "標準"),
                 str(sku.get("spec2") or ""),
                 sku.get("platform_sku", ""),
-                template_sku_price(sku.get("price") or product.get("price"), shipping_fee, price_includes_shipping),
+                template_display_price(
+                    sku.get("price") or product.get("price"),
+                    shipping_fee,
+                    price_includes_shipping,
+                    profit_rule=profit_rule,
+                    pricing_currency=pricing_currency,
+                    commission_rate=commission_rate,
+                    billable_weight=billable_weight,
+                    cargo_type=cargo_type,
+                    product=product,
+                ),
                 sku_image,
                 int(float(sku.get("stock") or 100)),
                 package_weight_kg,
@@ -8642,6 +8440,38 @@ def template_sku_price(price: Any, shipping_fee: Any, price_includes_shipping: b
     if price_includes_shipping:
         return round(safe_price(price), 2)
     return price_with_shipping(price, shipping_fee)
+
+
+def template_display_price(
+    price: Any,
+    shipping_fee: Any,
+    price_includes_shipping: bool,
+    *,
+    profit_rule: str = "",
+    pricing_currency: str = "CNY",
+    commission_rate: float = DEFAULT_COMMISSION_RATE,
+    billable_weight: float | None = None,
+    cargo_type: int = 1,
+    product: dict[str, Any] | None = None,
+) -> float:
+    parsed_rule = parse_profit_rule(profit_rule)
+    if parsed_rule:
+        base_product = product or {}
+        weight_kg = float(billable_weight or 0.0)
+        if weight_kg <= 0:
+            weight_kg = package_weight_kg_from_g(base_product.get("package_weight_g") or base_product.get("weight") or 500)
+        sale_calc = calculate_template_sale_price_cny(
+            safe_price(price),
+            weight_kg,
+            commission_rate,
+            profit_rule,
+            cargo_type,
+        )
+        if sale_calc:
+            sale_cny = float(sale_calc.get("sale_cny") or 0)
+            currency = normalize_pricing_currency(pricing_currency)
+            return round(sale_cny if currency == "CNY" else sale_cny * JPY_CNY_EXCHANGE_RATE, 2)
+    return template_sku_price(price, shipping_fee, price_includes_shipping)
 
 
 def write_rows_to_xls(output_path: Path, rows: list[list[Any]]) -> None:
