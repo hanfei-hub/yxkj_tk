@@ -30,6 +30,30 @@ def init_db() -> None:
 
 
 def ensure_region_configs(db: Session) -> None:
+    marker_key = "region_config_seed_version"
+    marker = db.scalar(select(SystemSetting).where(SystemSetting.setting_key == marker_key))
+    if marker and str(marker.setting_value).strip() == "2":
+        return
+    defaults = [
+        ("中国", "CN"), ("美国", "US"), ("日本", "JP"), ("泰国", "TH"),
+        ("越南", "VN"), ("马来西亚", "MY"), ("菲律宾", "PH"), ("新加坡", "SG"),
+    ]
+    db.query(RegionConfig).delete()
+    for index, (name, code) in enumerate(defaults):
+        db.add(RegionConfig(region_name=name, region_code=code, sort_order=index, status=1))
+    if not marker:
+        db.add(SystemSetting(
+            setting_key=marker_key,
+            setting_value="2",
+            setting_name="国家和地区初始化版本",
+            description="仅在版本升级时初始化默认国家和地区，后续管理员修改不会被覆盖。",
+            value_type="system",
+        ))
+    else:
+        marker.setting_value = "2"
+
+
+def ensure_region_configs_legacy(db: Session) -> None:
     marker = db.scalar(select(SystemSetting).where(SystemSetting.setting_key == "region_config_initialized"))
     if marker and str(marker.setting_value).strip() == "1":
         return
@@ -58,6 +82,7 @@ def ensure_region_configs(db: Session) -> None:
 
 def ensure_runtime_schema() -> None:
     derived_columns = {
+        "owner_user_id": "INTEGER NULL",
         "family_id": "INTEGER NULL",
         "analysis_report": "TEXT",
         "source_search_keywords": "TEXT",
@@ -92,6 +117,8 @@ def ensure_runtime_schema() -> None:
     }
     search_result_columns = {
         "source_type": "VARCHAR(32) DEFAULT 'ai_search'",
+        "region": "VARCHAR(32) DEFAULT 'CN'",
+        "currency": "VARCHAR(16) DEFAULT 'CNY'",
         "supplier_search_status": "VARCHAR(32) DEFAULT 'not_searched'",
         "supplier_next_page": "INTEGER DEFAULT 1",
         "supplier_searched_count": "INTEGER DEFAULT 0",

@@ -463,7 +463,7 @@ def apply_search_result_supplier_match(
     recommendation.supplier_product_id = str(candidate.get("supplier_product_id") or "")
     recommendation.supplier_title = str(candidate.get("title") or "")[:512]
     recommendation.supplier_image_url = str(candidate.get("image_url") or "")
-    recommendation.supplier_price = number_value(candidate.get("price"))
+    recommendation.supplier_price = round(number_value(candidate.get("price")), 2)
     recommendation.supplier_sales_count = int_value(candidate.get("sales_count"))
     recommendation.supplier_shop_name = str(candidate.get("shop_name") or "")[:255]
     recommendation.supplier_source_url = str(candidate.get("source_url") or "")

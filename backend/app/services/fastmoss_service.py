@@ -468,18 +468,31 @@ def upsert_rank_products(
     list_type = str(list_type or raw.get("list_type") or "new").lower()
     if region not in REGION_CODES or list_type not in RANK_PATHS:
         raise FastMossError("FastMoss 地区或榜单类型无效。")
-    # Replace only this dataset. Other regions/rankings and their derived data remain intact.
+    # FastMoss sync is append/update only. Never delete old source products:
+    # historical rows may still be referenced by derived products, reports,
+    # reviews, favorites, or audit records.
     old_products = list(db.scalars(select(FmProduct).where(FmProduct.region == region, FmProduct.list_type == list_type)).all())
-    old_ids = [item.id for item in old_products]
-    if old_ids:
-        old_derived = list(db.scalars(select(DerivedProductRecommendation.id).where(DerivedProductRecommendation.source_product_id.in_(old_ids))).all())
-        if old_derived:
-            db.execute(delete(DerivedProductDimensionReport).where(DerivedProductDimensionReport.recommendation_id.in_(old_derived)))
-            db.execute(delete(DerivedProductAttributeScore).where(DerivedProductAttributeScore.recommendation_id.in_(old_derived)))
-            db.execute(delete(TeacherReviewRecord).where(TeacherReviewRecord.recommendation_id.in_(old_derived)))
-            db.execute(delete(DerivedProductRecommendation).where(DerivedProductRecommendation.id.in_(old_derived)))
-        db.execute(delete(FmProduct).where(FmProduct.id.in_(old_ids)))
-        db.flush()
+    existing_by_storage_id = {str(item.fm_product_id): item for item in old_products}
+    existing_by_external_id: dict[str, FmProduct] = {}
+    incoming_external_ids: set[str] = set()
+    for item in items:
+        external_id = str(
+            pick_value(item, ["product_id", "id", "goods_id", "item_id", "productId"], "")
+        )
+        if external_id:
+            incoming_external_ids.add(external_id)
+    if incoming_external_ids:
+        all_products = db.scalars(select(FmProduct)).all()
+        for existing in all_products:
+            try:
+                raw_external_id = str(json.loads(existing.raw_data or "{}").get("external_id") or "")
+            except (TypeError, ValueError):
+                raw_external_id = ""
+            if raw_external_id in incoming_external_ids:
+                existing_by_external_id.setdefault(raw_external_id, existing)
+    # Do not remove rows missing from the latest API response. They remain
+    # available as historical source products and are never re-inserted when
+    # the same unique FastMoss ID appears again.
     for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
@@ -487,9 +500,15 @@ def upsert_rank_products(
             pick_value(item, ["product_id", "id", "goods_id", "item_id", "productId"], f"fastmoss_{request_date}_{index}")
         )
         original_title = clean_text(pick_value(item, ["title", "product_title", "name", "productName"], "未命名商品"))
-        storage_id = f"{region}:{list_type}:{external_id}"
-        product = FmProduct(fm_product_id=storage_id)
-        db.add(product)
+        # FastMoss product IDs are globally unique. Region and ranking are
+        # attributes of the latest observation, not part of the product key.
+        storage_id = external_id or f"{region}:{list_type}:{index}"
+        product = existing_by_storage_id.get(storage_id) or existing_by_external_id.get(external_id)
+        if product is None:
+            product = FmProduct(fm_product_id=storage_id)
+            db.add(product)
+        elif product.fm_product_id != storage_id:
+            product.fm_product_id = storage_id
         product.region = region
         product.platform = "TikTok"
         product.list_type = list_type

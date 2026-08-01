@@ -39,7 +39,7 @@ def teacher_products(db: Session = Depends(get_db)):
         .where(FmProduct.region == "JP", FmProduct.list_type == "new")
         .order_by(FmProduct.rank_no)
     ).all()
-    return [product_to_dict(item) for item in products]
+    return [product_to_dict(item, include_private=True) for item in products]
 
 
 @router.get("/products/{product_id}/derived-products")
@@ -49,7 +49,9 @@ def derived_products(product_id: int, db: Session = Depends(get_db)):
         .options(
             selectinload(DerivedProductRecommendation.attributes).selectinload(DerivedProductAttributeScore.attribute),
         )
-        .where(DerivedProductRecommendation.source_product_id == product_id)
+        .where(
+            DerivedProductRecommendation.source_product_id == product_id,
+        )
         .order_by(DerivedProductRecommendation.weighted_score.desc())
     ).all()
     return [derived_to_dict(item) for item in items]

@@ -8,5 +8,11 @@ If apiBase = "" Then
 Else
     shell.Environment("PROCESS")("TK_SELECTION_API_BASE_URL") = apiBase
 End If
-cmd = """" & root & "\desktop\.venv\Scripts\pythonw.exe"" app\main.py"
+pythonw = root & "\desktop\.venv\Scripts\pythonw.exe"
+If Not fso.FileExists(pythonw) Then pythonw = "D:\python\pythonw.exe"
+If Not fso.FileExists(pythonw) Then
+    MsgBox "Python runtime not found. Check D:\python\pythonw.exe or desktop\.venv.", 16, "Startup failed"
+    WScript.Quit 1
+End If
+cmd = """" & pythonw & """ app\main.py"
 shell.Run cmd, 1, False

@@ -157,18 +157,33 @@ def add_library_product(
     if not isinstance(report, dict):
         report = {}
     report = dict(report)
-    report["_library_region"] = str(product.get("region") or "")
+    source_type = str(product.get("source_type") or ("new_product" if product.get("list_type") else "ai_search")).lower()
+    is_rank_product = source_type == "new_product" or bool(product.get("list_type"))
+    if is_rank_product:
+        source_type = "new_product"
+        region = str(product.get("region") or report.get("_library_region") or report.get("region") or "JP").upper()
+        currency = str(product.get("currency") or report.get("_library_currency") or report.get("currency") or ("JPY" if region == "JP" else "")).upper()
+        search_query = "榜单加入选品库"
+    else:
+        source_type = "ai_search"
+        region = "CN"
+        currency = "CNY"
+        search_query = "AI搜索加入选品库"
+    report["_library_region"] = region
+    report["_library_currency"] = currency
     report["_library_category"] = str(product.get("category") or "")
     item = UserSearchRecommendation(
         user_id=int(user.get("id") or 0),
         task_id=None,
-        search_query="榜单加入选品库",
-        source_type=str(product.get("source_type") or ("new_product" if product.get("list_type") else "ai_search")),
+        search_query=search_query,
+        source_type=source_type,
         title=title,
         image_url=str(product.get("image_url") or ""),
         price=float(product.get("price") or 0),
         sales_count=int(float(product.get("sales_count") or 0)),
         reason_summary="来自 FastMoss 榜单，已加入当前账号选品库。",
+        region=region,
+        currency=currency,
         analysis_report=json.dumps(report, ensure_ascii=False),
         sort_order=0,
         created_at=datetime.utcnow(),
@@ -179,8 +194,35 @@ def add_library_product(
     return user_search_result_to_dict(item)
 
 
+@router.get("/products/{product_id}/derived-products")
+def user_visible_derived_products(
+    product_id: int,
+    user: dict = Depends(require_role("admin", "teacher", "student")),
+    db: Session = Depends(get_db),
+):
+    """Return public derivations plus the current user's private derivations."""
+    user_id = int(user.get("id") or 0)
+    items = db.scalars(
+        select(DerivedProductRecommendation)
+        .options(
+            selectinload(DerivedProductRecommendation.attributes).selectinload(DerivedProductAttributeScore.attribute),
+        )
+        .where(
+            DerivedProductRecommendation.source_product_id == product_id,
+            DerivedProductRecommendation.review_status != "rejected",
+            (DerivedProductRecommendation.owner_user_id.is_(None) | (DerivedProductRecommendation.owner_user_id == user_id)),
+        )
+        .order_by(DerivedProductRecommendation.weighted_score.desc(), DerivedProductRecommendation.id.desc())
+    ).all()
+    return [derived_to_dict(item) for item in items]
+
+
 @router.post("/products/{product_id}/generate-derived")
-def generate_derived(product_id: int, db: Session = Depends(get_db)):
+def generate_derived(
+    product_id: int,
+    user: dict = Depends(require_role("admin", "teacher", "student")),
+    db: Session = Depends(get_db),
+):
     product = db.get(FmProduct, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="原商品不存在")
@@ -189,13 +231,17 @@ def generate_derived(product_id: int, db: Session = Depends(get_db)):
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=502, detail=f"商品翻译/分族失败：{exc}") from exc
-    result = generate_derivatives_for_products(db, [product])
+    owner_user_id = int(user.get("id") or 0) or None
+    result = generate_derivatives_for_products(db, [product], owner_user_id=owner_user_id)
     items = db.scalars(
         select(DerivedProductRecommendation)
         .options(
             selectinload(DerivedProductRecommendation.attributes).selectinload(DerivedProductAttributeScore.attribute),
         )
-        .where(DerivedProductRecommendation.source_product_id == product_id)
+        .where(
+            DerivedProductRecommendation.source_product_id == product_id,
+            DerivedProductRecommendation.owner_user_id == owner_user_id,
+        )
         .order_by(DerivedProductRecommendation.weighted_score.desc(), DerivedProductRecommendation.id.desc())
     ).all()
     return {
@@ -207,7 +253,7 @@ def generate_derived(product_id: int, db: Session = Depends(get_db)):
     }
 
 
-def run_product_full_pipeline(product_id: int, task_id: int) -> None:
+def run_product_full_pipeline(product_id: int, task_id: int, owner_user_id: int | None = None) -> None:
     """Run lazy translation/family assignment, derivation, and 1688 matching."""
     with SessionLocal() as db:
         task = db.get(TaskExecution, task_id)
@@ -221,13 +267,19 @@ def run_product_full_pipeline(product_id: int, task_id: int) -> None:
             prepare_product_for_derivation(db, product, task_id=task_id)
             task.result_snapshot = json.dumps({"progress": 28, "stage": "derivation", "message": "正在生成 10 个衍生品方向"}, ensure_ascii=False)
             db.commit()
-            generation = generate_derivatives_for_products(db, [product], task_id=task_id)
+            generation = generate_derivatives_for_products(
+                db,
+                [product],
+                task_id=task_id,
+                owner_user_id=owner_user_id,
+            )
             if not int(generation.get("generated_count") or 0):
                 raise RuntimeError(str(generation.get("error") or "衍生品生成失败"))
             derived_ids = list(
                 db.scalars(
                     select(DerivedProductRecommendation.id)
                     .where(DerivedProductRecommendation.source_product_id == product_id)
+                    .where(DerivedProductRecommendation.owner_user_id == owner_user_id)
                     .order_by(DerivedProductRecommendation.id.desc())
                 ).all()
             )
@@ -288,17 +340,36 @@ def generate_full_task(
         reference_id=product_id,
         remark="开始商品衍生",
     ))
-    task = create_task(db, task_type="product_full_pipeline", task_name="单品完整衍生", trigger_source="product_click", total_count=2, input_snapshot={"product_id": product_id})
+    owner_user_id = int(user.get("id") or 0) or None
+    task = create_task(
+        db,
+        task_type="product_full_pipeline",
+        task_name="单品完整衍生",
+        trigger_source="product_click",
+        total_count=2,
+        input_snapshot={"product_id": product_id, "user_id": owner_user_id},
+    )
     db.commit()
-    background_tasks.add_task(run_product_full_pipeline, product_id, task.id)
+    background_tasks.add_task(run_product_full_pipeline, product_id, task.id, owner_user_id)
     return {"ok": True, "task_id": task.id, "status": task.status, "progress": 0, "credit_cost": 10, "credit_balance": db_user.credit_balance}
 
 
 @router.get("/product-full-tasks/{task_id}")
-def product_full_task_status(task_id: int, db: Session = Depends(get_db)):
+def product_full_task_status(
+    task_id: int,
+    user: dict = Depends(require_role("admin", "teacher", "student")),
+    db: Session = Depends(get_db),
+):
     task = db.get(TaskExecution, task_id)
     if not task or task.task_type != "product_full_pipeline":
         raise HTTPException(status_code=404, detail="任务不存在")
+    try:
+        snapshot = json.loads(task.input_snapshot or "{}")
+    except ValueError:
+        snapshot = {}
+    owner_user_id = int(snapshot.get("user_id") or 0)
+    if owner_user_id and owner_user_id != int(user.get("id") or 0) and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="无权查看该衍生任务")
     try:
         result = json.loads(task.result_snapshot or "{}")
     except ValueError:

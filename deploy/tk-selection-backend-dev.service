@@ -1,0 +1,18 @@
+[Unit]
+Description=TK Selection Backend Development
+After=network.target
+
+[Service]
+Type=simple
+User=tkbackend
+Group=tkbackend
+WorkingDirectory=/opt/tk-selection/backend-dev
+EnvironmentFile=/etc/tk-selection/backend-dev.env
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+ExecStart=/opt/tk-selection/backend/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 --workers 1
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

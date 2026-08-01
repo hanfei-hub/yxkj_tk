@@ -259,7 +259,12 @@ def build_derivation_prompt(db: Session, products: list[FmProduct], prompt_templ
         f"商品名称和图片：{json.dumps(product_payload(products), ensure_ascii=False)}"
     )
 
-def generate_derivatives_for_products(db: Session, products: list[FmProduct], task_id: int | None = None) -> dict[str, Any]:
+def generate_derivatives_for_products(
+    db: Session,
+    products: list[FmProduct],
+    task_id: int | None = None,
+    owner_user_id: int | None = None,
+) -> dict[str, Any]:
     if not products:
         return {"model_used": False, "generated_count": 0, "error": ""}
     prompt_template = ensure_selection_prompt(db)
@@ -314,6 +319,7 @@ def generate_derivatives_for_products(db: Session, products: list[FmProduct], ta
             select(DerivedProductRecommendation.id).where(
                 DerivedProductRecommendation.source_product_id.in_(source_ids),
                 DerivedProductRecommendation.review_status == "pending",
+                DerivedProductRecommendation.owner_user_id == owner_user_id,
             )
         ).all()
     )
@@ -334,6 +340,7 @@ def generate_derivatives_for_products(db: Session, products: list[FmProduct], ta
         analysis_report = item.get("analysis_report") or {}
         derived_title = str(item.get("derived_title") or source_product.title or "未命名衍生品")
         derived = DerivedProductRecommendation(
+            owner_user_id=owner_user_id,
             family_id=source_product.family_id,
             source_product_id=source_product.id,
             derived_title=derived_title[:255],

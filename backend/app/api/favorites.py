@@ -48,6 +48,12 @@ def create_favorite(
 ):
     blocked_keys = {"id", "source_product_id", "derived_id", "recommendation_id", "product_id"}
     snapshot = {key: value for key, value in payload.product_snapshot.items() if key not in blocked_keys}
+    report = payload.analysis_report
+    if isinstance(report, str):
+        try:
+            report = json.loads(report)
+        except (TypeError, ValueError):
+            report = {"report_text": report}
     item = FavoriteProduct(
         user_id=user["id"],
         source_type=payload.source_type,
@@ -58,7 +64,7 @@ def create_favorite(
         sales_count=payload.sales_count,
         category=payload.category,
         recommendation_reason=payload.recommendation_reason,
-        analysis_report=json.dumps(payload.analysis_report, ensure_ascii=False),
+        analysis_report=json.dumps(report, ensure_ascii=False),
         product_snapshot=json.dumps(snapshot, ensure_ascii=False),
     )
     db.add(item)

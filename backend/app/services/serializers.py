@@ -105,8 +105,14 @@ def region_to_dict(item: RegionConfig) -> dict[str, Any]:
     }
 
 
-def product_to_dict(item: FmProduct) -> dict[str, Any]:
-    derived = item.derived_products or []
+def product_to_dict(item: FmProduct, include_private: bool = False) -> dict[str, Any]:
+    # User-triggered rank derivations are private. Product cards and teacher
+    # views only expose scheduled/public derivations unless explicitly asked
+    # for the teacher's all-users view.
+    derived = [
+        child for child in (item.derived_products or [])
+        if include_private or child.owner_user_id is None
+    ]
     pending = [child for child in derived if child.review_status == "pending"]
     return {
         "id": item.id,

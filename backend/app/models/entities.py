@@ -392,6 +392,9 @@ class DerivedProductRecommendation(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # NULL means a scheduled/public derivation; a value means this result
+    # belongs only to the user who clicked derivation from the rank page.
+    owner_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     family_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     source_product_id: Mapped[int] = mapped_column(ForeignKey("fm_products.id"), index=True)
     derived_title: Mapped[str] = mapped_column(String(255))
@@ -512,6 +515,8 @@ class DailyRecommendation(Base):
     title: Mapped[str] = mapped_column(String(255))
     image_url: Mapped[str] = mapped_column(Text, default="")
     price: Mapped[float] = mapped_column(Float, default=0)
+    region: Mapped[str] = mapped_column(String(32), default="JP")
+    currency: Mapped[str] = mapped_column(String(16), default="JPY")
     sales_count: Mapped[int] = mapped_column(Integer, default=0)
     reason_summary: Mapped[str] = mapped_column(Text, default="")
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
@@ -546,6 +551,8 @@ class UserSearchRecommendation(Base):
     title: Mapped[str] = mapped_column(String(255))
     image_url: Mapped[str] = mapped_column(Text, default="")
     price: Mapped[float] = mapped_column(Float, default=0)
+    region: Mapped[str] = mapped_column(String(32), default="CN")
+    currency: Mapped[str] = mapped_column(String(16), default="CNY")
     sales_count: Mapped[int] = mapped_column(Integer, default=0)
     reason_summary: Mapped[str] = mapped_column(Text, default="")
     analysis_report: Mapped[str] = mapped_column(Text, default="{}")

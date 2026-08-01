@@ -268,7 +268,7 @@ class PromptEditorFrame(QFrame):
         self.editor = QTextEdit(self)
         self.editor.setObjectName("StudioPromptEditor")
         self.editor.setPlaceholderText(
-            "✦  告诉我您想找什么样的产品?\n例如：最近在日本TikTok上热卖的厨房小工具，价格在1000日元以内"
+            "✦  告诉我您想找什么样的产品？\n例如：最近在日本TikTok上热卖的厨房小工具，价格在1000日元以内\n搜索完成后会在选品库中展示"
         )
         self.editor.setAcceptRichText(False)
         self.editor.setFrameStyle(QFrame.NoFrame)
@@ -280,6 +280,7 @@ class PromptEditorFrame(QFrame):
         self.credit_label = QLabel("10积分", self)
         self.credit_label.setObjectName("CreditHint")
         self.credit_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.credit_label.hide()
 
     def set_credit_cost(self, cost: int) -> None:
         self.credit_label.setText(f"{int(cost)}积分")
@@ -323,7 +324,7 @@ class DataGateway:
         if token:
             self.client.token = token
             try:
-                self.user = self.client.get("/api/auth/me")
+                self.user = self.client.get("/api/auth/me", timeout=8)
             except ApiError as exc:
                 if self.is_invalid_token_error(exc):
                     self.clear_session()
@@ -431,7 +432,10 @@ class DataGateway:
     def derived_products(self, product_id: int) -> list[dict[str, Any]]:
         if not self.user:
             return []
-        return self.client.get(f"/api/teacher/products/{product_id}/derived-products")
+        role = str(self.user.get("role") or "student").lower()
+        if role in {"admin", "teacher"}:
+            return self.client.get(f"/api/teacher/products/{product_id}/derived-products")
+        return self.client.get(f"/api/ai/products/{product_id}/derived-products")
 
     def recommended_derived_products(self, limit: int | None = None) -> list[dict[str, Any]]:
         if not self.user:
@@ -529,6 +533,11 @@ class DataGateway:
     def sync_fastmoss_products(self, region: str = "JP", list_type: str = "new") -> dict[str, Any]:
         return self.client.post(f"/api/fastmoss/sync-products?page=1&region={region}&list_type={list_type}")
 
+    def sync_configured_fastmoss_products(self) -> dict[str, Any]:
+        if not self.user or str(self.user.get("role") or "") != "admin":
+            raise ApiError("只有系统管理员可以同步新品榜单。")
+        return self.client.post("/api/fastmoss/sync-configured", timeout=900)
+
     def create_1688_auto_publish_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.post("/api/auto-publish/1688/tasks", payload, timeout=60)
 
@@ -573,7 +582,7 @@ class DataGateway:
         return self.client.get("/api/regions")
 
     def admin_regions(self) -> list[dict[str, Any]]:
-        if not self.user:
+        if not self.user or str(self.user.get("role") or "").lower() != "admin":
             return []
         return self.client.get("/api/admin/regions")
 
@@ -616,7 +625,16 @@ class DataGateway:
     def add_to_selection_library(self, item: dict[str, Any]) -> dict[str, Any]:
         if not self.user:
             raise ApiError("请先登录")
-        return self.client.post("/api/ai/library-products", {"product": item})
+        product = dict(item)
+        # Ranking products must retain their original market when copied into
+        # the personal library; AI search products are normalized by the API.
+        if product.get("list_type") or str(product.get("source_type") or "").lower() == "new_product":
+            product["source_type"] = "new_product"
+            product["region"] = str(product.get("region") or "JP").upper()
+            product["currency"] = str(product.get("currency") or ("JPY" if product["region"] == "JP" else "")).upper()
+        else:
+            product["source_type"] = "ai_search"
+        return self.client.post("/api/ai/library-products", {"product": product})
 
     def save_attribute(self, payload: dict[str, Any], attribute_id: int | None = None) -> dict[str, Any]:
         if attribute_id:
@@ -630,7 +648,7 @@ class DataGateway:
         return self.client.delete(f"/api/admin/selection-attributes/{attribute_id}")
 
     def prompt_constants(self) -> list[dict[str, Any]]:
-        if not self.user:
+        if not self.user or str(self.user.get("role") or "").lower() != "admin":
             return []
         return self.client.get("/api/admin/prompt-constants")
 
@@ -697,11 +715,13 @@ DIMENSION_REPORT_ALIASES = {
 
 def dimension_items_from_report(item: dict[str, Any]) -> list[tuple[str, str, str]]:
     raw_report = item.get("analysis_report") or {}
-    if isinstance(raw_report, str):
+    for _ in range(3):
+        if not isinstance(raw_report, str):
+            break
         try:
             raw_report = json.loads(raw_report)
         except (TypeError, ValueError):
-            raw_report = {}
+            break
     result: list[tuple[str, str, str]] = []
     for code, default_name in DIMENSION_LABELS:
         row = raw_report.get(code) if isinstance(raw_report, dict) else None
@@ -887,11 +907,13 @@ DIMENSION_LABELS = [
 
 def dimension_items_from_report(item: dict[str, Any]) -> list[tuple[str, str, str]]:
     raw_report = item.get("analysis_report") or {}
-    if isinstance(raw_report, str):
+    for _ in range(3):
+        if not isinstance(raw_report, str):
+            break
         try:
             raw_report = json.loads(raw_report)
         except (TypeError, ValueError):
-            raw_report = {}
+            break
     result: list[tuple[str, str, str]] = []
     for code, default_name in DIMENSION_LABELS:
         row = raw_report.get(code) if isinstance(raw_report, dict) else None
@@ -1331,7 +1353,9 @@ class MainWindow(QMainWindow):
         self.user = user
         self.setWindowTitle("益行跨境AI平台 - 系统管理员")
         self.setWindowIcon(QIcon(icon_path("tk_brand.png")))
-        self.setMinimumSize(1180, 760)
+        # Keep a usable layout on 125%/150% Windows scaling where the
+        # available logical resolution is smaller than the panel resolution.
+        self.setMinimumSize(1024, 680)
 
         root = QWidget()
         layout = QHBoxLayout(root)
@@ -1363,10 +1387,16 @@ class MainWindow(QMainWindow):
         brand_layout.addLayout(brand_row)
         brand_layout.addWidget(brand_sub)
 
-        sidebar.setFixedWidth(260)
+        # Scale the navigation width with the window so a DPI-scaled display
+        # does not steal the space needed by the product area.
+        sidebar.setMinimumWidth(190)
+        sidebar.setMaximumWidth(260)
+        sidebar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.sidebar = sidebar
         self.nav = QListWidget()
         self.nav.setObjectName("SideNav")
-        self.nav.setFixedWidth(260)
+        self.nav.setMinimumWidth(190)
+        self.nav.setMaximumWidth(260)
         self.nav.setIconSize(QSize(20, 20))
         self.nav.setItemDelegate(CenteredNavDelegate(self.nav))
         self.stack = QStackedWidget()
@@ -1422,6 +1452,13 @@ class MainWindow(QMainWindow):
         self.update_check_task: UpdateCheckTask | None = None
         self.update_progress: QProgressDialog | None = None
         QTimer.singleShot(1500, self.check_for_updates)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        width = max(1, self.width())
+        sidebar_width = max(190, min(260, int(width * 0.14)))
+        self.sidebar.setFixedWidth(sidebar_width)
+        self.nav.setFixedWidth(sidebar_width)
 
     def add_nav_separator(self) -> None:
         item = QListWidgetItem("")
@@ -3521,7 +3558,7 @@ class SimpleConfigPage(Page):
         edit = QPushButton("编辑选中")
         toggle = QPushButton("启用/禁用")
         delete_button = QPushButton("删除选中")
-        sync = QPushButton("同步 FastMoss")
+        sync = QPushButton("同步新品榜单")
         full_update = QPushButton("更新一批商品")
         add.clicked.connect(self.add_config)
         edit.clicked.connect(self.edit_config)
@@ -3703,7 +3740,7 @@ class SimpleConfigPage(Page):
         if not self.gateway or self.config_type != "third":
             return
         try:
-            result = self.gateway.sync_fastmoss_products()
+            result = self.gateway.sync_configured_fastmoss_products()
             QMessageBox.information(
                 self,
                 "FastMoss 同步",
@@ -4576,6 +4613,9 @@ IMAGE_CACHE: dict[tuple[str, int, int], bytes] = {}
 class ImageLoadSignals(QObject):
     loaded = Signal(str, int, int, bytes)
 
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+
 
 class ImageLoadTask(QRunnable):
     def __init__(self, url: str, width: int, height: int, signals: ImageLoadSignals) -> None:
@@ -4587,9 +4627,16 @@ class ImageLoadTask(QRunnable):
 
     @Slot()
     def run(self) -> None:
+        def emit_loaded(content: bytes) -> None:
+            try:
+                self.signals.loaded.emit(self.url, self.width, self.height, content)
+            except RuntimeError:
+                # The target image widget may have been removed while the request was running.
+                return
+
         cache_key = (self.url, self.width, self.height)
         if cache_key in IMAGE_CACHE:
-            self.signals.loaded.emit(self.url, self.width, self.height, IMAGE_CACHE[cache_key])
+            emit_loaded(IMAGE_CACHE[cache_key])
             return
         try:
             response = requests.get(
@@ -4613,9 +4660,9 @@ class ImageLoadTask(QRunnable):
             except OSError:
                 content = response.content
             IMAGE_CACHE[cache_key] = content
-            self.signals.loaded.emit(self.url, self.width, self.height, content)
+            emit_loaded(content)
         except requests.RequestException:
-            self.signals.loaded.emit(self.url, self.width, self.height, b"")
+            emit_loaded(b"")
 
 
 IMAGE_THREAD_POOL = QThreadPool.globalInstance()
@@ -4667,11 +4714,32 @@ def create_product_image(url: str, fallback: str, width: int = 206, height: int 
         except RuntimeError:
             return
 
-    signals = ImageLoadSignals()
+    signals = ImageLoadSignals(image)
     signals.loaded.connect(apply_image)
     image._image_signals = signals
     IMAGE_THREAD_POOL.start(ImageLoadTask(url, width, height, signals))
     return image
+
+
+def reflow_product_grid(grid: QGridLayout, widgets: list[QWidget], min_card_width: int, max_columns: int = 8) -> int:
+    """Lay cards out using the actual viewport width, including on DPI-scaled screens."""
+    while grid.count():
+        item = grid.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.setParent(None)
+
+    parent = grid.parentWidget()
+    available_width = parent.width() if parent is not None else 0
+    margins = grid.contentsMargins()
+    available_width = max(1, available_width - margins.left() - margins.right())
+    spacing = max(0, grid.horizontalSpacing())
+    columns = max(1, min(max_columns, (available_width + spacing) // (min_card_width + spacing)))
+    for index, widget in enumerate(widgets):
+        grid.addWidget(widget, index // columns, index % columns)
+    for column in range(columns):
+        grid.setColumnStretch(column, 1)
+    return columns
 
 
 class ProductCard(QFrame):
@@ -5128,6 +5196,7 @@ class SelectionStudioPage(Page):
         super().__init__()
         self.gateway = gateway
         self.loaded = False
+        self._recommendation_cards: list[QWidget] = []
         self.selection_task_id: int | None = None
         self.selection_timer = QTimer(self)
         self.selection_timer.setInterval(2500)
@@ -5250,7 +5319,9 @@ class SelectionStudioPage(Page):
 
         self.report_panel = QFrame()
         self.report_panel.setObjectName("StudioReport")
-        self.report_panel.setFixedWidth(380)
+        self.report_panel.setMinimumWidth(280)
+        self.report_panel.setMaximumWidth(380)
+        self.report_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         report_layout = QVBoxLayout(self.report_panel)
         report_layout.setContentsMargins(16, 16, 16, 16)
         report_layout.setSpacing(10)
@@ -5337,9 +5408,9 @@ class SelectionStudioPage(Page):
         )
 
     def activate(self) -> None:
-        if not self.loaded:
-            self.refresh()
-            self.loaded = True
+        # 今日推荐按进入页面重新读取，避免保留上次打开页面的内存数据。
+        self.refresh()
+        self.loaded = True
 
     def refresh_credit_state(self) -> None:
         if hasattr(self, "send_button") and not self.selection_task_id:
@@ -5550,17 +5621,27 @@ class SelectionStudioPage(Page):
         self._show_report(self.report_item)
 
     def refresh(self) -> None:
+        self._show_report(None)
         self.load_favorites()
         items = self.gateway.recommended_derived_products()
-        while self.new_product_grid.count():
-            child = self.new_product_grid.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-        for index, item in enumerate(items):
-            self.new_product_grid.addWidget(StudioNewProductCard(item, index, self._show_report), index // 6, index % 6)
-        self.new_product_grid.setColumnStretch(6, 1)
-        if items and not self.report_item:
+        self._recommendation_cards = [
+            StudioNewProductCard(item, index, self._show_report)
+            for index, item in enumerate(items)
+        ]
+        reflow_product_grid(self.new_product_grid, self._recommendation_cards, 190, 8)
+        if items:
             self._show_report(items[0])
+        else:
+            empty = QLabel("今日暂无推荐商品，请先完成商品衍生或稍后再试。")
+            empty.setObjectName("Muted")
+            self.new_product_grid.addWidget(empty, 0, 0)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        panel_width = max(280, min(380, int(self.width() * 0.28)))
+        self.report_panel.setFixedWidth(panel_width)
+        if self._recommendation_cards:
+            QTimer.singleShot(0, lambda: reflow_product_grid(self.new_product_grid, self._recommendation_cards, 190, 8))
 
 
 class SelectionLibraryPage(Page):
@@ -5570,6 +5651,7 @@ class SelectionLibraryPage(Page):
         super().__init__()
         self.gateway = gateway
         self.loaded = False
+        self._library_cards: list[QWidget] = []
         self.report_item: dict[str, Any] | None = None
         self.report_tab = "选品分析 1-6"
         self.favorite_items: list[dict[str, Any]] = []
@@ -5696,7 +5778,9 @@ class SelectionLibraryPage(Page):
 
         self.report_panel = QFrame()
         self.report_panel.setObjectName("StudioReport")
-        self.report_panel.setFixedWidth(380)
+        self.report_panel.setMinimumWidth(280)
+        self.report_panel.setMaximumWidth(380)
+        self.report_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         report_layout = QVBoxLayout(self.report_panel)
         report_layout.setContentsMargins(16, 16, 16, 16)
         report_layout.setSpacing(10)
@@ -5825,10 +5909,14 @@ class SelectionLibraryPage(Page):
                 parent.clear_invalid_session()
 
     def refresh(self) -> None:
+        # Stop displaying the previous report before replacing the card widgets.
+        # This also prevents late image callbacks from targeting removed report cards.
+        self._show_report(None)
         while self.product_grid.count():
             child = self.product_grid.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
+        self._library_cards = []
         items = self.gateway.user_search_results()
         task_ids = [int(item.get("task_id") or 0) for item in items if item.get("task_id")]
         latest_task_id = max(task_ids, default=0)
@@ -5843,10 +5931,19 @@ class SelectionLibraryPage(Page):
             empty.setObjectName("Muted")
             self.product_grid.addWidget(empty, 0, 0)
             return
-        for index, item in enumerate(items):
-            self.product_grid.addWidget(StudioNewProductCard(item, index, self._show_report), index // 6, index % 6)
-        self.product_grid.setColumnStretch(6, 1)
-        self.report_item = None
+        self._library_cards = [
+            StudioNewProductCard(item, index, self._show_report)
+            for index, item in enumerate(items)
+        ]
+        reflow_product_grid(self.product_grid, self._library_cards, 190, 8)
+        self._show_report(items[0])
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        panel_width = max(280, min(380, int(self.width() * 0.28)))
+        self.report_panel.setFixedWidth(panel_width)
+        if self._library_cards:
+            QTimer.singleShot(0, lambda: reflow_product_grid(self.product_grid, self._library_cards, 190, 8))
 
     def refresh_attributes(self) -> None:
         while self.attribute_grid.count():
@@ -6011,24 +6108,29 @@ class SelectionLibraryPage(Page):
         region_match = region == "ALL" or item_region == region or (
             region == "SEA" and item_region in {"ID", "VN", "TH", "MY", "PH", "SG"}
         )
-        return region_match and (category == "全部" or category in item_category)
+        return region_match and self._category_matches(category, item_category)
+
+    @staticmethod
+    def _category_matches(category: str, item_category: str) -> bool:
+        if category == "全部":
+            return True
+        aliases = {
+            "美妆个护": ("美妆个护", "Beauty & Personal Care"),
+            "女装与女士内衣": ("女装与女士内衣", "Womenswear & Underwear"),
+            "保健": ("保健", "Health"),
+            "时尚配件": ("时尚配件", "Fashion Accessories"),
+            "运动与户外": ("运动与户外", "Sports & Outdoor"),
+            "手机与数码": ("手机与数码", "Phones & Electronics"),
+            "居家日用": ("居家日用", "Home Supplies"),
+            "食品饮料": ("食品饮料", "Food & Beverage"),
+            "玩具和爱好": ("玩具和爱好", "Toys & Hobbies"),
+        }.get(category, (category,))
+        return any(alias.lower() in item_category.lower() for alias in aliases if alias)
 
     def _update_library_category_state(self, items: list[dict[str, Any]]) -> None:
-        """地区变化后同步分类选项，地区与分类始终共同过滤。"""
-        region = self._selected_library_value(self.library_region_buttons, "ALL")
-        available: set[str] = set()
-        for item in items:
-            item_region = self._collection_field(item, "region").upper()
-            if region == "ALL" or item_region == region or (
-                region == "SEA" and item_region in {"ID", "VN", "TH", "MY", "PH", "SG"}
-            ):
-                available.add(self._collection_field(item, "category"))
+        """Keep every category option clickable; an empty match shows an empty list."""
         for button in self.library_category_buttons:
-            value = str(button.property("filter_value") or "")
-            button.setEnabled(value == "全部" or not available or any(value in category for category in available))
-        selected = next((button for button in self.library_category_buttons if button.isChecked()), None)
-        if selected and not selected.isEnabled():
-            self.library_category_buttons[0].setChecked(True)
+            button.setEnabled(True)
 
     @staticmethod
     def _selected_library_value(buttons: list[QPushButton], default: str) -> str:
@@ -6062,6 +6164,7 @@ class NewProductsPage(SelectionLibraryPage):
         self.rank_has_more = False
         self.rank_loading = False
         self.rank_items: list[dict[str, Any]] = []
+        self._rank_cards: list[QWidget] = []
         self.library_items: list[dict[str, Any]] = []
         filter_panel = QFrame()
         filter_panel.setObjectName("RankFilterPanel")
@@ -6102,13 +6205,9 @@ class NewProductsPage(SelectionLibraryPage):
         self.start_date_edit.dateChanged.connect(lambda _: self.force_refresh())
         self.end_date_edit.dateChanged.connect(lambda _: self.force_refresh())
         first_row.addStretch()
-        self.sync_rank_button = QPushButton("同步当前榜单")
-        self.sync_rank_button.setObjectName("StudioSecondaryAction")
-        self.sync_rank_button.clicked.connect(self.sync_current_rank)
         self.view_derivable_button = QPushButton("查看可衍生品")
         self.view_derivable_button.setObjectName("RankFilterViewButton")
         self.view_derivable_button.clicked.connect(self.show_japan_new_products)
-        first_row.addWidget(self.sync_rank_button)
         first_row.addWidget(self.view_derivable_button)
         filter_layout.addLayout(first_row)
 
@@ -6197,6 +6296,7 @@ class NewProductsPage(SelectionLibraryPage):
         self.rank_page = 1
         self.rank_has_more = False
         self.rank_items = []
+        self._rank_cards = []
         self.rank_loading = False
         while self.product_grid.count():
             child = self.product_grid.takeAt(0)
@@ -6235,6 +6335,7 @@ class NewProductsPage(SelectionLibraryPage):
             self.product_grid.addWidget(empty, 0, 0)
             self.rank_loading = False
             return
+        new_cards: list[QWidget] = []
         for index, item in enumerate(items, start=len(self.rank_items) - len(items)):
             can_derive = str(item.get("region") or "").upper() == "JP" and str(item.get("list_type") or "").lower() == "new"
             already_collected = any(
@@ -6242,13 +6343,17 @@ class NewProductsPage(SelectionLibraryPage):
                 and str(saved.get("image_url") or "") == str(item.get("image_url") or "")
                 for saved in self.library_items
             )
-            self.product_grid.addWidget(
-                TeacherProductCard(item, self.open_derivable_product, can_derive=can_derive, on_collect=self.add_to_library, already_collected=already_collected),
-                index // 6,
-                index % 6,
+            new_cards.append(
+                TeacherProductCard(item, self.open_derivable_product, can_derive=can_derive, on_collect=self.add_to_library, already_collected=already_collected)
             )
-        self.product_grid.setColumnStretch(8, 1)
+        self._rank_cards.extend(new_cards)
+        reflow_product_grid(self.product_grid, self._rank_cards, 250, 8)
         self.rank_loading = False
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._rank_cards:
+            QTimer.singleShot(0, lambda: reflow_product_grid(self.product_grid, self._rank_cards, 250, 8))
 
     def _on_product_scroll(self, value: int) -> None:
         scrollbar = self.product_scroll.verticalScrollBar()
@@ -6303,16 +6408,6 @@ class NewProductsPage(SelectionLibraryPage):
             QMessageBox.information(self, "加入成功", "商品已加入当前账号的选品库。")
         except Exception as exc:
             QMessageBox.warning(self, "加入失败", str(exc))
-
-    def sync_current_rank(self) -> None:
-        try:
-            self.sync_rank_button.setEnabled(False)
-            self.gateway.sync_fastmoss_products(getattr(self, "region_code", "JP"), getattr(self, "rank_code", "new"))
-            self.refresh()
-        except Exception as exc:
-            QMessageBox.warning(self, "同步失败", str(exc))
-        finally:
-            self.sync_rank_button.setEnabled(True)
 
     def show_japan_new_products(self) -> None:
         for button in self.region_buttons:
@@ -6574,7 +6669,11 @@ class FavoritesPage(SelectionLibraryPage):
         report_layout = QVBoxLayout(report_content)
         report_layout.setContentsMargins(0, 0, 4, 0)
         report_layout.setSpacing(6)
-        dimensions = dimension_items_from_report(item)
+        # Older favorites keep the complete derived product in product_snapshot.
+        # Merge it as a fallback so the detail dialog can still render the report.
+        report_item = dict(snapshot)
+        report_item.update(item)
+        dimensions = dimension_items_from_report(report_item)
         has_report = any(bool(level.strip() or detail.strip()) for _, level, detail in dimensions)
         if has_report:
             table = QFrame()

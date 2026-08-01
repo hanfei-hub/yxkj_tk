@@ -1,5 +1,7 @@
 import json
+import hashlib
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -7,9 +9,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import require_role
 from app.core.database import get_db
-from app.models.entities import DailyRecommendation, DerivedProductRecommendation, FastMossSyncLog, FmProduct
+from app.models.entities import DailyRecommendation, DerivedProductRecommendation, FastMossSyncLog, FmProduct, RegionConfig
 from app.services.fastmoss_service import (
     FastMossError,
+    REGION_CODES,
     get_fastmoss_config,
     request_rank,
     upsert_rank_products,
@@ -21,13 +24,22 @@ from app.services.system_settings_service import get_setting_int
 router = APIRouter(prefix="/api", tags=["products"])
 
 
-@router.get("/derived-recommendations", dependencies=[Depends(require_role("student", "admin", "teacher"))])
-def derived_recommendations(limit: int = Query(12, ge=1, le=50), db: Session = Depends(get_db)):
+@router.get("/derived-recommendations")
+def derived_recommendations(
+    limit: int = Query(12, ge=1, le=50),
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_role("student", "admin", "teacher")),
+):
+    # Keep the recommendation set stable for the day while sharing the same
+    # pool across users and rotating the set automatically at Beijing midnight.
+    day_key = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    seed_bytes = hashlib.sha256(day_key.encode("utf-8")).digest()[:4]
+    daily_seed = int.from_bytes(seed_bytes, "big") or 1
     items = db.scalars(
         select(DerivedProductRecommendation)
         .options(selectinload(DerivedProductRecommendation.source_product))
         .where(DerivedProductRecommendation.review_status != "rejected")
-        .order_by(func.rand())
+        .order_by(func.rand(daily_seed))
         .limit(limit)
     ).all()
     result = []
@@ -80,7 +92,7 @@ def hot_products(region: str = Query("JP"), list_type: str = Query("new"), categ
     return [product_to_dict(item) for item in products]
 
 
-@router.get("/daily-recommendations", dependencies=[Depends(require_role("student", "admin", "teacher"))])
+@router.get("/daily-recommendations")
 def daily_recommendations(
     region: str = Query("JP"),
     list_type: str = Query("new"),
@@ -91,7 +103,9 @@ def daily_recommendations(
     pagesize: int = Query(50, ge=1, le=100),
     paged: bool = Query(False),
     db: Session = Depends(get_db),
+    user: dict = Depends(require_role("student", "admin", "teacher")),
 ):
+    current_user_id = int(user.get("id") or 0)
     conditions = product_filters(region, list_type, category, start_date, end_date)
     total = db.scalar(select(func.count(FmProduct.id)).where(*conditions)) or 0
     products = db.scalars(
@@ -113,11 +127,16 @@ def daily_recommendations(
                 "title": item.title,
                 "image_url": item.image_url,
                 "price": item.price,
+                "currency": item.currency,
                 "sales_count": item.sales_count,
                 "category": item.category,
                 "region": item.region,
                 "list_type": item.list_type,
-                "derived_count": len(item.derived_products),
+                "derived_count": sum(
+                    1 for derived in item.derived_products
+                    if derived.owner_user_id is None
+                    or derived.owner_user_id == current_user_id
+                ),
                 "reason_summary": "FastMoss 日本新品榜：跨境商品=是，全托管商品=否。",
                 "sort_order": (page - 1) * pagesize + index,
             }
@@ -282,6 +301,105 @@ def sync_fastmoss_products(
         "total_count": total,
         "derivation_result": stats.get("derivation_result", {}),
         "request": raw.get("request", {}),
+    }
+
+
+@router.post("/fastmoss/sync-configured", dependencies=[Depends(require_role("admin"))])
+def sync_configured_fastmoss_products(db: Session = Depends(get_db)):
+    """Sync the configured regions' new-product rankings into the existing FM table."""
+    pagesize = get_setting_int(db, "fastmoss_page_size")
+    configured = db.scalars(
+        select(RegionConfig)
+        .where(RegionConfig.status == 1)
+        .order_by(RegionConfig.sort_order, RegionConfig.id)
+    ).all()
+    if not configured:
+        raise HTTPException(status_code=400, detail="没有启用的国家/地区配置。")
+
+    config = get_fastmoss_config(db)
+    results: list[dict[str, object]] = []
+    total_synced = 0
+    total_requested = 0
+    for item in configured:
+        region = str(item.region_code or "").upper()
+        # FastMoss does not provide a CN ranking endpoint; keep it configurable
+        # in the product filters but do not send an invalid request upstream.
+        if region not in REGION_CODES:
+            results.append({
+                "region": region,
+                "region_name": item.region_name,
+                "status": "skipped",
+                "message": "FastMoss 当前不支持该地区。",
+                "requested_count": 0,
+                "synced_count": 0,
+            })
+            continue
+        started_at = datetime.utcnow()
+        timer = start_timer()
+        raw: dict = {}
+        try:
+            raw = request_rank(config, region=region, list_type="new", page=1, page_size=pagesize)
+            stats = upsert_rank_products(db, raw, region=region, list_type="new")
+            log = create_sync_log(
+                db,
+                status="success",
+                page=1,
+                pagesize=pagesize,
+                started_at=started_at,
+                raw=raw,
+                stats=stats,
+            )
+            total_requested += int(stats.get("requested_count", 0))
+            total_synced += int(stats.get("synced_count", 0))
+            results.append({
+                "region": region,
+                "region_name": item.region_name,
+                "status": "success",
+                "requested_count": stats.get("requested_count", 0),
+                "synced_count": stats.get("synced_count", 0),
+                "sync_log_id": log.id,
+                "elapsed_ms": elapsed_ms(timer),
+            })
+        except FastMossError as exc:
+            db.rollback()
+            stats = {"requested_count": 0, "synced_count": 0}
+            log = create_sync_log(
+                db,
+                status="failed",
+                page=1,
+                pagesize=pagesize,
+                started_at=started_at,
+                raw=raw,
+                stats=stats,
+                error_message=str(exc),
+            )
+            results.append({
+                "region": region,
+                "region_name": item.region_name,
+                "status": "failed",
+                "message": str(exc),
+                "sync_log_id": log.id,
+                "elapsed_ms": elapsed_ms(timer),
+            })
+
+    failed = [item for item in results if item.get("status") == "failed"]
+    successful = [item for item in results if item.get("status") == "success"]
+    skipped = [item for item in results if item.get("status") == "skipped"]
+    if not successful and failed:
+        raise HTTPException(status_code=400, detail={
+            "message": "所有可请求地区同步失败。",
+            "results": results,
+        })
+    return {
+        "ok": True,
+        "message": "已按启用地区同步新品榜单。",
+        "pagesize": pagesize,
+        "regions": results,
+        "requested_count": total_requested,
+        "synced_count": total_synced,
+        "success_region_count": len(successful),
+        "failed_region_count": len(failed),
+        "skipped_region_count": len(skipped),
     }
 
 

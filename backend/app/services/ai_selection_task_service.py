@@ -249,6 +249,9 @@ def save_user_search_recommendations(
     db.execute(delete(UserSearchRecommendation).where(UserSearchRecommendation.created_at < cutoff))
     now = datetime.utcnow()
     for index, item in enumerate(items, start=1):
+        report = dict(item.get("analysis_report") or {})
+        report["_library_region"] = "CN"
+        report["_library_currency"] = "CNY"
         db.add(
             UserSearchRecommendation(
                 user_id=user_id,
@@ -256,10 +259,12 @@ def save_user_search_recommendations(
                 search_query=search_query,
                 title=item["title"],
                 image_url=item["image_url"],
-                price=item["price"],
+                price=round(float(item["price"] or 0), 2),
+                region="CN",
+                currency="CNY",
                 sales_count=item["sales_count"],
                 reason_summary=item["reason_summary"],
-                analysis_report=json.dumps(item.get("analysis_report") or {}, ensure_ascii=False),
+                analysis_report=json.dumps(report, ensure_ascii=False),
                 sort_order=index,
                 created_at=now,
             )
@@ -393,14 +398,15 @@ def user_search_result_to_dict(item: UserSearchRecommendation) -> dict[str, Any]
         "user_id": item.user_id,
         "task_id": item.task_id,
         "search_query": item.search_query,
-        "source_type": "new_product" if item.search_query == "榜单加入选品库" else (item.source_type or "ai_search"),
+        "source_type": item.source_type or ("new_product" if item.search_query == "榜单加入选品库" else "ai_search"),
         "title": item.title,
         "image_url": item.image_url,
         "price": item.price,
         "sales_count": item.sales_count,
         "reason_summary": item.reason_summary,
         "analysis_report": item.analysis_report,
-        "region": report.get("_library_region", ""),
+        "region": item.region or report.get("_library_region") or "CN",
+        "currency": item.currency or report.get("_library_currency") or "CNY",
         "category": report.get("_library_category", ""),
         "supplier_search_status": item.supplier_search_status,
         "supplier_next_page": item.supplier_next_page,
