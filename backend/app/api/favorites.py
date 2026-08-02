@@ -12,6 +12,7 @@ from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models.entities import FavoriteProduct
 from app.services.serializers import favorite_to_dict
+from app.services.supplier_1688_service import Supplier1688Error, image_search_1688_products, int_value, number_value
 
 
 router = APIRouter(prefix="/api/favorites", tags=["favorites"])
@@ -90,3 +91,77 @@ def delete_favorite(
     db.delete(item)
     db.commit()
     return {"ok": True, "deleted_id": favorite_id}
+
+
+@router.post("/{favorite_id}/match-1688")
+def match_favorite_1688(
+    favorite_id: int,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Use the saved image to find a 1688 source and update this user's snapshot."""
+    item = db.scalar(
+        select(FavoriteProduct).where(
+            FavoriteProduct.id == favorite_id,
+            FavoriteProduct.user_id == user["id"],
+        )
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="采集箱商品不存在。")
+
+    try:
+        snapshot = json.loads(item.product_snapshot or "{}")
+    except (TypeError, ValueError):
+        snapshot = {}
+    image_url = str(item.image_url or snapshot.get("image_url") or snapshot.get("supplier_image_url") or "").strip()
+    if not image_url:
+        raise HTTPException(status_code=400, detail="商品没有图片，无法匹配 1688。")
+
+    try:
+        result = image_search_1688_products(db, image_url)
+    except Supplier1688Error as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    candidates = result.get("items") or []
+    if not candidates:
+        return {"ok": True, "matched": False, "message": "没有找到匹配的 1688 商品。", "item": favorite_to_dict(item)}
+
+    candidate = candidates[0]
+    title = str(candidate.get("title") or item.title or "")
+    matched_image = str(candidate.get("image_url") or image_url)
+    price = round(number_value(candidate.get("price")), 2)
+    sales_count = int_value(candidate.get("sales_count"))
+    source_url = str(candidate.get("source_url") or "")
+    snapshot.update(
+        {
+            "title": title,
+            "image_url": matched_image,
+            "price": price,
+            "currency": "CNY",
+            "sales_count": sales_count,
+            "region": "CN",
+            "country": "中国",
+            "supplier_product_id": candidate.get("supplier_product_id") or "",
+            "supplier_title": title,
+            "supplier_image_url": matched_image,
+            "supplier_price": price,
+            "supplier_currency": "CNY",
+            "supplier_sales_count": sales_count,
+            "supplier_shop_name": candidate.get("shop_name") or "",
+            "supplier_source_url": source_url,
+            "supplier_raw_data": candidate.get("raw_data") or candidate,
+        }
+    )
+    item.title = title
+    item.image_url = matched_image
+    item.price = price
+    item.currency = "CNY"
+    item.sales_count = sales_count
+    item.product_snapshot = json.dumps(snapshot, ensure_ascii=False)
+    db.commit()
+    db.refresh(item)
+    return {
+        "ok": True,
+        "matched": True,
+        "match_count": len(candidates),
+        "item": favorite_to_dict(item),
+    }

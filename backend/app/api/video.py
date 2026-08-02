@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import require_role
 from app.core.database import get_db
-from app.models.entities import ModelConfig, ThirdPartyConfig, VideoProject
+from app.models.entities import CreditTransaction, ModelConfig, ThirdPartyConfig, User, VideoProject
 from app.services.video_generation_service import (
     create_video_task,
     delete_asset,
@@ -28,6 +28,31 @@ from app.services.video_generation_service import (
 
 
 router = APIRouter(prefix="/api/video", tags=["video"], dependencies=[Depends(require_role("admin", "teacher", "student"))])
+VIDEO_CREDIT_COST = 100
+
+
+def consume_video_credits(db: Session, user_id: int) -> int:
+    db_user = db.get(User, user_id)
+    if not db_user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    balance = int(db_user.credit_balance or 0)
+    if balance < VIDEO_CREDIT_COST:
+        raise HTTPException(status_code=400, detail="积分不足，提交生成视频需要100积分")
+    db_user.credit_balance = balance - VIDEO_CREDIT_COST
+    db.add(CreditTransaction(user_id=user_id, transaction_type="consume", credits=-VIDEO_CREDIT_COST,
+                             balance_after=db_user.credit_balance, source="video_generation", remark="提交生成视频"))
+    db.commit()
+    return int(db_user.credit_balance)
+
+
+def refund_video_credits(db: Session, user_id: int) -> None:
+    db_user = db.get(User, user_id)
+    if not db_user:
+        return
+    db_user.credit_balance = int(db_user.credit_balance or 0) + VIDEO_CREDIT_COST
+    db.add(CreditTransaction(user_id=user_id, transaction_type="refund", credits=VIDEO_CREDIT_COST,
+                             balance_after=db_user.credit_balance, source="video_generation", remark="视频任务创建失败，退回积分"))
+    db.commit()
 DEFAULT_BUMING_VIDEO_MODEL_ALLOWLIST = "seedance-2-0-ecom-special,ecom-allpurpose-video,seedance-2-0-promo"
 DEFAULT_BUMING_VIDEO_MODEL = "seedance-2-0-ecom-special"
 BUMING_VIDEO_MODEL_LABELS = {
@@ -405,13 +430,23 @@ def submit_video_task(
     db: Session = Depends(get_db),
     user: dict = Depends(require_role("admin", "teacher", "student")),
 ):
+    user_id = int(user.get("id") or 0)
+    balance = consume_video_credits(db, user_id)
     try:
         project = get_project(db, project_id, user)
-        return create_video_task(db, project, int(user.get("id") or 0), payload.generation_mode, payload.model_name)
+        return create_video_task(db, project, user_id, payload.generation_mode, payload.model_name) | {
+            "credit_cost": VIDEO_CREDIT_COST,
+            "credit_balance": balance,
+        }
     except PermissionError as exc:
+        refund_video_credits(db, user_id)
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
+        refund_video_credits(db, user_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        refund_video_credits(db, user_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/projects/{project_id}/tasks/{task_id}/refresh")

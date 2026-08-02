@@ -420,6 +420,7 @@ class DerivedProductRecommendation(Base, TimestampMixin):
     supplier_title: Mapped[str] = mapped_column(String(512), default="")
     supplier_image_url: Mapped[str] = mapped_column(Text, default="")
     supplier_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    supplier_currency: Mapped[str] = mapped_column(String(16), default="CNY")
     supplier_sales_count: Mapped[int] = mapped_column(Integer, default=0)
     supplier_shop_name: Mapped[str] = mapped_column(String(255), default="")
     supplier_source_url: Mapped[str] = mapped_column(Text, default="")

@@ -93,6 +93,7 @@ def ensure_runtime_schema() -> None:
         "supplier_title": "VARCHAR(512)",
         "supplier_image_url": "TEXT",
         "supplier_price": "FLOAT NULL",
+        "supplier_currency": "VARCHAR(16) DEFAULT 'CNY'",
         "supplier_sales_count": "INTEGER",
         "supplier_shop_name": "VARCHAR(255)",
         "supplier_source_url": "TEXT",

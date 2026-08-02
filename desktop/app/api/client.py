@@ -123,7 +123,7 @@ class ApiClient:
             headers["Authorization"] = f"Bearer {self.token}"
         try:
             with open(file_path, "rb") as handle:
-                response = requests.post(
+                response = self.session.post(
                     f"{self.base_url}{path}",
                     files={field_name: (os.path.basename(file_path), handle, "application/octet-stream")},
                     data=data or {},

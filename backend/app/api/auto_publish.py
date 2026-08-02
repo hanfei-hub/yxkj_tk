@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import require_role
 from app.core.database import SessionLocal, get_db
+from app.models.entities import CreditTransaction, User
 from app.services.auto_publish_service import (
     create_1688_batch_publish_task,
     create_1688_publish_task,
@@ -30,6 +31,43 @@ router = APIRouter(
 
 def user_id_and_role(user: dict) -> tuple[int, str]:
     return int(user.get("id") or 0), str(user.get("role") or "")
+
+
+def consume_publish_credits(db: Session, user_id: int, count: int) -> int:
+    count = max(1, int(count))
+    db_user = db.get(User, user_id)
+    if not db_user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    balance = int(db_user.credit_balance or 0)
+    if balance < count:
+        raise HTTPException(status_code=400, detail=f"积分不足，本次上架 {count} 条商品需要 {count} 积分")
+    db_user.credit_balance = balance - count
+    db.add(CreditTransaction(
+        user_id=user_id,
+        transaction_type="consume",
+        credits=-count,
+        balance_after=db_user.credit_balance,
+        source="auto_publish",
+        remark=f"自动上架 {count} 条商品",
+    ))
+    db.commit()
+    return int(db_user.credit_balance)
+
+
+def refund_publish_credits(db: Session, user_id: int, count: int) -> None:
+    db_user = db.get(User, user_id)
+    if not db_user:
+        return
+    db_user.credit_balance = int(db_user.credit_balance or 0) + int(count)
+    db.add(CreditTransaction(
+        user_id=user_id,
+        transaction_type="refund",
+        credits=int(count),
+        balance_after=db_user.credit_balance,
+        source="auto_publish",
+        remark="自动上架任务创建失败，退回积分",
+    ))
+    db.commit()
 
 
 def run_auto_publish_task_in_background(task_id: str) -> None:
@@ -208,11 +246,19 @@ def create_1688_task(
     user: dict = Depends(require_role("admin", "teacher")),
     db: Session = Depends(get_db),
 ):
+    user_id = int(user.get("id") or 0)
+    credit_cost = 1
+    balance = consume_publish_credits(db, user_id, credit_cost)
     try:
-        return create_1688_publish_task(db, payload.model_dump(), user_id=user.get("id"))
+        return create_1688_publish_task(db, payload.model_dump(), user_id=user_id) | {
+            "credit_cost": credit_cost,
+            "credit_balance": balance,
+        }
     except ValueError as exc:
+        refund_publish_credits(db, user_id, credit_cost)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        refund_publish_credits(db, user_id, credit_cost)
         raise HTTPException(status_code=500, detail=f"Auto publish task creation failed: {exc}") from exc
 
 
@@ -222,9 +268,18 @@ def create_1688_batch_task(
     user: dict = Depends(require_role("admin", "teacher")),
     db: Session = Depends(get_db),
 ):
+    user_id = int(user.get("id") or 0)
+    raw_items = payload.items if payload.items else [AutoPublish1688ItemRequest(offer_url=url) for url in payload.offer_urls]
+    credit_cost = max(1, len({str(item.offer_url).strip() for item in raw_items if str(item.offer_url).strip()}))
+    balance = consume_publish_credits(db, user_id, credit_cost)
     try:
-        return create_1688_batch_publish_task(db, payload.model_dump(), user_id=user.get("id"))
+        return create_1688_batch_publish_task(db, payload.model_dump(), user_id=user_id) | {
+            "credit_cost": credit_cost,
+            "credit_balance": balance,
+        }
     except ValueError as exc:
+        refund_publish_credits(db, user_id, credit_cost)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        refund_publish_credits(db, user_id, credit_cost)
         raise HTTPException(status_code=500, detail=f"Auto publish batch task creation failed: {exc}") from exc

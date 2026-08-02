@@ -176,6 +176,7 @@ def derived_to_dict(item: DerivedProductRecommendation) -> dict[str, Any]:
         "supplier_title": item.supplier_title,
         "supplier_image_url": item.supplier_image_url,
         "supplier_price": item.supplier_price,
+        "supplier_currency": item.supplier_currency or "CNY",
         "supplier_sales_count": item.supplier_sales_count,
         "supplier_shop_name": item.supplier_shop_name,
         "supplier_source_url": item.supplier_source_url,

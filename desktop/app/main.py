@@ -19,8 +19,8 @@ from string import Template
 from typing import Any
 
 import requests
-from PySide6.QtCore import QDate, QEvent, QObject, QPointF, QRunnable, QRectF, QSettings, QSize, Qt, QThreadPool, QTimer, Signal, Slot, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QIcon, QPainter, QPixmap, QPolygonF
+from PySide6.QtCore import QDate, QEvent, QObject, QPointF, QRunnable, QRectF, QSettings, QSize, Qt, QStandardPaths, QThreadPool, QTimer, Signal, Slot, QUrl, QMarginsF
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QIcon, QImage, QPageLayout, QPageSize, QPainter, QPdfWriter, QPixmap, QPolygonF, QTextDocument
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -429,6 +429,9 @@ class DataGateway:
     def delete_favorite(self, favorite_id: int) -> dict[str, Any]:
         return self.client.delete(f"/api/favorites/{favorite_id}")
 
+    def match_favorite_1688(self, favorite_id: int) -> dict[str, Any]:
+        return self.client.post(f"/api/favorites/{favorite_id}/match-1688", timeout=180)
+
     def derived_products(self, product_id: int) -> list[dict[str, Any]]:
         if not self.user:
             return []
@@ -790,6 +793,110 @@ def show_analysis_report(parent: QWidget, item: dict[str, Any]) -> None:
     actions.addWidget(close_button)
     layout.addLayout(actions)
     dialog.exec()
+
+
+def export_selection_report_pdf(parent: QWidget, item: dict[str, Any]) -> None:
+    """Export a polished, self-contained PDF from the current product snapshot."""
+    import html
+
+    title = str(item.get("title") or item.get("derived_title") or "未命名商品")
+    snapshot = item.get("product_snapshot") if isinstance(item.get("product_snapshot"), dict) else {}
+    source_url = str(
+        item.get("supplier_source_url")
+        or snapshot.get("supplier_source_url")
+        or snapshot.get("source_url")
+        or snapshot.get("detail_url")
+        or ""
+    )
+    image_url = str(item.get("image_url") or item.get("supplier_image_url") or snapshot.get("supplier_image_url") or "")
+    region = str(item.get("region") or snapshot.get("region") or snapshot.get("country") or "")
+    currency = str(item.get("currency") or item.get("supplier_currency") or snapshot.get("currency") or snapshot.get("supplier_currency") or "CNY")
+    price = item.get("price") or item.get("supplier_price") or snapshot.get("price") or snapshot.get("supplier_price") or item.get("suggested_price_min") or 0
+    sales = item.get("sales_count") or item.get("supplier_sales_count") or snapshot.get("sales_count") or snapshot.get("supplier_sales_count") or 0
+    category = str(item.get("category") or snapshot.get("category") or "未分类")
+    reason = str(item.get("recommendation_reason") or item.get("reason_summary") or "")
+    score = item.get("supplier_match_score") or snapshot.get("supplier_match_score") or "暂无"
+    dimensions = dimension_items_from_report(item)
+    usage = next((content for name, _, content in dimensions if name in {"使用场景", "使用场景"}), "")
+    audience = next((content for name, _, content in dimensions if name in {"目标群体", "人群匹配"}), "")
+    novelty = next((content for name, _, content in dimensions if "新奇" in name), "")
+    periodic = next((content for name, _, content in dimensions if "周期" in name), "")
+    repeat = next((content for name, _, content in dimensions if "复购" in name), "")
+    competition = next((content for name, _, content in dimensions if "竞品" in name), "")
+
+    safe_title = "".join(char for char in title[:30] if char not in '\\/:*?"<>|') or "商品"
+    download_dir = Path(QStandardPaths.writableLocation(QStandardPaths.DownloadLocation) or (Path.home() / "Downloads"))
+    output_dir = download_dir / "益行跨境AI选品报告"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{safe_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+
+    image_html = "<div class='image-placeholder'>暂无商品图片</div>"
+    image = QImage()
+    if image_url:
+        try:
+            response = requests.get(image_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+            response.raise_for_status()
+            image = QImage.fromData(response.content)
+            if not image.isNull():
+                image_html = "<img src='report://product-image' width='180' height='180'>"
+        except requests.RequestException:
+            pass
+
+    def esc(value: Any) -> str:
+        return html.escape(str(value or ""))
+
+    link_html = f"<a href='{esc(source_url)}'>{esc(source_url)}</a>" if source_url else "暂无1688链接"
+    dimension_rows = "".join(
+        f"<tr><td class='dimension-name'>{esc(name)}</td><td class='grade'>{esc(level or '暂无等级')}</td><td>{esc(detail or '暂无分析内容')}</td></tr>"
+        for name, level, detail in dimensions
+    )
+    process = " -> ".join(
+        value for value in (
+            "FastMoss商品采集" if item.get("source_type") == "new_product" else "商品选品",
+            "AI商品分析",
+            "1688图片匹配" if source_url else "1688待匹配",
+            "形成选品报告",
+        )
+    )
+    html_content = f"""
+    <html><head><style>
+    body {{ font-family: 'Microsoft YaHei'; color:#17233c; font-size:10pt; }}
+    h1 {{ color:#17365d; font-size:22pt; margin:0 0 6px; }}
+    h2 {{ color:#0f8f76; font-size:14pt; border-bottom:1px solid #cfe6df; padding-bottom:5px; margin-top:18px; }}
+    .muted {{ color:#6f7f96; }} .price {{ color:#ef5261; font-size:17pt; font-weight:bold; }}
+    .hero {{ background:#f1faf7; border:1px solid #d5ebe5; padding:14px; }}
+    .image-placeholder {{ width:180px; height:180px; background:#eef3f7; color:#8491a3; text-align:center; padding-top:80px; }}
+    table {{ width:100%; border-collapse:collapse; }} td, th {{ border-bottom:1px solid #e2e8ef; padding:7px; vertical-align:top; }}
+    th {{ background:#f1f5f8; text-align:left; }} .dimension-name {{ width:22%; font-weight:bold; }} .grade {{ width:16%; color:#0f8f76; font-weight:bold; }}
+    .fact {{ background:#f7f9fb; padding:8px; }}
+    </style></head><body>
+    <div class='hero'><table><tr><td width='200'>{image_html}</td><td>
+      <h1>{esc(title)}</h1><p class='muted'>益行跨境 AI 选品分析报告</p>
+      <p class='price'>{esc(format_region_price(region, price, currency))}</p>
+      <p>国家/地区：{esc(region or '未标注')}　分类：{esc(category)}　销量：{esc(sales)}</p>
+      <p>1688匹配分数：{esc(score)}</p><p>{link_html}</p>
+    </td></tr></table></div>
+    <h2>一、选品过程</h2><p class='fact'>{esc(process)}</p><p>{esc(reason or '基于商品图片、标题、市场属性和业务维度完成分析。')}</p>
+    <h2>二、商品画像</h2><table>
+      <tr><th>画像维度</th><th>分析结果</th></tr>
+      <tr><td>商品定位</td><td>{esc(category)}；{esc(novelty or '依据商品名称和图片提取商品功能与外观特征。')}</td></tr>
+      <tr><td>使用与周期</td><td>{esc(usage or '暂无使用场景分析')}；{esc(periodic or '暂无周期性分析')}</td></tr>
+      <tr><td>复购与竞争</td><td>{esc(repeat or '暂无复购分析')}；{esc(competition or '暂无竞品分析')}</td></tr>
+    </table>
+    <h2>三、人物画像</h2><table><tr><th>目标人群</th><th>适用场景</th></tr><tr><td>{esc(audience or '暂无目标人群分析')}</td><td>{esc(usage or '暂无使用场景分析')}</td></tr></table>
+    <h2>四、八维度选品分析</h2><table><tr><th>维度</th><th>判定等级</th><th>客观分析内容</th></tr>{dimension_rows}</table>
+    <p class='muted'>报告生成时间：{esc(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}</p>
+    </body></html>
+    """
+    document = QTextDocument()
+    if not image.isNull():
+        document.addResource(QTextDocument.ImageResource, QUrl("report://product-image"), image)
+    document.setHtml(html_content)
+    writer = QPdfWriter(str(output_path))
+    writer.setPageSize(QPageSize(QPageSize.A4))
+    writer.setPageMargins(QMarginsF(14, 14, 14, 14), QPageLayout.Millimeter)
+    document.print_(writer)
+    QMessageBox.information(parent, "报告已导出", f"PDF报告已保存：\n{output_path}")
 
 
 def table(headers: list[str]) -> QTableWidget:
@@ -1919,7 +2026,7 @@ class VideoGenerationPage(Page):
         self.video_poll_timer = QTimer(self)
         self.video_poll_timer.setInterval(8000)
         self.video_poll_timer.timeout.connect(self.auto_refresh_video_task)
-        self.layout.addWidget(make_title("视频生成", "上传产品图，生成脚本，再提交视频。产品图会作为强参考。"))
+        self.layout.addWidget(make_title("视频生成", "上传产品图，生成脚本，再提交视频。产品图会作为强参考。提交生成视频消耗100积分。"))
         body = QHBoxLayout()
         self.step_nav = QListWidget()
         self.step_nav.setObjectName("SideNav")
@@ -2336,6 +2443,7 @@ class VideoGenerationPage(Page):
                     self.current_project = matched
         elif not self.projects:
             self.current_project = None
+        self.refresh_credit_state()
 
     def load_selected_project(self) -> None:
         row = self.project_table.currentRow()
@@ -2353,6 +2461,7 @@ class VideoGenerationPage(Page):
         self.render_assets()
         self.render_script()
         self.refresh_generate_summary()
+        self.refresh_credit_state()
 
     def render_assets(self) -> None:
         assets = (self.current_project or {}).get("assets") or []
@@ -2600,7 +2709,10 @@ class VideoGenerationPage(Page):
     def set_video_buttons_busy(self, busy: bool) -> None:
         self.video_task_busy = busy
         if hasattr(self, "submit_video_button"):
-            self.submit_video_button.setEnabled(not busy)
+            if busy:
+                self.submit_video_button.setEnabled(False)
+            else:
+                self.refresh_credit_state()
         if hasattr(self, "refresh_task_button"):
             self.refresh_task_button.setEnabled(not busy)
 
@@ -2620,6 +2732,9 @@ class VideoGenerationPage(Page):
         return tasks[0]
 
     def create_video_task(self) -> None:
+        if int((self.gateway.user or {}).get("credit_balance") or 0) < 100:
+            show_credit_recharge_prompt(self)
+            return
         if not self.current_project or not self.save_script(True):
             return
         product_assets = [asset for asset in (self.current_project.get("assets") or []) if asset.get("asset_type") in {"product", "product_image"}]
@@ -2639,6 +2754,11 @@ class VideoGenerationPage(Page):
 
     def on_video_task_created(self, task: dict[str, Any]) -> None:
         self.set_video_buttons_busy(False)
+        if "credit_balance" in task and self.gateway.user is not None:
+            self.gateway.user["credit_balance"] = task.get("credit_balance")
+            parent = self.window()
+            if hasattr(parent, "update_login_status"):
+                parent.update_login_status()
         self.video_result.setPlainText(self.video_task_summary(task))
         if self.current_project is not None:
             tasks = self.current_project.setdefault("tasks", [])
@@ -2657,6 +2777,14 @@ class VideoGenerationPage(Page):
         self.set_video_progress(False)
         self.generate_status.setText("提交失败，请稍后重试或切换生成方案。")
         QMessageBox.warning(self, "提交失败", message)
+
+    def refresh_credit_state(self) -> None:
+        if not hasattr(self, "submit_video_button"):
+            return
+        balance = int((self.gateway.user or {}).get("credit_balance") or 0)
+        enabled = bool(self.current_project) and not self.video_task_busy and balance >= 100
+        self.submit_video_button.setEnabled(enabled)
+        self.submit_video_button.setToolTip("提交生成视频消耗100积分" if balance >= 100 else "积分不足，提交生成视频需要100积分")
 
     def refresh_selected_video_task(self) -> None:
         if not self.current_project:
@@ -5603,14 +5731,8 @@ class SelectionStudioPage(Page):
     def export_report(self) -> None:
         if not self.report_item:
             return
-        title = str(self.report_item.get("title") or self.report_item.get("derived_title") or "")
         try:
-            output_dir = APP_DIR / "data" / "selection_reports"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            safe_title = "".join(char for char in title[:24] if char not in '\\/:*?"<>|') or "商品"
-            output_path = output_dir / f"{safe_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            output_path.write_text(json.dumps(self.report_item, ensure_ascii=False, indent=2), encoding="utf-8")
-            QMessageBox.information(self, "报告已导出", f"完整报告已保存：\n{output_path}")
+            export_selection_report_pdf(self, self.report_item)
         except Exception as exc:
             QMessageBox.warning(self, "导出失败", str(exc))
 
@@ -6142,14 +6264,8 @@ class SelectionLibraryPage(Page):
     def export_report(self) -> None:
         if not self.report_item:
             return
-        title = str(self.report_item.get("title") or self.report_item.get("derived_title") or "")
         try:
-            output_dir = APP_DIR / "data" / "selection_reports"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            safe_title = "".join(char for char in title[:24] if char not in '\\/:*?"<>|') or "商品"
-            output_path = output_dir / f"{safe_title}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            output_path.write_text(json.dumps(self.report_item, ensure_ascii=False, indent=2), encoding="utf-8")
-            QMessageBox.information(self, "报告已导出", f"完整报告已保存：\n{output_path}")
+            export_selection_report_pdf(self, self.report_item)
         except Exception as exc:
             QMessageBox.warning(self, "导出失败", str(exc))
 
@@ -6560,10 +6676,11 @@ class FavoritesPage(SelectionLibraryPage):
             if source_url:
                 listing.setCellWidget(row, 6, external_link_button("打开链接", source_url, self))
             else:
-                no_link_label = QLabel("暂无链接")
-                no_link_label.setObjectName("CollectionText")
-                no_link_label.setAlignment(Qt.AlignCenter)
-                listing.setCellWidget(row, 6, no_link_label)
+                match_button = QPushButton("匹配1688")
+                match_button.setObjectName("CollectionLink")
+                match_button.setToolTip("使用商品图片通过万邦以图搜款")
+                match_button.clicked.connect(lambda checked=False, selected=item: self.match_favorite_1688(selected))
+                listing.setCellWidget(row, 6, match_button)
 
             actions = QWidget()
             actions_layout = QHBoxLayout(actions)
@@ -6583,6 +6700,22 @@ class FavoritesPage(SelectionLibraryPage):
         self.product_grid.addWidget(listing, 0, 0)
         if items:
             self._show_report(items[0])
+
+    def match_favorite_1688(self, item: dict[str, Any]) -> None:
+        favorite_id = int(item.get("id") or 0)
+        if not favorite_id:
+            QMessageBox.warning(self, "匹配失败", "采集商品缺少编号。")
+            return
+        try:
+            result = self.gateway.match_favorite_1688(favorite_id)
+            if not result.get("matched"):
+                QMessageBox.information(self, "匹配完成", str(result.get("message") or "没有找到匹配的 1688 商品。"))
+                return
+            self.load_favorites()
+            self.refresh()
+            QMessageBox.information(self, "匹配完成", "已更新商品名称、图片、价格、销量、1688 链接和国家地区。")
+        except Exception as exc:
+            QMessageBox.warning(self, "匹配失败", str(exc))
 
     def add_to_publish(self, item: dict[str, Any], source_url: str) -> None:
         if not source_url:
@@ -7515,7 +7648,7 @@ class AutoPublishPage(Page):
         self.layout.addWidget(
             make_title(
                 "自动上架",
-                "配置店铺后，填写链接并开始执行。",
+                "配置店铺后，填写链接并开始执行。每上架一条商品消耗1积分。",
             )
         )
 
@@ -7894,7 +8027,14 @@ class AutoPublishPage(Page):
 
     def update_summary_state(self, *_args: Any) -> None:
         offer_count = len(self.extract_offer_urls(self.offer_url_input.toPlainText()))
+        balance = int((self.gateway.user or {}).get("credit_balance") or 0)
         self.link_count_label.setText(f"{offer_count} 条")
+        if not self.current_task:
+            self.create_button.setEnabled(offer_count > 0 and balance >= offer_count)
+            if offer_count > 0 and balance < offer_count:
+                self.create_button.setToolTip(f"积分不足，需要 {offer_count} 积分，当前 {balance} 积分")
+            else:
+                self.create_button.setToolTip("每上架一条商品消耗1积分")
         if hasattr(self, "overview_link_label"):
             self.overview_link_label.setText(f"链接：{offer_count} 条")
         if hasattr(self, "overview_mode_label"):
@@ -8391,6 +8531,11 @@ class AutoPublishPage(Page):
 
     def on_task_created(self, task: dict[str, Any]) -> None:
         self.current_task = task
+        if "credit_balance" in task and self.gateway.user is not None:
+            self.gateway.user["credit_balance"] = task.get("credit_balance")
+            parent = self.window()
+            if hasattr(parent, "update_login_status"):
+                parent.update_login_status()
         self.apply_progress(task)
         self.progress_timer.start()
 
@@ -8478,6 +8623,7 @@ class AutoPublishPage(Page):
         self.render_result(result)
         self.create_button.setEnabled(True)
         self.create_button.setText("开始上架")
+        self.update_summary_state()
         self.progress_phase.setText("完成")
         QMessageBox.information(self, "处理完成", result.get("message", "任务已执行。"))
 
@@ -8487,6 +8633,7 @@ class AutoPublishPage(Page):
         self.progress_phase.setText("失败")
         self.create_button.setEnabled(True)
         self.create_button.setText("开始上架")
+        self.update_summary_state()
         if self.gateway.is_invalid_token_error(ApiError(message)):
             parent = self.window()
             if hasattr(parent, "clear_invalid_session"):

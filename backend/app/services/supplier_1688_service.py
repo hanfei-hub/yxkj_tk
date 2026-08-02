@@ -1,14 +1,22 @@
 ﻿from __future__ import annotations
 
 import json
+import base64
 from typing import Any
 from urllib.parse import urljoin
 
 import requests
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.entities import DerivedProductRecommendation, ThirdPartyConfig, UserSearchRecommendation
+from app.models.entities import (
+    DerivedProductAttributeScore,
+    DerivedProductDimensionReport,
+    DerivedProductRecommendation,
+    TeacherReviewRecord,
+    ThirdPartyConfig,
+    UserSearchRecommendation,
+)
 from app.services.ai_model_service import MODEL_TYPE_PRODUCT_VISION, ModelCallError, chat_completion, extract_json_object
 from app.services.system_settings_service import get_setting_float, get_setting_int
 
@@ -325,6 +333,7 @@ def apply_supplier_match(
     derived.supplier_title = str(candidate.get("title") or "")[:512]
     derived.supplier_image_url = str(candidate.get("image_url") or "")
     derived.supplier_price = number_value(candidate.get("price"))
+    derived.supplier_currency = "CNY"
     derived.supplier_sales_count = int_value(candidate.get("sales_count"))
     derived.supplier_shop_name = str(candidate.get("shop_name") or "")[:255]
     derived.supplier_source_url = str(candidate.get("source_url") or "")
@@ -332,6 +341,16 @@ def apply_supplier_match(
     derived.supplier_match_report = json.dumps(report, ensure_ascii=False)
     derived.supplier_raw_data = json.dumps(candidate.get("raw_data") or candidate, ensure_ascii=False)
     derived.supplier_search_status = "matched"
+
+
+def delete_exhausted_derived_product(db: Session, derived: DerivedProductRecommendation) -> None:
+    """Remove an unmatched derived product after all configured candidate pages."""
+    recommendation_id = derived.id
+    db.execute(delete(DerivedProductDimensionReport).where(DerivedProductDimensionReport.recommendation_id == recommendation_id))
+    db.execute(delete(DerivedProductAttributeScore).where(DerivedProductAttributeScore.recommendation_id == recommendation_id))
+    db.execute(delete(TeacherReviewRecord).where(TeacherReviewRecord.recommendation_id == recommendation_id))
+    db.delete(derived)
+    db.commit()
 
 
 def auto_match_1688_for_derived(
@@ -360,13 +379,14 @@ def auto_match_1688_for_derived(
     page = max(1, int(derived.supplier_next_page or 1))
     searched_count = max(0, int(derived.supplier_searched_count or 0))
     if page > max_pages or searched_count >= max_candidates:
-        derived.supplier_search_status = "no_match"
-        db.commit()
+        derived_id = derived.id
+        delete_exhausted_derived_product(db, derived)
         return {
             "ok": True,
             "matched": False,
             "finished": True,
-            "derived_id": derived.id,
+            "deleted": True,
+            "derived_id": derived_id,
             "keyword": keyword,
             "threshold": threshold,
             "page": page,
@@ -379,17 +399,18 @@ def auto_match_1688_for_derived(
     candidates = (result.get("items") or [])[: max_candidates - searched_count]
     if not candidates:
         derived.supplier_next_page = max_pages + 1
-        derived.supplier_search_status = "no_match"
         derived.supplier_match_report = json.dumps(
             {"page": page, "searched_count": searched_count, "reason": "当前页没有候选商品"},
             ensure_ascii=False,
         )
-        db.commit()
+        derived_id = derived.id
+        delete_exhausted_derived_product(db, derived)
         return {
             "ok": True,
             "matched": False,
             "finished": True,
-            "derived_id": derived.id,
+            "deleted": True,
+            "derived_id": derived_id,
             "keyword": keyword,
             "threshold": threshold,
             "page": page,
@@ -425,6 +446,23 @@ def auto_match_1688_for_derived(
         }
 
     finished = derived.supplier_next_page > max_pages or searched_count >= max_candidates
+    if finished:
+        derived_id = derived.id
+        delete_exhausted_derived_product(db, derived)
+        return {
+            "ok": True,
+            "matched": False,
+            "finished": True,
+            "deleted": True,
+            "derived_id": derived_id,
+            "keyword": keyword,
+            "threshold": threshold,
+            "page": page,
+            "searched_count": searched_count,
+            "best_score": best_score,
+            "report": scored,
+            "reason": "已完成全部候选页，未达到匹配阈值，已删除衍生品",
+        }
     derived.supplier_search_status = "no_match"
     derived.supplier_match_score = best_score
     derived.supplier_match_report = json.dumps(
@@ -451,6 +489,107 @@ def auto_match_1688_for_derived(
         "searched_count": searched_count,
         "best_score": best_score,
         "report": scored,
+    }
+
+
+def image_search_1688_products(db: Session, image_url: str) -> dict[str, Any]:
+    """Upload a product image to OneBound, then search 1688 by the returned image id."""
+    image_url = str(image_url or "").strip()
+    if not image_url:
+        raise Supplier1688Error("商品没有可用图片，无法匹配 1688。")
+
+    config = get_1688_api_config(db)
+    options = adapter_options(config)
+    if not config.access_key_encrypted or not config.secret_key_encrypted:
+        raise Supplier1688Error("1688 API 配置缺少 Key 或 Secret。")
+
+    try:
+        image_response = requests.get(
+            image_url,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=30,
+        )
+        image_response.raise_for_status()
+        image_code = base64.b64encode(image_response.content).decode("ascii")
+    except requests.RequestException as exc:
+        raise Supplier1688Error(f"下载商品图片失败：{exc}") from exc
+
+    base_url = config.api_base_url.rstrip("/") + "/"
+    upload_path = str(options.get("image_upload_path") or "/1688/upload_img")
+    upload_url = urljoin(base_url, upload_path.lstrip("/"))
+    common_params = {
+        "key": config.access_key_encrypted,
+        "secret": config.secret_key_encrypted,
+        "result_type": "json",
+        "lang": "cn",
+    }
+    try:
+        upload_response = requests.post(
+            upload_url,
+            params=common_params,
+            data={"imgcode": image_code},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=90,
+        )
+        upload_response.raise_for_status()
+        upload_raw = upload_response.json()
+    except requests.RequestException as exc:
+        raise Supplier1688Error(f"万邦图片上传请求失败：{exc}") from exc
+    except ValueError as exc:
+        raise Supplier1688Error("万邦图片上传返回内容不是 JSON。") from exc
+
+    raise_for_supplier_error(upload_raw)
+    image_id = str(pick_value(upload_raw, ["name", "imgid", "image_id", "imageId"], ""))
+    if not image_id and isinstance(upload_raw, dict):
+        for container in (
+            upload_raw.get("data") or {},
+            upload_raw.get("result") or {},
+            upload_raw.get("items") or {},
+        ):
+            image_id = str(pick_value(container, ["name", "imgid", "image_id", "imageId"], ""))
+            if not image_id and isinstance(container, dict):
+                image_id = str(
+                    pick_value(
+                        container.get("item") or {},
+                        ["name", "imgid", "image_id", "imageId"],
+                        "",
+                    )
+                )
+            if image_id:
+                break
+    if not image_id:
+        raise Supplier1688Error("万邦图片上传成功但没有返回图片 ID。")
+
+    search_path = str(options.get("image_search_path") or "/1688/item_search_img")
+    search_url = urljoin(base_url, search_path.lstrip("/"))
+    search_params = {**common_params, "imgid": image_id}
+    if options.get("sort"):
+        search_params["sort"] = options["sort"]
+    try:
+        search_response = requests.get(search_url, params=search_params, timeout=60)
+        search_response.raise_for_status()
+        raw = search_response.json()
+    except requests.RequestException as exc:
+        raise Supplier1688Error(f"万邦以图搜款请求失败：{exc}") from exc
+    except ValueError as exc:
+        raise Supplier1688Error("万邦以图搜款返回内容不是 JSON。") from exc
+
+    raise_for_supplier_error(raw)
+    image_options = dict(options)
+    image_options["items_path"] = options.get("image_items_path") or options.get("items_path") or "items.item"
+    image_options["total_path"] = options.get("image_total_path") or options.get("total_path") or "items.total_results"
+    items, total = extract_items(raw, image_options)
+    return {
+        "ok": True,
+        "image_id": image_id,
+        "total": total,
+        "items": [normalize_supplier_product(item) for item in items],
+        "adapter": {
+            "config_id": config.id,
+            "config_name": config.config_name,
+            "upload_path": upload_path,
+            "search_path": search_path,
+        },
     }
 
 

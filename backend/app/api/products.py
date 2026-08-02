@@ -51,6 +51,7 @@ def derived_recommendations(
                 # 1688 尚未匹配完成时，先用原商品图作为可视化回退，匹配成功后优先使用供应商首图。
                 "image_url": item.supplier_image_url or (item.source_product.image_url if item.source_product else "") or "",
                 "price": item.supplier_price or item.suggested_price_min or 0,
+                "currency": item.supplier_currency or "CNY",
                 "sales_count": item.supplier_sales_count or 0,
                 "reference_image_url": item.source_product.image_url if item.source_product else "",
                 "region": item.source_product.region if item.source_product else "JP",
