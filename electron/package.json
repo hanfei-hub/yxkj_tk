@@ -1,0 +1,38 @@
+{
+  "name": "tk-selection-electron",
+  "version": "0.1.0",
+  "private": true,
+  "description": "益行跨境 AI 平台 Electron client",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "build": "tsc -b && vite build",
+    "start": "electron .",
+    "package": "npm run build && electron-builder --win nsis portable"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "axios": "latest",
+    "electron-updater": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "concurrently": "latest",
+    "electron": "latest",
+    "electron-builder": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "wait-on": "latest"
+  },
+  "build": {
+    "appId": "com.yixing.tkselection",
+    "productName": "益行跨境AI平台",
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "electron/**/*"],
+    "win": { "target": ["nsis", "portable"] },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+  }
+}
