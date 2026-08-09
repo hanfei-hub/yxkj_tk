@@ -1,0 +1,60 @@
+.window-titlebar {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 16px;
+  color: #fff;
+  background: var(--ink, #16283f);
+  border-bottom: 0;
+  backdrop-filter: blur(5px);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.window-brand,
+.window-tools,
+.window-controls {
+  display: flex;
+  align-items: center;
+}
+
+.window-brand { gap: 10px; }
+.window-brand strong { font-size: 14px; letter-spacing: .01em; color: #fff; }
+.window-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  color: #fff;
+  background: #16283f;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.window-tools { height: 100%; gap: 4px; }
+.window-tools > button,
+.window-controls button {
+  height: 100%;
+  min-width: 42px;
+  padding: 0 12px;
+  border: 0;
+  color: rgba(255,255,255,.82);
+  background: transparent;
+  font-size: 12px;
+  -webkit-app-region: no-drag;
+}
+
+.window-tools > button:hover,
+.window-controls button:hover { color: #fff; background: rgba(255,255,255,.16); }
+.window-controls { margin-left: 10px; }
+.window-controls button { min-width: 48px; font-size: 18px; font-weight: 300; }
+.window-controls .close:hover { color: #fff; background: #e5485e; }
+
+.login-page { min-height: calc(100vh - 44px); }
+.app-shell { min-height: calc(100vh - 44px); }
+
+@media (max-width: 780px) {
+  .window-tools > button { display: none; }
+}

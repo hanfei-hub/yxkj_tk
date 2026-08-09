@@ -13,7 +13,7 @@
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "axios": "latest",
-    "electron-updater": "latest",
+    "electron-updater": "^6.8.9",
     "react": "latest",
     "react-dom": "latest"
   },
@@ -31,6 +31,7 @@
     "appId": "com.yixing.tkselection",
     "productName": "益行跨境AI平台",
     "directories": { "output": "release" },
+    "executableName": "TKCrossBorderAssistantElectron",
     "files": ["dist/**/*", "electron/**/*"],
     "win": { "target": ["nsis", "portable"] },
     "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }

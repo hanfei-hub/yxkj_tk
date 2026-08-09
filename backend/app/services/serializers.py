@@ -251,18 +251,27 @@ def favorite_to_dict(item: FavoriteProduct) -> dict[str, Any]:
             "category": item.category,
         }
     )
+    source_type = str(item.source_type or snapshot.get("source_type") or "derived")
     return {
         "id": item.id,
-        "source_type": item.source_type,
         "title": item.title,
         "image_url": item.image_url,
         "price": item.price,
         "currency": item.currency,
         "sales_count": item.sales_count,
         "category": item.category,
+        "region": snapshot.get("region") or snapshot.get("country_code") or ("CN" if str(item.currency).upper() == "CNY" else ""),
+        "source_product_id": snapshot.get("source_product_id"),
+        "source_type": source_type,
         "recommendation_reason": item.recommendation_reason,
         "analysis_report": item.analysis_report,
         "supplier_source_url": supplier_source_url,
+        "supplier_product_id": snapshot.get("supplier_product_id"),
+        "supplier_title": snapshot.get("supplier_title") or "",
+        "supplier_image_url": snapshot.get("supplier_image_url") or "",
+        "supplier_price": snapshot.get("supplier_price"),
+        "supplier_sales_count": snapshot.get("supplier_sales_count"),
+        "supplier_shop_name": snapshot.get("supplier_shop_name") or "",
         "product_snapshot": snapshot,
         "created_at": fmt_dt(item.created_at),
     }

@@ -310,7 +310,10 @@ class DataGateway:
     def restore_session(self) -> None:
         token = self.settings.value("auth/token", "", str)
         raw_user = self.settings.value("auth/user", "", str)
-        if not raw_user:
+        # A cached user without a token is not an authenticated session. This
+        # can happen after installing a new build that shares QSettings.
+        if not raw_user or not token:
+            self.clear_session()
             return
         try:
             user = json.loads(raw_user)
@@ -321,14 +324,13 @@ class DataGateway:
             self.clear_session()
             return
         self.user = user
-        if token:
-            self.client.token = token
-            try:
-                self.user = self.client.get("/api/auth/me", timeout=8)
-            except ApiError as exc:
-                if self.is_invalid_token_error(exc):
-                    self.clear_session()
-                return
+        self.client.token = token
+        try:
+            self.user = self.client.get("/api/auth/me", timeout=8)
+        except ApiError as exc:
+            if self.is_invalid_token_error(exc):
+                self.clear_session()
+            return
 
     def save_session(self) -> None:
         self.settings.setValue("auth/user", json.dumps(self.user or {}, ensure_ascii=False))
@@ -364,7 +366,14 @@ class DataGateway:
 
     def is_invalid_token_error(self, exc: Exception) -> bool:
         text = str(exc).lower()
-        return "请重新登录" in str(exc) or "invalid token" in text or "not authenticated" in text or "could not validate credentials" in text
+        return (
+            "请重新登录" in str(exc)
+            or "please log in again" in text
+            or "http 401" in text
+            or "invalid token" in text
+            or "not authenticated" in text
+            or "could not validate credentials" in text
+        )
 
     def login(self, username: str, password: str) -> dict[str, Any]:
         data = self.client.login(username, password)

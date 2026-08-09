@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f8fcff"/><stop offset="1" stop-color="#edf7f4"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#7896a8" flood-opacity=".18"/></filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0 0L12 6L0 12Z" fill="#4e8c96"/></marker>
+    <style>
+      .title{font:700 28px "Microsoft YaHei",sans-serif;fill:#17324d}.stage{font:700 19px "Microsoft YaHei",sans-serif;fill:#277b80}.node{font:600 17px "Microsoft YaHei",sans-serif;fill:#17324d}.box{fill:#fff;stroke:#b9dce0;stroke-width:2;rx:14;filter:url(#shadow)}.line{stroke:#4e8c96;stroke-width:3;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <text x="800" y="55" text-anchor="middle" class="title">益行跨境 AI 选品流程</text>
+
+  <text x="70" y="125" class="stage">第一阶段</text>
+  <rect x="70" y="150" width="340" height="120" class="box"/><rect x="450" y="150" width="340" height="120" class="box"/><rect x="830" y="150" width="340" height="120" class="box"/><rect x="1210" y="150" width="340" height="120" class="box"/>
+  <text x="240" y="198" text-anchor="middle" class="node"><tspan x="240">第一步：AI 对话框输入</tspan><tspan x="240" dy="28">核心商品关键词</tspan></text>
+  <text x="620" y="198" text-anchor="middle" class="node"><tspan x="620">调用大模型生成</tspan><tspan x="620" dy="28">10 个合规衍生品</tspan></text>
+  <text x="1000" y="198" text-anchor="middle" class="node"><tspan x="1000">第二步：将 10 个衍生品</tspan><tspan x="1000" dy="28">导入 FASMOS 平台</tspan></text>
+  <text x="1380" y="198" text-anchor="middle" class="node"><tspan x="1380">FASMOS 平台拓展挖掘出</tspan><tspan x="1380" dy="28">100 个相关商品</tspan></text>
+  <path d="M410 210H450" class="line"/><path d="M790 210H830" class="line"/><path d="M1170 210H1210" class="line"/>
+
+  <text x="70" y="370" class="stage">第二阶段</text>
+  <rect x="70" y="395" width="460" height="120" class="box"/><rect x="570" y="395" width="460" height="120" class="box"/><rect x="1070" y="395" width="460" height="120" class="box"/>
+  <text x="300" y="443" text-anchor="middle" class="node"><tspan x="300">第三步：调用日本 TikTok</tspan><tspan x="300" dy="28">禁运禁售 + 类目报关规则库</tspan></text>
+  <text x="800" y="443" text-anchor="middle" class="node"><tspan x="800">规则过滤，剔除违规、</tspan><tspan x="800" dy="28">无法报关商品，留存合规商品池</tspan></text>
+  <text x="1300" y="443" text-anchor="middle" class="node"><tspan x="1300">第四步：合规商品池前往</tspan><tspan x="1300" dy="28">1688 平台货源匹配</tspan></text>
+  <path d="M300 270C300 330 300 340 300 395" class="line"/><path d="M530 455H570" class="line"/><path d="M1030 455H1070" class="line"/>
+
+  <text x="70" y="615" class="stage">第三阶段</text>
+  <rect x="70" y="640" width="460" height="120" class="box"/><rect x="570" y="640" width="460" height="120" class="box"/><rect x="1070" y="640" width="460" height="120" class="box"/>
+  <text x="300" y="688" text-anchor="middle" class="node"><tspan x="300">1688 筛选条件：</tspan><tspan x="300" dy="28">按销量、包邮排序</tspan></text>
+  <text x="800" y="688" text-anchor="middle" class="node"><tspan x="800">1688 拿货价 VS FASMOS 售价</tspan><tspan x="800" dy="28">核算利润</tspan></text>
+  <text x="1300" y="688" text-anchor="middle" class="node"><tspan x="1300">筛选高利润货源，</tspan><tspan x="1300" dy="28">输出最终选品清单</tspan></text>
+  <path d="M1300 515C1300 575 300 575 300 640" class="line"/><path d="M530 700H570" class="line"/><path d="M1030 700H1070" class="line"/>
+</svg>

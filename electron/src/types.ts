@@ -6,6 +6,7 @@ export interface User {
   real_name?: string;
   role: Role;
   credits?: number;
+  credit_balance?: number;
 }
 
 export interface Product {
@@ -23,7 +24,16 @@ export interface Product {
   sales_count?: number;
   supplier_sales_count?: number;
   source_type?: string;
+  list_type?: string;
+  recommendation_reason?: string;
   analysis_report?: unknown;
+  ai_score?: number | string;
+  weighted_score?: number | string;
+  supplier_match_score?: number | string;
+  supplier_source_url?: string;
+  supplier_product_id?: string | number;
+  supplier_shop_name?: string;
+  product_snapshot?: Record<string, unknown>;
   derived_count?: number;
 }
 
@@ -43,10 +53,16 @@ export interface ConfigItem {
 
 export interface VideoProject {
   id: number;
+  user_id?: number;
   title?: string;
   target_market?: string;
   video_language?: string;
-  status?: string;
+  product_details?: string;
   script_text?: string;
-  assets?: Array<{ id: number; file_url?: string; role?: string }>;
+  script_json?: Record<string, unknown>;
+  status?: string;
+  result_video_url?: string;
+  assets?: Array<{ id: number; public_url?: string; url?: string; asset_type?: string; role?: string; description?: string; is_primary?: number }>;
+  storyboard?: Array<Record<string, unknown>>;
+  tasks?: Array<{ id: number; status?: string; model_name?: string; provider_task_id?: string; video_url?: string; result_video_url?: string; error_message?: string; created_at?: string; updated_at?: string; usage_cost_cny?: number }>;
 }

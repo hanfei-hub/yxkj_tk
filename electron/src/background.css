@@ -1,0 +1,7 @@
+body {
+  background: #f5f8fb url("../background.png") center / cover fixed no-repeat;
+}
+
+.main {
+  background: rgba(245, 248, 251, 0.72);
+}
