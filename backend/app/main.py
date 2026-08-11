@@ -31,6 +31,7 @@ app.include_router(favorites.router)
 app.include_router(auto_publish.router)
 app.include_router(suppliers.router)
 app.include_router(pipeline.router)
+app.include_router(pipeline.selection_router)
 app.include_router(video.router)
 AUTO_PUBLISH_RUNTIME_DIR = BASE_DIR / "runtime" / "auto_publish"
 AUTO_PUBLISH_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_role
 from app.core.database import BASE_DIR, get_db
 from app.core.security import hash_password
-from app.models.entities import AiPromptConstant, AppRelease, CreditTransaction, DerivedProductAttributeScore, ModelConfig, SelectionAttribute, SystemSetting, TeacherReviewRecord, ThirdPartyConfig, User, UserSearchRecommendation
+from app.models.entities import AiPromptConstant, AppRelease, CreditTransaction, DerivedProductAttributeScore, ModelConfig, SelectionAttribute, SelectionRestrictionRule, SystemSetting, TeacherReviewRecord, ThirdPartyConfig, User, UserSearchRecommendation
 from app.services.serializers import (
     attribute_to_dict,
     prompt_constant_to_dict,
@@ -89,6 +89,16 @@ class ThirdPartyConfigPayload(BaseModel):
     template_code: str = ""
     status: int = 1
     remark: str = ""
+
+
+class SelectionRestrictionRulePayload(BaseModel):
+    rule_code: str = ""
+    region: str = "JP"
+    category_keyword: str = ""
+    title_keyword: str = ""
+    action: str = "restricted"
+    reason: str = ""
+    status: int = 1
 
 
 class AttributeCreate(BaseModel):
@@ -420,6 +430,43 @@ def delete_model_config(config_id: int, db: Session = Depends(get_db)):
 def list_third_party_configs(db: Session = Depends(get_db)):
     items = db.scalars(select(ThirdPartyConfig).order_by(ThirdPartyConfig.id)).all()
     return [third_party_config_to_dict(item) for item in items]
+
+
+@router.get("/selection-restriction-rules")
+def list_selection_restriction_rules(db: Session = Depends(get_db)):
+    items = db.scalars(select(SelectionRestrictionRule).order_by(SelectionRestrictionRule.id.desc())).all()
+    return [{"id": item.id, "rule_code": item.rule_code, "region": item.region, "category_keyword": item.category_keyword, "title_keyword": item.title_keyword, "action": item.action, "reason": item.reason, "status": item.status} for item in items]
+
+
+@router.post("/selection-restriction-rules")
+def create_selection_restriction_rule(payload: SelectionRestrictionRulePayload, db: Session = Depends(get_db)):
+    item = SelectionRestrictionRule(**payload.model_dump())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return {"id": item.id, **payload.model_dump()}
+
+
+@router.put("/selection-restriction-rules/{rule_id}")
+def update_selection_restriction_rule(rule_id: int, payload: SelectionRestrictionRulePayload, db: Session = Depends(get_db)):
+    item = db.get(SelectionRestrictionRule, rule_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="限售规则不存在")
+    for key, value in payload.model_dump().items():
+        setattr(item, key, value)
+    db.commit()
+    db.refresh(item)
+    return {"id": item.id, **payload.model_dump()}
+
+
+@router.delete("/selection-restriction-rules/{rule_id}")
+def delete_selection_restriction_rule(rule_id: int, db: Session = Depends(get_db)):
+    item = db.get(SelectionRestrictionRule, rule_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="限售规则不存在")
+    db.delete(item)
+    db.commit()
+    return {"ok": True, "deleted_id": rule_id}
 
 
 @router.get("/system-settings")

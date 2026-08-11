@@ -7,6 +7,9 @@ from app.models.entities import SystemSetting
 
 
 DEFAULT_SYSTEM_SETTINGS = {
+    "selection_pipeline_test_mode": ("智能选品测试模式", "0", "0 为正式流程，1 为测试流程（1 个关键词、10 个 1688 商品）", "int", 0, 1),
+    "selection_pipeline_test_keywords": ("测试关键词数量", "5", "测试流程使用的大模型商品关键词数量", "int", 1, 50),
+    "selection_pipeline_test_supplier_page_size": ("测试1688商品数量", "10", "每个测试关键词查询的 1688 商品数量", "int", 1, 10),
     "1688_match_threshold": ("1688 图片匹配分数", "90", "达到此分数才写回货源", "float", 0, 100),
     "1688_page_size": ("1688 每页候选数", "20", "每次从 1688 获取的商品数量", "int", 1, 100),
     "1688_max_candidates": ("1688 最大候选数", "200", "单个衍生品最多比对的候选商品数", "int", 1, 500),

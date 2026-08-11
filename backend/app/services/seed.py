@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
+
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.database import Base, engine
 from app.core.security import hash_password
-from app.models.entities import ModelConfig, RegionConfig, SelectionAttribute, SystemSetting, ThirdPartyConfig, User
+from app.models.entities import ModelConfig, RegionConfig, SelectionAttribute, SelectionRestrictionRule, SystemSetting, ThirdPartyConfig, User
 from app.services.product_family_service import DIMENSIONS, INITIAL_WEIGHT
 from app.services.selection_derivation_service import ensure_selection_prompt
 from app.services.system_settings_service import ensure_system_settings
@@ -23,6 +25,8 @@ def init_db() -> None:
         ensure_region_configs(db)
         seed_all(db)
         ensure_ark_third_party_config(db)
+        ensure_echotik_third_party_config(db)
+        ensure_selection_restriction_rules(db)
         ensure_selection_prompt(db)
         db.commit()
     finally:
@@ -158,6 +162,14 @@ def ensure_runtime_schema() -> None:
         "usage_note": "TEXT",
         "usage_raw": "TEXT",
     }
+    selection_didadog_columns = {
+        "selection_status": "VARCHAR(32) DEFAULT 'unreviewed'",
+        "elimination_reason": "TEXT",
+    }
+    selection_pipeline_columns = {
+        "pipeline_mode": "VARCHAR(32) DEFAULT 'selection'",
+        "source_product_id": "INTEGER NULL",
+    }
     with engine.begin() as conn:
         dialect = engine.dialect.name
         if dialect not in {"mysql", "sqlite"}:
@@ -172,6 +184,8 @@ def ensure_runtime_schema() -> None:
         ensure_columns(conn, dialect, "video_assets", video_asset_columns)
         ensure_columns(conn, dialect, "video_storyboard_frames", video_frame_columns)
         ensure_columns(conn, dialect, "video_tasks", video_task_columns)
+        ensure_columns(conn, dialect, "selection_didadog_products", selection_didadog_columns)
+        ensure_columns(conn, dialect, "selection_pipeline_tasks", selection_pipeline_columns)
 
 
 def ensure_columns(conn, dialect: str, table_name: str, columns: dict[str, str]) -> None:
@@ -306,3 +320,57 @@ def ensure_ark_third_party_config(db: Session) -> None:
                 remark="请填写 AppKey 和 AppSecret；用于妙手开放平台签名调用。",
             )
         )
+
+
+def ensure_echotik_third_party_config(db: Session) -> None:
+    config = db.scalar(select(ThirdPartyConfig).where(ThirdPartyConfig.service_type == "echotik_api"))
+    if not config:
+        config = ThirdPartyConfig(
+            config_name="EchoTik（滴答狗）",
+            service_type="echotik_api",
+            api_base_url="https://open.echotik.live",
+            status=1,
+            remark=(
+                '{"photo_search_path":"/api/v3/realtime/product/photo-search",'
+                '"photo_method":"POST","photo_image_field":"image_base64",'
+                '"detail_path":"/api/v3/echotik/product/detail","detail_method":"GET",'
+                '"detail_ids_field":"product_ids","detail_batch_size":10}'
+            ),
+        )
+        db.add(config)
+    username = os.getenv("ECHOTIK_USERNAME", "").strip()
+    password = os.getenv("ECHOTIK_PASSWORD", "").strip()
+    if username:
+        config.access_key_encrypted = username
+    if password:
+        config.secret_key_encrypted = password
+
+
+def ensure_selection_restriction_rules(db: Session) -> None:
+    if db.scalar(select(SelectionRestrictionRule.id).limit(1)):
+        return
+    rules = [
+        ("food_beverage_supplement", "食品、饮料和食品补充剂", "食品", "需要安全与合规文件、标签、成分、保质期和生产日期后报白。"),
+        ("beauty_personal_care", "美妆及个护", "美妆 个护 化妆品 护肤", "需要标签、成分、功能、产地、期限等资料；医用声明、汞/对苯二酚等禁用成分禁止销售。"),
+        ("mother_baby", "母婴用品", "母婴 婴儿 产妇 驱虫剂", "需要认证书或测试报告，婴儿护肤、产妇护肤和婴儿个护需报白。"),
+        ("garden", "园艺用品", "园艺 杀虫剂 除草 肥料 土壤", "需要杀虫剂销售通报或肥料销售业务申报资料。"),
+        ("personal_care_appliance_medical", "个护电器和医疗设备", "脱毛仪 正畸 月经杯 医疗器械", "需要医疗器械销售许可/通报或检测资料。"),
+        ("pet", "宠物用品", "宠物食品 宠物维生素 宠物补充剂", "宠物食品、维生素和补充剂需要标签、成分、产地、期限和动物饲料企业通报。"),
+        ("precious_metal_jewelry", "包含贵金属的珠宝", "贵金属 黄金 白金 铂金 珠宝", "需要销售证书、检测报告以及商品和包装图片。"),
+        ("toy_hobby_unsupported", "玩具与兴趣用品（暂不支持）", "玩具 毛绒 娃娃 动作人偶 盲盒", "暂不支持或需平台定邀；品牌/IP/动漫角色商品存在高侵权风险。"),
+        ("phone_accessory_unsupported", "手机配件（暂不支持）", "手机壳 屏幕保护膜 贴纸", "暂不支持或需平台定邀，注意品牌和 IP 侵权风险。"),
+        ("fashion_accessory_unsupported", "时尚首饰与配件（暂不支持）", "吊饰 吊坠 钥匙扣", "暂不支持或需平台定邀，注意品牌和 IP 侵权风险。"),
+        ("home_party_unsupported", "家居装饰、节庆及派对用品（暂不支持）", "派对袋 礼品 装饰贴纸", "暂不支持或需平台定邀，注意品牌和 IP 侵权风险。"),
+        ("notebook_paper_unsupported", "笔记本及纸品（暂不支持）", "笔记本 纸品 文具", "仅限受邀商家销售，需要线上销售历史证明和平台定邀。"),
+        ("blind_box", "盲盒类商品", "盲盒 神秘礼盒 金蛋 惊喜集换式卡牌", "严禁销售品牌、商家或达人自行装箱的随机套盒。"),
+    ]
+    for code, category_keyword, title_keyword, reason in rules:
+        db.add(SelectionRestrictionRule(
+            rule_code=code,
+            region="JP",
+            category_keyword=category_keyword,
+            title_keyword=title_keyword,
+            action="restricted",
+            reason=reason,
+            status=1,
+        ))

@@ -366,6 +366,126 @@ class TaskExecution(Base, TimestampMixin):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class SelectionPipelineTask(Base, TimestampMixin):
+    """Durable state for the expanded AI selection pipeline."""
+
+    __tablename__ = "selection_pipeline_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    task_execution_id: Mapped[int | None] = mapped_column(ForeignKey("task_executions.id"), nullable=True, index=True)
+    pipeline_mode: Mapped[str] = mapped_column(String(32), default="selection", index=True)
+    source_product_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    input_message: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    current_stage: Mapped[str] = mapped_column(String(64), default="created", index=True)
+    stage_progress: Mapped[int] = mapped_column(Integer, default=0)
+    keyword_count: Mapped[int] = mapped_column(Integer, default=0)
+    supplier_candidate_count: Mapped[int] = mapped_column(Integer, default=0)
+    image_search_entry_count: Mapped[int] = mapped_column(Integer, default=0)
+    didadog_id_count: Mapped[int] = mapped_column(Integer, default=0)
+    didadog_detail_count: Mapped[int] = mapped_column(Integer, default=0)
+    candidate_count: Mapped[int] = mapped_column(Integer, default=0)
+    final_count: Mapped[int] = mapped_column(Integer, default=0)
+    result_snapshot: Mapped[str] = mapped_column(Text, default="{}")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class SelectionPipelineKeyword(Base, TimestampMixin):
+    __tablename__ = "selection_pipeline_keywords"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pipeline_task_id: Mapped[int] = mapped_column(ForeignKey("selection_pipeline_tasks.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    source_index: Mapped[int] = mapped_column(Integer, default=0)
+    keyword: Mapped[str] = mapped_column(String(512), default="")
+    group_key: Mapped[str] = mapped_column(String(255), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    supplier_count: Mapped[int] = mapped_column(Integer, default=0)
+    image_search_entry_count: Mapped[int] = mapped_column(Integer, default=0)
+    didadog_product_count: Mapped[int] = mapped_column(Integer, default=0)
+    aggregated_sales_count: Mapped[int] = mapped_column(Integer, default=0)
+    raw_payload: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class Selection1688Candidate(Base, TimestampMixin):
+    __tablename__ = "selection_1688_candidates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pipeline_task_id: Mapped[int] = mapped_column(ForeignKey("selection_pipeline_tasks.id"), index=True)
+    keyword_id: Mapped[int] = mapped_column(ForeignKey("selection_pipeline_keywords.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    keyword_rank: Mapped[int] = mapped_column(Integer, default=0)
+    external_product_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    title: Mapped[str] = mapped_column(String(512), default="")
+    image_url: Mapped[str] = mapped_column(Text, default="")
+    price: Mapped[float] = mapped_column(Float, default=0)
+    currency: Mapped[str] = mapped_column(String(16), default="CNY")
+    sales_count: Mapped[int] = mapped_column(Integer, default=0)
+    shop_name: Mapped[str] = mapped_column(String(255), default="")
+    source_url: Mapped[str] = mapped_column(Text, default="")
+    raw_data: Mapped[str] = mapped_column(Text, default="{}")
+    is_price_seed: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    seed_rank: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="collected", index=True)
+
+
+class SelectionImageSearchEntry(Base, TimestampMixin):
+    __tablename__ = "selection_image_search_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pipeline_task_id: Mapped[int] = mapped_column(ForeignKey("selection_pipeline_tasks.id"), index=True)
+    keyword_id: Mapped[int] = mapped_column(ForeignKey("selection_pipeline_keywords.id"), index=True)
+    seed_candidate_id: Mapped[int] = mapped_column(ForeignKey("selection_1688_candidates.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    image_url: Mapped[str] = mapped_column(Text, default="")
+    source_price: Mapped[float] = mapped_column(Float, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    returned_id_count: Mapped[int] = mapped_column(Integer, default=0)
+    raw_response: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class SelectionDidadogProduct(Base, TimestampMixin):
+    __tablename__ = "selection_didadog_products"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pipeline_task_id: Mapped[int] = mapped_column(ForeignKey("selection_pipeline_tasks.id"), index=True)
+    keyword_id: Mapped[int] = mapped_column(ForeignKey("selection_pipeline_keywords.id"), index=True)
+    image_search_entry_id: Mapped[int] = mapped_column(ForeignKey("selection_image_search_entries.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    didadog_product_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    title: Mapped[str] = mapped_column(String(512), default="")
+    image_url: Mapped[str] = mapped_column(Text, default="")
+    detail_url: Mapped[str] = mapped_column(Text, default="")
+    price: Mapped[float] = mapped_column(Float, default=0)
+    currency: Mapped[str] = mapped_column(String(16), default="JPY")
+    sales_count: Mapped[int] = mapped_column(Integer, default=0)
+    category: Mapped[str] = mapped_column(String(255), default="")
+    region: Mapped[str] = mapped_column(String(32), default="JP")
+    match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    detail_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    compliance_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    restriction_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    selection_status: Mapped[str] = mapped_column(String(32), default="unreviewed", index=True)
+    elimination_reason: Mapped[str] = mapped_column(Text, default="")
+    raw_data: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class SelectionRestrictionRule(Base, TimestampMixin):
+    __tablename__ = "selection_restriction_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    rule_code: Mapped[str] = mapped_column(String(64), default="", index=True)
+    region: Mapped[str] = mapped_column(String(32), default="JP", index=True)
+    category_keyword: Mapped[str] = mapped_column(String(255), default="", index=True)
+    title_keyword: Mapped[str] = mapped_column(String(255), default="", index=True)
+    action: Mapped[str] = mapped_column(String(32), default="restricted")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[int] = mapped_column(Integer, default=1, index=True)
+
+
 class ModelCallLog(Base, TimestampMixin):
     __tablename__ = "model_call_logs"
 

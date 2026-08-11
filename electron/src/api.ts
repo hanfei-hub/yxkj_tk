@@ -1,7 +1,7 @@
 import axios from "axios";
 import type { ConfigItem, Product, User, VideoProject } from "./types";
 
-const defaultBase = "http://120.26.207.89:8000";
+const defaultBase = "http://120.26.207.89:8002";
 localStorage.setItem("tk_api_base", defaultBase);
 const baseURL = defaultBase;
 export const api = axios.create({ baseURL, timeout: 180000 });
@@ -52,7 +52,9 @@ export const getLibrary = () => api.get<Product[]>("/api/ai/search-results").the
 export const getFavorites = () => api.get<Product[]>("/api/favorites").then((r) => r.data || []);
 export const getTeacherProducts = () => api.get<Product[]>("/api/teacher/products").then((r) => r.data || []);
 export const getTeacherDerived = (productId: number | string) => api.get<Product[]>(`/api/teacher/products/${productId}/derived-products`).then((r) => r.data || []);
+export const getDerivedProducts = (productId: number | string) => api.get<Product[]>(`/api/ai/products/${productId}/derived-products`).then((r) => r.data || []);
 export const generateDerived = (productId: number | string) => api.post(`/api/ai/products/${productId}/generate-derived`).then((r) => r.data);
+export const addLibraryProduct = (product: Product) => api.post("/api/ai/library-products", { product }).then((r) => r.data);
 export const getSelectionAttributes = () => api.get<Array<{ id: number; name?: string; label?: string; enabled?: boolean }>>("/api/selection-attributes").then((r) => r.data || []);
 export const rejectDerived = (id: number | string, attributeIds: number[], reviewComment: string) => api.post(`/api/teacher/derived-products/${id}/reject`, { attribute_ids: attributeIds, review_comment: reviewComment });
 export const collect = (product: Product) => api.post("/api/favorites", {
@@ -69,6 +71,10 @@ export const collect = (product: Product) => api.post("/api/favorites", {
 });
 export const removeFavorite = (id: number | string) => api.delete(`/api/favorites/${id}`);
 export const searchSelection = (message: string, count: number) => api.post<{ task_id?: number; credit_balance?: number; message?: string }>("/api/ai/chat-selection", { message, count }).then((r) => r.data);
+export const createSelectionPipelineTask = (message: string, options: { mode?: "selection" | "derivation"; source_product_id?: number | string } = {}) => api.post<{ task_id?: number; status?: string; stage?: string; progress?: number }>("/api/selection-pipeline/tasks", { message, ...options }).then((r) => r.data);
+export const getLatestSelectionPipelineTask = () => api.get<{ task_id?: number | null }>("/api/selection-pipeline/tasks/latest").then((r) => r.data);
+export const getSelectionPipelineTask = (taskId: number | string) => api.get(`/api/selection-pipeline/tasks/${taskId}`).then((r) => r.data);
+export const getSelectionPipelineReportContent = (taskId: number | string) => api.post(`/api/selection-pipeline/tasks/${taskId}/report-content`).then((r) => r.data);
 export const getSelectionTask = (taskId: number | string) => api.get(`/api/ai/selection-tasks/${taskId}`).then((r) => r.data);
 export const changePassword = (old_password: string, new_password: string) => api.post("/api/auth/change-password", { old_password, new_password });
 export const getUsers = () => api.get<User[]>("/api/admin/users").then((r) => r.data || []);
@@ -77,6 +83,7 @@ export const updateUser = (id: number, payload: Record<string, unknown>) => api.
 export const setUserStatus = (id: number, status: number) => api.patch(`/api/admin/users/${id}/status`, { status });
 export const rechargeUser = (id: number, credits: number, remark = "") => api.post(`/api/admin/users/${id}/credits/recharge`, { credits, remark }).then((r) => r.data);
 export const deleteUser = (id: number) => api.delete(`/api/admin/users/${id}`);
+export const resetUserPassword = (id: number, password = "123456") => api.post(`/api/admin/users/${id}/reset-password`, { password }).then((r) => r.data);
 export const getModelConfigs = () => api.get<ConfigItem[]>("/api/admin/model-configs").then((r) => r.data || []);
 export const createModelConfig = (payload: Record<string, unknown>) => api.post<ConfigItem>("/api/admin/model-configs", payload).then((r) => r.data);
 export const updateModelConfig = (id: number, payload: Record<string, unknown>) => api.put<ConfigItem>(`/api/admin/model-configs/${id}`, payload).then((r) => r.data);
@@ -88,6 +95,21 @@ export const createThirdPartyConfig = (payload: Record<string, unknown>) => api.
 export const updateThirdPartyConfig = (id: number, payload: Record<string, unknown>) => api.put<ConfigItem>(`/api/admin/third-party-configs/${id}`, payload).then((r) => r.data);
 export const setThirdPartyStatus = (id: number, status: number) => api.patch(`/api/admin/third-party-configs/${id}/status`, { status });
 export const deleteThirdPartyConfig = (id: number) => api.delete(`/api/admin/third-party-configs/${id}`);
+export const getSelectionAttributesAdmin = () => api.get<Record<string, unknown>[]>("/api/admin/selection-attributes").then((r) => r.data || []);
+export const createSelectionAttribute = (payload: Record<string, unknown>) => api.post("/api/admin/selection-attributes", payload).then((r) => r.data);
+export const updateSelectionAttribute = (id: number, payload: Record<string, unknown>) => api.put(`/api/admin/selection-attributes/${id}`, payload).then((r) => r.data);
+export const setSelectionAttributeStatus = (id: number, status: number) => api.patch(`/api/admin/selection-attributes/${id}/status`, { status });
+export const deleteSelectionAttribute = (id: number) => api.delete(`/api/admin/selection-attributes/${id}`);
+export const getPromptConstants = () => api.get<Record<string, unknown>[]>("/api/admin/prompt-constants").then((r) => r.data || []);
+export const createPromptConstant = (payload: Record<string, unknown>) => api.post("/api/admin/prompt-constants", payload).then((r) => r.data);
+export const updatePromptConstant = (id: number, payload: Record<string, unknown>) => api.put(`/api/admin/prompt-constants/${id}`, payload).then((r) => r.data);
+export const setPromptConstantStatus = (id: number, status: number) => api.patch(`/api/admin/prompt-constants/${id}/status`, { status });
+export const deletePromptConstant = (id: number) => api.delete(`/api/admin/prompt-constants/${id}`);
+export const getRestrictionRules = () => api.get<Record<string, unknown>[]>("/api/admin/selection-restriction-rules").then((r) => r.data || []);
+export const createRestrictionRule = (payload: Record<string, unknown>) => api.post("/api/admin/selection-restriction-rules", payload).then((r) => r.data);
+export const updateRestrictionRule = (id: number, payload: Record<string, unknown>) => api.put(`/api/admin/selection-restriction-rules/${id}`, payload).then((r) => r.data);
+export const setRestrictionRuleStatus = (id: number, status: number) => api.put(`/api/admin/selection-restriction-rules/${id}`, { status });
+export const deleteRestrictionRule = (id: number) => api.delete(`/api/admin/selection-restriction-rules/${id}`);
 export const getSystemSettings = () => api.get<Record<string, unknown>>("/api/admin/system-settings").then((r) => r.data || {});
 export const getAppReleases = () => api.get<ConfigItem[]>("/api/admin/app-releases").then((r) => r.data || []);
 export const updateSystemSettings = (values: Record<string, string>) => api.put("/api/admin/system-settings", { values }).then((r) => r.data);
