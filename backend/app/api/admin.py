@@ -181,7 +181,7 @@ def upload_app_release(
         db.delete(old)
         db.flush()
     db.query(AppRelease).update({AppRelease.status: 0}, synchronize_session=False)
-    public_base = os.getenv("TK_PUBLIC_BASE_URL", "http://120.26.207.89:8000").rstrip("/")
+    public_base = os.getenv("TK_PUBLIC_BASE_URL", "http://120.26.207.89:8001").rstrip("/")
     item = AppRelease(
         version=normalized_version,
         filename=original_name or stored_name,

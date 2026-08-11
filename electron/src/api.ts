@@ -1,9 +1,10 @@
 import axios from "axios";
 import type { ConfigItem, Product, User, VideoProject } from "./types";
 
-const defaultBase = "http://120.26.207.89:8002";
-localStorage.setItem("tk_api_base", defaultBase);
-const baseURL = defaultBase;
+const TK_API_BASE_KEY = "tk_api_base";
+const defaultBase = "http://120.26.207.89:8001";
+const baseURL = localStorage.getItem(TK_API_BASE_KEY) || defaultBase;
+localStorage.setItem(TK_API_BASE_KEY, baseURL);
 export const api = axios.create({ baseURL, timeout: 180000 });
 
 export function setToken(token: string | null) {
