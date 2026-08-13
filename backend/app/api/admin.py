@@ -28,7 +28,6 @@ from app.services.serializers import (
 )
 from app.services.system_settings_service import ensure_system_settings
 from app.services.ai_model_service import ModelCallError, chat_completion
-from app.services.echotik_service import EchoTikError, get_product_details, search_by_image, echotik_options, get_echotik_api_config
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_role("admin"))])
 
@@ -90,13 +89,6 @@ class ThirdPartyConfigPayload(BaseModel):
     template_code: str = ""
     status: int = 1
     remark: str = ""
-
-
-class EchoTikTestPayload(BaseModel):
-    operation: str = "photo_search"
-    image_url: str = ""
-    product_ids: list[str] = []
-    region: str = "JP"
 
 
 class SelectionRestrictionRulePayload(BaseModel):
@@ -189,7 +181,7 @@ def upload_app_release(
         db.delete(old)
         db.flush()
     db.query(AppRelease).update({AppRelease.status: 0}, synchronize_session=False)
-    public_base = os.getenv("TK_PUBLIC_BASE_URL", "http://120.26.207.89:8000").rstrip("/")
+    public_base = os.getenv("TK_PUBLIC_BASE_URL", "http://120.26.207.89:8001").rstrip("/")
     item = AppRelease(
         version=normalized_version,
         filename=original_name or stored_name,
@@ -551,32 +543,6 @@ def delete_third_party_config(config_id: int, db: Session = Depends(get_db)):
     db.delete(item)
     db.commit()
     return {"ok": True, "deleted_id": config_id}
-
-
-@router.post("/third-party-configs/echotik-test")
-def test_echotik(payload: EchoTikTestPayload, db: Session = Depends(get_db)):
-    operation = payload.operation.strip().lower()
-    ids = [str(item).strip() for item in payload.product_ids if str(item).strip()]
-    try:
-        config = get_echotik_api_config(db)
-        options = echotik_options(config)
-        if operation == "photo_search":
-            if not payload.image_url.strip():
-                raise EchoTikError("图片 URL 不能为空")
-            result = search_by_image(db, payload.image_url.strip(), region_override=payload.region.strip() or "JP")
-            request_info = {"method": str(options.get("photo_method") or "POST").upper(), "url": f"{(config.api_base_url or 'https://open.echotik.live').rstrip('/')}{options.get('photo_search_path')}", "region": payload.region.strip() or "JP", "image_url": payload.image_url.strip()}
-        elif operation == "detail":
-            if not ids:
-                raise EchoTikError("商品 ID 不能为空")
-            if len(ids) > 10:
-                raise EchoTikError("商品详情接口一次最多测试 10 个商品 ID")
-            result = get_product_details(db, ids)
-            request_info = {"method": str(options.get("detail_method") or "GET").upper(), "url": f"{(config.api_base_url or 'https://open.echotik.live').rstrip('/')}{options.get('detail_path')}", "product_ids": ids}
-        else:
-            raise EchoTikError("不支持的测试类型")
-        return {"ok": True, "operation": operation, "request": request_info, "response": result.get("raw_data"), "normalized": {key: value for key, value in result.items() if key != "raw_data"}}
-    except EchoTikError as exc:
-        return {"ok": False, "operation": operation, "error": str(exc), "request": {"image_url": payload.image_url, "product_ids": ids, "region": payload.region}}
 
 
 @router.get("/selection-attributes")

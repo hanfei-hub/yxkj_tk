@@ -9,8 +9,8 @@ from app.core.database import Base, engine
 from app.core.security import hash_password
 from app.models.entities import ModelConfig, RegionConfig, SelectionAttribute, SelectionRestrictionRule, SystemSetting, ThirdPartyConfig, User
 from app.services.product_family_service import DIMENSIONS, INITIAL_WEIGHT
-from app.services.selection_derivation_service import ensure_selection_prompt
 from app.services.prompt_constant_service import ensure_prompt_constants
+from app.services.selection_derivation_service import ensure_selection_prompt
 from app.services.system_settings_service import ensure_system_settings
 
 
@@ -349,30 +349,51 @@ def ensure_echotik_third_party_config(db: Session) -> None:
 
 
 def ensure_selection_restriction_rules(db: Session) -> None:
-    if db.scalar(select(SelectionRestrictionRule.id).limit(1)):
-        return
+    # 依据 TikTok Shop 日本站官方规则文档：
+    #   144124【日本】禁售和暂不支持商品规则
+    #   144125【日本】限售商品规则
+    #   144690【日本】物流禁运/禁止进出口商品清单及他法令限制要求
+    # 覆盖「禁售/暂不支持」「限售（需报白）」两类，命中即标记为 restricted 需报白。
     rules = [
-        ("food_beverage_supplement", "食品、饮料和食品补充剂", "食品", "需要安全与合规文件、标签、成分、保质期和生产日期后报白。"),
-        ("beauty_personal_care", "美妆及个护", "美妆 个护 化妆品 护肤", "需要标签、成分、功能、产地、期限等资料；医用声明、汞/对苯二酚等禁用成分禁止销售。"),
-        ("mother_baby", "母婴用品", "母婴 婴儿 产妇 驱虫剂", "需要认证书或测试报告，婴儿护肤、产妇护肤和婴儿个护需报白。"),
-        ("garden", "园艺用品", "园艺 杀虫剂 除草 肥料 土壤", "需要杀虫剂销售通报或肥料销售业务申报资料。"),
-        ("personal_care_appliance_medical", "个护电器和医疗设备", "脱毛仪 正畸 月经杯 医疗器械", "需要医疗器械销售许可/通报或检测资料。"),
-        ("pet", "宠物用品", "宠物食品 宠物维生素 宠物补充剂", "宠物食品、维生素和补充剂需要标签、成分、产地、期限和动物饲料企业通报。"),
-        ("precious_metal_jewelry", "包含贵金属的珠宝", "贵金属 黄金 白金 铂金 珠宝", "需要销售证书、检测报告以及商品和包装图片。"),
-        ("toy_hobby_unsupported", "玩具与兴趣用品（暂不支持）", "玩具 毛绒 娃娃 动作人偶 盲盒", "暂不支持或需平台定邀；品牌/IP/动漫角色商品存在高侵权风险。"),
-        ("phone_accessory_unsupported", "手机配件（暂不支持）", "手机壳 屏幕保护膜 贴纸", "暂不支持或需平台定邀，注意品牌和 IP 侵权风险。"),
-        ("fashion_accessory_unsupported", "时尚首饰与配件（暂不支持）", "吊饰 吊坠 钥匙扣", "暂不支持或需平台定邀，注意品牌和 IP 侵权风险。"),
-        ("home_party_unsupported", "家居装饰、节庆及派对用品（暂不支持）", "派对袋 礼品 装饰贴纸", "暂不支持或需平台定邀，注意品牌和 IP 侵权风险。"),
-        ("notebook_paper_unsupported", "笔记本及纸品（暂不支持）", "笔记本 纸品 文具", "仅限受邀商家销售，需要线上销售历史证明和平台定邀。"),
+        ("food_beverage_supplement", "食品、饮料和食品补充剂", "食品 饮料 零食 保健品 膳食补充 维生素 益生菌 胶原蛋白", "需要安全与合规文件、标签、成分、保质期和生产日期后报白；禁止医疗功效宣称。"),
+        ("beauty_personal_care", "美妆及个护", "美妆 个护 化妆品 护肤 香水 彩妆", "需要标签、成分、功能、产地、期限等资料；医用声明、汞/对苯二酚等禁用成分禁止销售。"),
+        ("mother_baby", "母婴用品", "母婴 婴儿 产妇 驱虫剂 奶瓶 纸尿裤", "需要认证书或测试报告，婴儿护肤、产妇护肤和婴儿个护需报白。"),
+        ("garden", "园艺用品", "园艺 杀虫剂 除草 肥料 土壤 农药", "需要杀虫剂销售通报或肥料销售业务申报资料。"),
+        ("personal_care_appliance_medical", "个护电器和医疗设备", "脱毛仪 正畸 月经杯 医疗器械 体温计 血压计 理疗 助听器", "需要医疗器械销售许可/通报或检测资料；高风险医疗器械禁售。"),
+        ("pet", "宠物用品", "宠物食品 宠物维生素 宠物补充剂 宠物零食", "宠物食品、维生素和补充剂需要标签、成分、产地、期限和动物饲料企业通报。"),
+        ("precious_metal_jewelry", "包含贵金属的珠宝", "贵金属 黄金 白金 铂金 珠宝 钻石 翡翠", "需要销售证书、检测报告以及商品和包装图片。"),
+        ("toy_hobby_unsupported", "玩具与兴趣用品（暂不支持）", "玩具 毛绒 娃娃 动作人偶 盲盒 积木 童车 拼图 早教", "暂不支持或需平台定邀；品牌/IP/动漫角色商品存在高侵权风险；玩具需 ST 安全标志。"),
+        ("phone_accessory_unsupported", "手机配件（暂不支持）", "手机壳 屏幕保护膜 贴纸 数据线 充电器", "暂不支持或需平台定邀，注意品牌和 IP 侵权风险。"),
+        ("fashion_accessory_unsupported", "时尚首饰与配件（暂不支持）", "吊饰 吊坠 钥匙扣 发饰 耳环", "暂不支持或需平台定邀，注意品牌和 IP 侵权风险。"),
+        ("home_party_unsupported", "家居装饰、节庆及派对用品（暂不支持）", "派对袋 礼品 装饰贴纸 节庆 气球", "暂不支持或需平台定邀，注意品牌和 IP 侵权风险。"),
+        ("notebook_paper_unsupported", "笔记本及纸品（暂不支持）", "笔记本 纸品 文具 手账", "仅限受邀商家销售，需要线上销售历史证明和平台定邀。"),
         ("blind_box", "盲盒类商品", "盲盒 神秘礼盒 金蛋 惊喜集换式卡牌", "严禁销售品牌、商家或达人自行装箱的随机套盒。"),
+        ("books_publications", "图书、出版物、音像", "图书 书籍 教材 杂志 唱片 音像", "图书、出版物、音像制品需资质审核/报白。"),
+        ("radio_wireless", "蓝牙/WiFi/无线电设备", "蓝牙 无线 wifi 对讲机 路由器 耳机 发射", "需日本《电波法》技适认证（技适标记），未认证禁止销售。"),
+        ("electrical_appliance", "电器产品（PSE）", "电器 小家电 电源 插座 转换器 加湿器 电风扇", "需《电气用品安全法》（PSE）认证，未认证禁止销售。"),
+        ("alcohol", "酒精饮料", "酒 清酒 烧酒 威士忌 啤酒 红酒 洋酒", "酒精饮料需酒类销售许可，禁止向未成年人销售。"),
+        ("tobacco", "烟草及含尼古丁产品", "烟草 烟 电子烟 烟油 尼古丁 加热烟", "烟草及含尼古丁产品受日本严格管制，基本禁售/需特殊许可。"),
+        ("pesticide_fertilizer", "农药、肥料", "农药 肥料 杀虫 除草 杀鼠", "需农药销售通报或肥料销售业务申报资料。"),
+        ("second_hand", "二手/中古商品", "二手 中古 闲置 翻新 古着", "部分品类二手/中古商品禁售，需平台定邀。"),
+        ("medical_device_high_risk", "高风险医疗器械", "手术 植入 注射 理疗仪 医美仪器", "高风险医疗器械需销售许可/通报，多数禁售。"),
+        ("counterfeit_ip", "仿冒及侵权商品", "品牌 原单 同款 高仿 复刻 联名 动漫 角色", "仿冒品、侵权/盗版商品（品牌、IP、动漫角色）一律禁售。"),
     ]
+    existing = {r.rule_code: r for r in db.scalars(select(SelectionRestrictionRule)).all()}
     for code, category_keyword, title_keyword, reason in rules:
-        db.add(SelectionRestrictionRule(
-            rule_code=code,
-            region="JP",
-            category_keyword=category_keyword,
-            title_keyword=title_keyword,
-            action="restricted",
-            reason=reason,
-            status=1,
-        ))
+        rule = existing.get(code)
+        if not rule:
+            db.add(SelectionRestrictionRule(
+                rule_code=code,
+                region="JP",
+                category_keyword=category_keyword,
+                title_keyword=title_keyword,
+                action="restricted",
+                reason=reason,
+                status=1,
+            ))
+        else:
+            rule.category_keyword = category_keyword
+            rule.title_keyword = title_keyword
+            rule.reason = reason
+            rule.action = "restricted"
+            rule.status = 1

@@ -16,6 +16,18 @@ api.interceptors.request.use((config) => {
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err?.response?.status === 404) {
+      const cfg = err.config || {};
+      const method = String(cfg.method || "GET").toUpperCase();
+      const url = cfg.url || "";
+      err.message = `接口未找到 [404]: ${method} ${url}`;
+    }
+    return Promise.reject(err);
+  }
+);
 
 export async function login(username: string, password: string) {
   const { data } = await api.post<{ access_token: string; user?: User }>("/api/auth/login", { username, password });
@@ -45,13 +57,7 @@ export function logout() {
 
 export const getUser = () => api.get<User>("/api/auth/me").then((r) => r.data);
 export const getRecommendations = (limit = 12) => api.get<Product[]>(`/api/derived-recommendations?limit=${limit}`).then((r) => r.data || []);
-export const getRegions = () => api.get<Array<{ region_name?: string; region_code?: string }>>("/api/regions").then((r) => r.data || []).catch(() => ([
-  { region_name: "中国", region_code: "CN" },
-  { region_name: "美国", region_code: "US" },
-  { region_name: "日本", region_code: "JP" },
-  { region_name: "英国", region_code: "GB" },
-  { region_name: "东南亚", region_code: "SEA" },
-]));
+export const getRegions = () => api.get<Array<{ region_name?: string; region_code?: string }>>("/api/regions").then((r) => r.data || []);
 export const getRanks = (params: Record<string, string | number | boolean>) => api.get("/api/daily-recommendations", { params }).then((r) => r.data);
 export const syncConfiguredRanks = () => api.post("/api/fastmoss/sync-configured").then((r) => r.data);
 export const getLibrary = () => api.get<Product[]>("/api/ai/search-results").then((r) => r.data || []);

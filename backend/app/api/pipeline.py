@@ -65,12 +65,24 @@ def _report_product_payload(item: SelectionDidadogProduct) -> dict:
 
 
 def _linked_supplier_items(db: Session, task_id: int, status: str) -> list[dict]:
-    """Return 1688 seed products ranked by their aggregated EchoTik status."""
+    """Return the 1688 seed products represented by final EchoTik statuses."""
     candidates = list(db.scalars(select(Selection1688Candidate).where(Selection1688Candidate.pipeline_task_id == task_id).order_by(Selection1688Candidate.id)).all())
-    result = []
-    for supplier in candidates:
-        if supplier.status != status:
+    entries = list(db.scalars(select(SelectionImageSearchEntry).where(SelectionImageSearchEntry.pipeline_task_id == task_id)).all())
+    products = list(db.scalars(select(SelectionDidadogProduct).where(SelectionDidadogProduct.pipeline_task_id == task_id, SelectionDidadogProduct.selection_status == status).order_by(SelectionDidadogProduct.id)).all())
+    candidate_by_id = {item.id: item for item in candidates}
+    entry_by_id = {item.id: item for item in entries}
+    seen: set[int] = set()
+    result: list[dict] = []
+    for product in products:
+        entry = entry_by_id.get(product.image_search_entry_id)
+        supplier = candidate_by_id.get(entry.seed_candidate_id) if entry else None
+        if not supplier or supplier.id in seen:
             continue
+        seen.add(supplier.id)
+        try:
+            meta = json.loads(product.selection_meta or "{}")
+        except (TypeError, ValueError):
+            meta = {}
         result.append({
             "id": supplier.external_product_id or supplier.id,
             "title": supplier.title,
@@ -82,6 +94,10 @@ def _linked_supplier_items(db: Session, task_id: int, status: str) -> list[dict]
             "source_url": supplier.source_url,
             "selection_status": status,
             "eliminated": False,
+            "tier": meta.get("tier", "regular"),
+            "novelty_score": meta.get("novelty"),
+            "content_score": meta.get("content"),
+            "highlight_reason": meta.get("reason", ""),
         })
     return result
 
@@ -107,7 +123,7 @@ def generate_selection_report_content(
         "你是日本 TikTok 跨境电商资深选品顾问。请根据给定任务结果，生成一份可以直接放进中文选品报告的专业分析。\n"
         "必须只基于输入商品，不要虚构销量、价格、法规结论或市场数据；没有数据就明确写‘需进一步验证’。\n"
         "请严格返回 JSON，不要 Markdown，字段如下：\n"
-        "market_summary（200字以内的市场概览）、market_intro（对象，必须包含 market_scale 市场规模、demand_trend 需求趋势、competition_landscape 竞争格局，三项使用自然段）、market_metrics（对象，必须包含 monopoly_rate 垄断率、seller_share 卖家占比、sales_share 销量占比、opportunity_rating 机会评级、price_band 价格带、competition_intensity 竞争强度；无法计算时写需进一步验证）、opportunity_tracks（数组，最多3项，每项包含 track_name、opportunity、reason）、\n"
+        "market_summary（200字以内的市场概览）、opportunity_tracks（数组，最多3项，每项包含 track_name、opportunity、reason）、\n"
         "candidate_strategy（候选品布局建议，150字以内）、final_strategy（精选品上架建议，150字以内）、\n"
         "risk_advice（数组，最多5条风险提示）、conclusion（100字以内结论）。\n"
         "分析重点：蓝海逻辑是优先保留销量较低但有需求验证、供应链可做、合规可控的商品；不要把销量高误判为优先推荐。\n"
@@ -251,7 +267,7 @@ def get_selection_pipeline_task(
         ] + [
             {
                 "id": f"echotik-{item.id}",
-                "source": "echotik",
+                "source": "supply_fallback" if str(item.didadog_product_id or "").startswith("1688-") else "echotik",
                 "title": item.title or item.didadog_product_id,
                 "image_url": item.image_url,
                 "price": item.price,

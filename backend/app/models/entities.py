@@ -471,6 +471,7 @@ class SelectionDidadogProduct(Base, TimestampMixin):
     selection_status: Mapped[str] = mapped_column(String(32), default="unreviewed", index=True)
     elimination_reason: Mapped[str] = mapped_column(Text, default="")
     raw_data: Mapped[str] = mapped_column(Text, default="{}")
+    selection_meta: Mapped[str] = mapped_column(Text, default="{}")
 
 
 class SelectionRestrictionRule(Base, TimestampMixin):
