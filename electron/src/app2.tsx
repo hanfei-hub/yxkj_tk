@@ -6309,7 +6309,6 @@ function Products3Content({
                   )}
                 </div>
                 <h3>{title(p)}</h3>
-                <div className="product-tag">{categoryLabel(p.category)}</div>
                 <div className="product-meta">
                   <strong>{money(p)}</strong>
                   <span>
@@ -6704,7 +6703,6 @@ function Products3ContentFixed({
                     )}
                   </div>
                   <h3>{title(p)}</h3>
-                  <div className="product-tag">{categoryLabel(p.category)}</div>
                   <div className="product-meta">
                     <strong>{money(p)}</strong>
                     <span>

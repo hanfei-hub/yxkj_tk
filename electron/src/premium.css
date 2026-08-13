@@ -381,11 +381,11 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
   display: flex; flex-direction: column; height: 100%; overflow: hidden;
 }
 .task-board-header {
-  flex: none; padding: 12px 14px; border-bottom: 1px solid var(--line);
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex: none; padding: 14px 16px; border-bottom: 1px solid var(--line);
+  display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
 }
 .task-board-header h2 { color: var(--text); font-size: 15px; font-weight: 700; padding-bottom: 0; margin: 0; }
-.task-board-header button.small { padding: 5px 10px; font-size: 11px; border-radius: 7px; }
+.task-board-header button.small { padding: 6px 12px; font-size: 11px; border-radius: 7px; }
 .task-board-body { flex: 1; min-height: 0; padding: 10px 14px 12px; overflow: hidden; display: flex; flex-direction: column; }
 .task-board-logs {
   flex: none; margin: 10px 14px 0; border-left: 1px solid var(--line-strong); padding-left: 10px;
@@ -1386,12 +1386,11 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
   box-shadow: 0 4px 10px rgba(59, 91, 253, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
 
-/* 3. 商品卡片：选中高亮 + 显示分类标签 + 价格销售行对齐 */
+/* 3. 商品卡片：选中高亮 + 价格销售行对齐（分类标签路径多为英文且冗长，已在全局隐藏） */
 .product.selected, .library-card.selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-md);
 }
-.product .product-tag { display: inline-flex; align-self: flex-start; margin: 6px 10px 0; }
 .library-card .library-card-meta, .product .product-meta {
   flex-direction: row; align-items: baseline; justify-content: space-between; padding-top: 8px;
 }
@@ -1429,8 +1428,8 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
 .library-report-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .library-report-head h2 { font-size: 14px; font-weight: 700; margin: 0; }
 .library-report-head .secondary.small { padding: 5px 10px; font-size: 11px; border-radius: 7px; }
-.task-board-header-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.task-board-auto-hint { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.task-board-header-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.task-board-auto-hint { font-size: 11px; color: var(--muted); white-space: nowrap; padding: 4px 0; }
 .empty-state.warn { color: #b8860b; border-color: rgba(184,134,11,0.4); background: rgba(184,134,11,0.08); }
 
 /* 6. 空状态强化 */
