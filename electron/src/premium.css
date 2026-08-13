@@ -1451,40 +1451,40 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
   border: 1px solid transparent;
 }
 
-/* 主操作：渐变 + 高光，悬浮上浮 */
+/* 主操作：品牌朱砂红，扁平干净，悬浮轻微上浮（去掉老式高光与重投影） */
 button.primary, .library-card > button,
 .list-action:first-child, .smart-report-actions .primary,
 .product-actions .primary, .video-actions .primary {
-  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%);
+  background: linear-gradient(180deg, #df5238 0%, #d6452b 100%);
   color: #fff;
-  border-color: var(--accent-strong);
-  box-shadow: 0 6px 14px rgba(59, 91, 253, 0.22), inset 0 1px 0 rgba(255, 255, 255, .22);
+  border-color: #c23c22;
+  box-shadow: 0 4px 10px rgba(214, 69, 43, 0.20);
 }
 button.primary:hover:not(:disabled), .library-card > button:hover:not(:disabled),
 .list-action:first-child:hover, .smart-report-actions .primary:hover:not(:disabled),
 .product-actions .primary:hover:not(:disabled), .video-actions .primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  filter: brightness(1.04);
-  box-shadow: 0 10px 22px rgba(59, 91, 253, 0.3), inset 0 1px 0 rgba(255, 255, 255, .22);
+  background: linear-gradient(180deg, #d6452b 0%, #c23c22 100%);
+  box-shadow: 0 8px 18px rgba(214, 69, 43, 0.28);
 }
 button.primary:active:not(:disabled), .library-card > button:active:not(:disabled),
 .product-actions .primary:active:not(:disabled) {
   transform: translateY(0);
-  box-shadow: 0 3px 8px rgba(59, 91, 253, 0.18);
+  box-shadow: 0 2px 6px rgba(214, 69, 43, 0.18);
 }
 
-/* 次操作：柔和描边 ghost */
+/* 次操作：干净描边 ghost，悬浮轻微红调呼应主色 */
 button.secondary, .smart-report-actions .secondary,
 .product-actions .secondary {
   background: var(--surface);
-  color: var(--accent-strong);
-  border-color: var(--accent-line);
+  color: var(--text-2);
+  border-color: var(--line-strong);
 }
 button.secondary:hover:not(:disabled), .smart-report-actions .secondary:hover:not(:disabled),
 .product-actions .secondary:hover:not(:disabled) {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: var(--accent-strong);
+  background: rgba(214, 69, 43, 0.06);
+  border-color: rgba(214, 69, 43, 0.35);
+  color: #c23c22;
   transform: translateY(-1px);
 }
 
@@ -1510,20 +1510,22 @@ button.primary:disabled, .library-card > button:disabled,
   border: 1px solid var(--line-strong);
   background: var(--surface);
   color: var(--text-2);
+  cursor: pointer;
+  transition: all .18s cubic-bezier(.2, 0, 0, 1);
 }
 .list-action:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent-strong);
-  background: var(--accent-soft);
+  border-color: rgba(214, 69, 43, 0.35);
+  color: #c23c22;
+  background: rgba(214, 69, 43, 0.06);
 }
 .list-action:first-child {
-  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%);
+  background: linear-gradient(180deg, #df5238 0%, #d6452b 100%);
   color: #fff;
-  border-color: var(--accent-strong);
-  box-shadow: 0 5px 12px rgba(59, 91, 253, 0.2);
+  border-color: #c23c22;
+  box-shadow: 0 4px 10px rgba(214, 69, 43, 0.20);
 }
 .list-action:first-child:hover:not(:disabled) {
-  filter: brightness(1.04);
+  background: linear-gradient(180deg, #d6452b 0%, #c23c22 100%);
   transform: translateY(-1px);
 }
 
