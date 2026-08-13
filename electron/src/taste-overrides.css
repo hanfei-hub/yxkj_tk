@@ -749,6 +749,15 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .app-shell::-webkit-scrollbar,
 .selection-flow-row { flex-wrap:wrap; }
 .selection-flow-row .flow-node { flex:1 1 28%; min-width:190px; }
 .smart-selection > .selection-flow-panel .flow-node { min-height: 230px; overflow: visible; }
+.selection-flow-visual { position: relative; isolation: isolate; padding: 4px 0; }
+.selection-flow-visual .selection-flow-row { position: relative; z-index: 1; }
+.flow-connector { position: absolute; z-index: 0; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.flow-connector path { fill: none; stroke: rgba(22, 140, 112, .26); stroke-width: 1.1; stroke-linecap: round; stroke-dasharray: 2.5 2.5; filter: drop-shadow(0 0 3px rgba(22, 140, 112, .18)); animation: flow-dash 5s linear infinite; }
+.flow-connector path:nth-child(2), .flow-connector path:nth-child(4) { stroke: rgba(63, 137, 173, .28); }
+@keyframes flow-dash { to { stroke-dashoffset: -25; } }
+.smart-selection > .smart-main .selection-flow-panel .selection-flow-row { position: relative; }
+.smart-selection > .smart-main .selection-flow-panel .selection-flow-row:not(:last-child)::after { content: ""; position: absolute; right: 3%; bottom: -17px; width: 34%; height: 28px; border-right: 2px solid rgba(22,140,112,.25); border-bottom: 2px solid rgba(22,140,112,.25); border-radius: 0 0 22px 0; transform: skewX(-18deg); pointer-events: none; z-index: 0; }
+.smart-selection > .smart-main .selection-flow-panel .selection-flow-row:nth-of-type(2)::after { left: 3%; right: auto; border-right: 0; border-left: 2px solid rgba(63,137,173,.25); border-bottom-left-radius: 22px; border-bottom-right-radius: 0; transform: skewX(18deg); }
 
 /* Align the library report with the filter block above the product grid. */
 .library-page { display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:20px; align-items:start; }
@@ -911,7 +920,8 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .app-shell::-webkit-scrollbar,
 .derived-modal-card > div:last-child { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
 .derived-modal-card strong { color: #d9515f; font-size: 14px; }
 .derived-modal-card span { color: #718096; font-size: 11px; white-space: nowrap; }
-.derived-library-button { width: 100%; margin-top: 10px; min-height: 32px; }
+.derived-library-button { width: 100%; margin-top: 10px; min-height: 34px; border: 1px solid rgba(8,119,94,.22); border-radius: 9px; background: linear-gradient(135deg, #e5f8f0, #c8eedf); color: #08775e; font-weight: 700; cursor: pointer; transition: transform .18s ease, box-shadow .18s ease, background .18s ease; }
+.derived-library-button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 14px rgba(8,119,94,.14); background: linear-gradient(135deg, #d7f5e8, #b9e8d5); }
 .task-board-library-button { width: 100%; margin-top: 8px; min-height: 28px; border: 1px solid rgba(22,140,112,.22); border-radius: 8px; background: rgba(223,244,235,.75); color: #08775e; cursor: pointer; }
 .task-board-library-button:disabled, .derived-library-button:disabled { opacity: .65; cursor: default; }
 @media (max-width: 760px) { .derived-modal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -943,3 +953,5 @@ html::-webkit-scrollbar, body::-webkit-scrollbar, .app-shell::-webkit-scrollbar,
 .derived-board-groups .task-board-group { padding:12px; }
 .derived-board-groups .task-board-items { grid-template-columns:repeat(2,minmax(0,1fr)); }
 @media (max-width: 900px) { .derived-pipeline-modal { width:calc(100vw - 24px); height:calc(100vh - 24px); max-height:calc(100vh - 24px); padding:18px; } .derived-pipeline-layout { grid-template-columns:1fr; overflow:auto; } .derived-pipeline-steps,.derived-pipeline-board { overflow:visible; } }
+/* The library keeps its filters and cards without an extra section-title row. */
+.library-workspace > section > .smart-section-title { display: none; }

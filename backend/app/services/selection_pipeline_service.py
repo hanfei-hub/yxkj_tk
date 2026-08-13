@@ -140,6 +140,7 @@ def _generate_report_analysis(db: Session, task: SelectionPipelineTask, candidat
         "只能基于输入商品和任务需求做谨慎判断，不要虚构具体市场规模、销量、法规结论或外部数据；缺少数据时写‘需进一步验证’。\n"
         "必须严格返回 JSON，不要 Markdown，字段必须包含：\n"
         "market_intro（对象，必须包含 market_scale 市场规模、demand_trend 需求趋势、competition_landscape 竞争格局三项，每项150字以内）、\n"
+        "market_metrics（对象，必须包含 monopoly_rate 垄断率、seller_share 卖家占比、sales_share 销量占比、opportunity_rating 机会评级、price_band 价格带、competition_intensity 竞争强度；只能依据输入数据，无法计算时写‘需进一步验证’）、\n"
         "opportunity_tracks（数组，最多3项，每项包含 track_name、opportunity、reason）、\n"
         "candidate_strategy（150字以内）、final_strategy（150字以内）、risk_advice（数组最多5条）、conclusion（100字以内）。\n"
         "蓝海原则：销量高代表成熟竞争，不等于优先推荐；重点分析低销量但有需求验证、供应链可做、差异化空间足的商品。\n"
@@ -381,7 +382,7 @@ def run_selection_pipeline(task_id: int) -> None:
                     result = search_by_image(db, seed.image_url)
                     ids = result.get("product_ids") or []
                     entry.returned_id_count = len(ids)
-                    entry.raw_response = json.dumps(result.get("raw_data") or {}, ensure_ascii=False)
+                    entry.raw_response = json.dumps(result.get("raw_data") or {}, ensure_ascii=False)[:60000]
                     entry.status = "success"
                     for product_id in ids:
                         db.add(SelectionDidadogProduct(
@@ -423,55 +424,45 @@ def run_selection_pipeline(task_id: int) -> None:
                         product.sales_count = int(raw.get("sales_count") or raw.get("sales") or raw.get("sold_count") or raw.get("total_sale_cnt") or 0)
                         product.category = str(raw.get("category") or raw.get("category_name") or "")[:255]
                         product.detail_status = "success"
-                        product.raw_data = json.dumps(raw, ensure_ascii=False)
+                        # EchoTik detail payloads can contain large analytics arrays. The
+                        # pipeline only needs the normalized fields above for ranking;
+                        # keep a bounded snapshot so MySQL TEXT cannot abort the batch.
+                        product.raw_data = json.dumps(raw, ensure_ascii=False)[:60000]
                 except EchoTikError as exc:
                     for product in batch:
                         product.detail_status = "failed"
-                        product.raw_data = json.dumps({"error": str(exc)}, ensure_ascii=False)
+                        product.raw_data = json.dumps({"error": str(exc)}, ensure_ascii=False)[:60000]
                 db.commit()
             task.didadog_detail_count = len([item for item in products if item.detail_status == "success"])
             detailed_products = [item for item in products if item.detail_status == "success"]
-            update_pipeline_stage(db, task, stage="blue_ocean_filter", progress=78, message="正在按大模型商品分组，筛出 100 个低销量蓝海候选")
-            grouped: dict[int, list[SelectionDidadogProduct]] = {}
+            update_pipeline_stage(db, task, stage="blue_ocean_filter", progress=78, message="正在按每个 1688 商品汇总 EchoTik 销量，从 100 个商品中筛选 30 个蓝海候选")
+            entries = list(db.scalars(select(SelectionImageSearchEntry).where(SelectionImageSearchEntry.pipeline_task_id == task.id)).all())
+            entry_by_seed = {entry.seed_candidate_id: entry for entry in entries}
+            products_by_entry: dict[int, list[SelectionDidadogProduct]] = {}
             for product in detailed_products:
-                grouped.setdefault(product.keyword_id, []).append(product)
-            blue_ocean_pool: list[SelectionDidadogProduct] = []
-            for group in grouped.values():
-                group.sort(key=lambda item: (int(item.sales_count or 0), item.id))
-                for product in group[2:]:
-                    product.selection_status = "blue_ocean_eliminated"
-                    _set_product_reason(product, "同大模型商品分组中销量较高，作为红海商品淘汰")
-                for product in group[:2]:
-                    product.selection_status = "blue_ocean_pool"
-                    blue_ocean_pool.append(product)
-            blue_ocean_pool.sort(key=lambda item: (-int(item.sales_count or 0), item.id))
-            for product in blue_ocean_pool[:max(0, len(blue_ocean_pool) - 30)]:
-                product.selection_status = "blue_ocean_eliminated"
-                _set_product_reason(product, "销量排名靠前，淘汰以规避成熟红海商品")
-            candidates = [item for item in blue_ocean_pool if item.selection_status == "blue_ocean_pool"]
-            for product in candidates:
-                product.selection_status = "candidate"
-            task.candidate_count = len(candidates)
-            # Blue-ocean ranking is performed per 1688 image seed: sum all
-            # EchoTik sales returned for that seed, then keep the 30 lowest
-            # sales seeds and send their products to compliance review.
-            seed_groups: dict[int, list[SelectionDidadogProduct]] = {}
-            for product in detailed_products:
-                seed_groups.setdefault(product.image_search_entry_id, []).append(product)
-            ranked_seed_groups = sorted(
-                ((entry_id, group, sum(int(item.sales_count or 0) for item in group)) for entry_id, group in seed_groups.items()),
-                key=lambda item: (item[2], item[0]),
-            )
+                products_by_entry.setdefault(product.image_search_entry_id, []).append(product)
+            # The ranking unit is the 1688 seed, not an individual EchoTik item.
+            # Keep seeds with no EchoTik result as valid blue-ocean candidates with total sales 0.
+            ranked_seed_groups: list[tuple[Selection1688Candidate, list[SelectionDidadogProduct], int]] = []
+            for seed in seeds:
+                entry = entry_by_seed.get(seed.id)
+                group = products_by_entry.get(entry.id, []) if entry else []
+                total_sales = sum(int(item.sales_count or 0) for item in group)
+                ranked_seed_groups.append((seed, group, total_sales))
+            ranked_seed_groups.sort(key=lambda item: (item[2], item[0].id))
             keep_group_count = min(30, len(ranked_seed_groups))
-            kept_seed_ids = {entry_id for entry_id, _, _ in ranked_seed_groups[:keep_group_count]}
-            for entry_id, group, total_sales in ranked_seed_groups:
-                for product in group:
-                    if entry_id in kept_seed_ids:
+            kept_seed_ids = {seed.id for seed, _, _ in ranked_seed_groups[:keep_group_count]}
+            for seed, group, total_sales in ranked_seed_groups:
+                if seed.id in kept_seed_ids:
+                    seed.status = "candidate"
+                    for product in group:
                         product.selection_status = "candidate"
-                    else:
+                else:
+                    seed.status = "blue_ocean_eliminated"
+                    for product in group:
                         product.selection_status = "blue_ocean_eliminated"
                         _set_product_reason(product, f"对应1688商品的 EchoTik 商品销量合计为 {total_sales}，蓝海筛选淘汰")
-            candidates = [product for entry_id, group, _ in ranked_seed_groups if entry_id in kept_seed_ids for product in group]
+            candidates = [product for seed, group, _ in ranked_seed_groups if seed.id in kept_seed_ids for product in group]
             task.candidate_count = keep_group_count
             db.commit()
             update_pipeline_stage(db, task, stage="compliance_filter", progress=85, message=f"正在审核 {len(candidates)} 个候选商品的日本法规和禁运风险")
@@ -481,14 +472,23 @@ def run_selection_pipeline(task_id: int) -> None:
             update_pipeline_stage(db, task, stage="restriction_check", progress=91, message="正在查询限售库并标记需要报白的商品")
             _run_restriction_check(db, passed)
             db.commit()
-            update_pipeline_stage(db, task, stage="final_selection", progress=96, message="正在从合规商品中精选最终 10 款")
-            eligible = [item for item in passed if item.restriction_status != "restricted"]
-            eligible.sort(key=lambda item: (int(item.sales_count or 0), item.id))
-            for product in eligible[10:]:
-                product.selection_status = "candidate"
-            for product in eligible[:10]:
-                product.selection_status = "final"
-            task.final_count = len(eligible[:10])
+            update_pipeline_stage(db, task, stage="final_selection", progress=96, message="正在从 30 个合规候选 1688 商品中精选最终 10 款")
+            passed_ids = {item.id for item in passed}
+            eligible_seed_groups: list[tuple[Selection1688Candidate, list[SelectionDidadogProduct], int]] = []
+            for seed, group, total_sales in ranked_seed_groups[:keep_group_count]:
+                # A seed with no EchoTik result is still eligible: its aggregate is 0.
+                # If details exist, every returned item must pass compliance and restriction checks.
+                group_eligible = not group or all(item.id in passed_ids and item.restriction_status != "restricted" for item in group)
+                if group_eligible:
+                    eligible_seed_groups.append((seed, group, total_sales))
+            eligible_seed_groups.sort(key=lambda item: (item[2], item[0].id))
+            final_seed_ids = {seed.id for seed, _, _ in eligible_seed_groups[:10]}
+            eligible_seed_ids = {seed.id for seed, _, _ in eligible_seed_groups}
+            for seed, group, _ in ranked_seed_groups[:keep_group_count]:
+                seed.status = "final" if seed.id in final_seed_ids else "candidate" if seed.id in eligible_seed_ids else "compliance_failed"
+                for product in group:
+                    product.selection_status = seed.status
+            task.final_count = len(final_seed_ids)
             db.commit()
             update_pipeline_stage(db, task, stage="final_selection", progress=98, message="最终商品已确定，正在请求 general 大模型生成完整市场报告")
             report_candidates = [item for item in candidates if item.selection_status == "candidate"]

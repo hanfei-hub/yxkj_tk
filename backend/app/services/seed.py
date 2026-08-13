@@ -10,6 +10,7 @@ from app.core.security import hash_password
 from app.models.entities import ModelConfig, RegionConfig, SelectionAttribute, SelectionRestrictionRule, SystemSetting, ThirdPartyConfig, User
 from app.services.product_family_service import DIMENSIONS, INITIAL_WEIGHT
 from app.services.selection_derivation_service import ensure_selection_prompt
+from app.services.prompt_constant_service import ensure_prompt_constants
 from app.services.system_settings_service import ensure_system_settings
 
 
@@ -28,6 +29,7 @@ def init_db() -> None:
         ensure_echotik_third_party_config(db)
         ensure_selection_restriction_rules(db)
         ensure_selection_prompt(db)
+        ensure_prompt_constants(db)
         db.commit()
     finally:
         db.close()

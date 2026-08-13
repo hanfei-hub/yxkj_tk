@@ -262,7 +262,10 @@ function pipelineReportRow(item: PipelineReportItem, index: number, status: stri
   </tr>`;
 }
 
-async function downloadPipelineReport(data: PipelineReportData) {
+const DEFAULT_SMART_SELECTION_INTRO = "智能选品系统会利用 AI 结合日本本地市场现状与消费潮流，挖掘出有机会走红的产品方向。\n确定产品方向之后，工具会在平台抓取大量同类商品数据，帮你摸清市面上同款的款式、定价、销量以及整体市场热度，完成大范围拓品。\n紧接着做多维度风险筛查，把禁运、禁售、侵权、受海关和平台规则限制的产品全部过滤掉。同时还会参考平台销量与竞争程度，避开内卷严重的成熟爆款，重点挖掘竞争更小的蓝海机会。\n完成筛选后自动产出完整选品报告，里面包含市场体量、用户需求走向、行业竞争情况、产品风险点以及可切入的机会参考。\n之后系统会自动对接 1688 供应链资源，为候选产品匹配合适的供货商，核算利润空间，评估报价、发货效率和供应链稳不稳定。\n最后综合流量表现、销量、合规情况、竞争压力、利润水平以及供应链实力，给出候选清单，输出经过层层把关的精选产品。";
+
+async function downloadPipelineReport(data: PipelineReportData, intro = DEFAULT_SMART_SELECTION_INTRO) {
+  const smartSelectionIntro = intro.trim() || DEFAULT_SMART_SELECTION_INTRO;
   const candidates = Array.isArray(data.candidate_items) ? data.candidate_items : [];
   const finals = Array.isArray(data.final_items) ? data.final_items : [];
   const boardFallback = (data.board_groups || []).flatMap((group) => (group.items || []).filter((item) => !item.eliminated));
@@ -271,7 +274,6 @@ async function downloadPipelineReport(data: PipelineReportData) {
   const aiReport = data.ai_report || {};
   const marketIntro = (aiReport.market_intro && typeof aiReport.market_intro === "object" ? aiReport.market_intro : {}) as Record<string, unknown>;
   const counters = data.counters || {};
-  const keyword = data.input_message || "本次智能选品任务";
   const createdAt = new Date().toLocaleString("zh-CN");
   const table = (items: PipelineReportItem[], status: string) => items.length
     ? `<table><thead><tr><th>#</th><th>商品</th><th>分类</th><th>价格</th><th>EchoTik销量</th><th>结果</th><th>链接</th></tr></thead><tbody>${items.map((item, index) => pipelineReportRow(item, index, status)).join("")}</tbody></table>`
@@ -282,7 +284,7 @@ async function downloadPipelineReport(data: PipelineReportData) {
     @page{size:A4;margin:15mm 13mm}*{box-sizing:border-box}body{margin:0;color:#1d2b3f;font-family:"Microsoft YaHei",Arial,sans-serif;font-size:12px;line-height:1.55;background:#fff}h1{margin:0 0 8px;font-size:25px;color:#132a47}h2{font-size:17px;margin:24px 0 9px;border-left:4px solid #159477;padding-left:9px;color:#183653}h3{font-size:14px;margin:14px 0 5px;color:#23614f}.cover{padding:28px 0 20px;border-bottom:2px solid #159477}.sub{color:#6d7c8d}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:16px 0}.metric{padding:10px;border:1px solid #dbe6e2;background:#f3faf7;border-radius:7px}.metric b{display:block;font-size:18px;color:#159477}.metric span{color:#667788}.intro{padding:12px 14px;background:#f7f9fb;border:1px solid #e1e7ed;border-radius:7px;white-space:pre-wrap}.note{color:#627487}.table-wrap{overflow:visible}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:10px}th{background:#e7f4ef;color:#245b4e;font-weight:700}th,td{border:1px solid #d7e1df;padding:6px 5px;vertical-align:middle;word-break:break-word}th:nth-child(1){width:4%}th:nth-child(2){width:38%}th:nth-child(3){width:15%}th:nth-child(4){width:10%}th:nth-child(5){width:11%}th:nth-child(6){width:10%}th:nth-child(7){width:12%}.product-cell{display:flex;align-items:center;gap:7px}.product-cell img{width:48px;height:48px;object-fit:contain;border:1px solid #edf0f2;border-radius:4px;background:#fff;flex:none}.product-cell b{font-weight:600}.no-image{width:48px;height:48px;display:inline-flex;align-items:center;justify-content:center;background:#f1f3f5;color:#8995a0;font-size:9px;flex:none}.index{text-align:center;color:#159477;font-weight:700}.empty{padding:25px;text-align:center;border:1px dashed #cddbd6;color:#7b8a95}.risk{padding:11px 14px;background:#fff8eb;border:1px solid #f0d59c;border-radius:7px}.footer{margin-top:25px;padding-top:8px;border-top:1px solid #d9e2e0;color:#89959c;font-size:10px}@media print{a{color:inherit;text-decoration:none}.page-break{page-break-before:always}}
   </style></head><body><main>
     <section class="cover"><h1>智能选品市场机会报告</h1><div class="sub">益行跨境 AI 平台 · 任务 #${htmlEscape(data.id || "-")} · 导出时间 ${createdAt}</div></section>
-    <h2>一、选品任务概览</h2><div class="intro">${htmlEscape(keyword)}</div>
+    <h2>一、智能选品介绍</h2><div class="intro">${htmlEscape(smartSelectionIntro)}</div>
     <div class="summary"><div class="metric"><b>${counters.keywords || 0}</b><span>大模型商品</span></div><div class="metric"><b>${counters.supplier_candidates || 0}</b><span>1688货源</span></div><div class="metric"><b>${counters.didadog_details || 0}</b><span>EchoTik详情</span></div><div class="metric"><b>${finalRows.length || counters.final_products || 0}</b><span>精选商品</span></div></div>
     <p class="note">本报告仅保留任务结束时未淘汰的商品：候选蓝海商品与最终精选商品。灰色淘汰商品不进入本报告。</p>
     <h2>二、AI 市场分析</h2><p>${htmlEscape(aiReport.market_summary || "本次任务完成后由 general 大模型生成市场简介与选品判断。")}</p><div class="summary"><div class="metric"><b>市场规模</b><span>${htmlEscape(marketIntro.market_scale || "需进一步验证")}</span></div><div class="metric"><b>需求趋势</b><span>${htmlEscape(marketIntro.demand_trend || "需进一步验证")}</span></div><div class="metric"><b>竞争格局</b><span>${htmlEscape(marketIntro.competition_landscape || "需进一步验证")}</span></div></div>${tracks.map((track, index) => `<h3>${index + 1}. ${htmlEscape(track.track_name || "机会赛道")}</h3><p><b>机会：</b>${htmlEscape(track.opportunity || "-")}<br/><b>判断：</b>${htmlEscape(track.reason || "-")}</p>`).join("")}
@@ -448,6 +450,7 @@ function SmartSelection({ user, onNotice, onAddLibrary }: { user: User; onNotice
   const [counters, setCounters] = useState<Record<string, number>>({});
   const [lastTaskResult, setLastTaskResult] = useState<PipelineReportData | null>(null);
   const [libraryAdded, setLibraryAdded] = useState<Record<string, boolean>>({});
+  const [smartSelectionIntro, setSmartSelectionIntro] = useState(DEFAULT_SMART_SELECTION_INTRO);
   const displayedStageRef = useRef("");
   const displayedStageAtRef = useRef(0);
   const flowNodes = [
@@ -462,6 +465,7 @@ function SmartSelection({ user, onNotice, onAddLibrary }: { user: User; onNotice
   const hotSearches = ["家居好物", "夏季防晒", "学生平价好物", "新奇特", "厨房小工具", "户外装备"];
   const stepMap: Record<string, number> = { created: -1, keyword_generation: 0, supplier_search: 1, price_seed_selection: 1, image_search: 2, product_detail: 2, compliance_filter: 3, blue_ocean_filter: 4, report_generation: 5, final_selection: 6 };
   const currentStep = stage in stepMap ? stepMap[stage] : Math.min(6, Math.floor(progress / 15));
+  useEffect(() => { void service.getSmartSelectionIntro().then((value) => { if (value.trim()) setSmartSelectionIntro(value); }).catch(() => undefined); }, []);
   async function applyTaskData(data: Record<string, any>, restoreInput = false) {
     const nextStage = String(data.stage || "created");
     const elapsed = Date.now() - displayedStageAtRef.current;
@@ -521,7 +525,7 @@ function SmartSelection({ user, onNotice, onAddLibrary }: { user: User; onNotice
     if (!lastTaskResult?.id) return;
     try {
       onNotice("正在下载已生成的选品报告...");
-      await downloadPipelineReport(lastTaskResult);
+      await downloadPipelineReport(lastTaskResult, smartSelectionIntro);
       onNotice("报告已生成并保存到下载目录");
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "报告生成失败");
@@ -587,7 +591,33 @@ function AdminConsoleLegacy({ notice }: { notice: (s: string) => void }) {
 
 type CompleteAdminTab = "users" | "models" | "third" | "settings" | "attributes" | "prompts" | "restrictions" | "releases";
 
+function EchoTikTestPanel({ notice }: { notice: (s: string) => void }) {
+  const [operation, setOperation] = useState<"photo_search" | "detail">("photo_search");
+  const [imageUrl, setImageUrl] = useState("");
+  const [productIds, setProductIds] = useState("");
+  const [region, setRegion] = useState("JP");
+  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function test() {
+    setBusy(true); setResult(null);
+    try {
+      const data = await service.testEchoTik({ operation, image_url: imageUrl, product_ids: productIds.split(/[,\\n\\s]+/).map((item) => item.trim()).filter(Boolean), region });
+      setResult(data); notice(data.ok ? "EchoTik 接口返回成功" : "EchoTik 接口返回失败");
+    } catch (error) { setResult({ ok: false, error: error instanceof Error ? error.message : "接口测试失败" }); notice("EchoTik 接口测试失败"); }
+    finally { setBusy(false); }
+  }
+  return <div className="echotik-test-panel">
+    <div className="echotik-test-head"><div><h3>EchoTik 接口测试</h3><p>填写参数后单独调用接口，查看请求信息、标准化结果和原始返回。</p></div><span>管理员可见</span></div>
+    <div className="echotik-test-form"><label>测试接口<select value={operation} onChange={(e) => setOperation(e.target.value as "photo_search" | "detail")}><option value="photo_search">以图搜款 / photo-search</option><option value="detail">商品详情 / detail</option></select></label><label>国家/地区<input value={region} onChange={(e) => setRegion(e.target.value)} placeholder="JP" /></label>{operation === "photo_search" ? <label className="wide">图片 URL<textarea value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="填写可公开访问的商品图片 URL" /></label> : <label className="wide">商品 ID<textarea value={productIds} onChange={(e) => setProductIds(e.target.value)} placeholder="最多 10 个，使用逗号或换行分隔" /></label>}<button className="primary" disabled={busy} onClick={() => void test()}>{busy ? "请求中..." : "测试接口"}</button></div>
+    {result && <div className={`echotik-test-result ${result.ok ? "success" : "error"}`}><div><b>{result.ok ? "请求成功" : "请求失败"}</b>{typeof result.error === "string" && <span>{result.error}</span>}</div><pre>{JSON.stringify(result, null, 2)}</pre></div>}
+  </div>;
+}
+
 function AdminConsole({ notice }: { notice: (s: string) => void }) {
+  return <><EchoTikTestPanel notice={notice} /><AdminConsoleContent notice={notice} /></>;
+}
+
+function AdminConsoleContent({ notice }: { notice: (s: string) => void }) {
   const tabs: Array<{ id: CompleteAdminTab; label: string }> = [
     { id: "users", label: "用户管理" }, { id: "models", label: "模型配置" }, { id: "third", label: "第三方 API" },
     { id: "settings", label: "业务配置" }, { id: "attributes", label: "选品属性" }, { id: "prompts", label: "提示词常量" },

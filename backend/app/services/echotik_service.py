@@ -71,7 +71,7 @@ def _request_json(method: str, url: str, *, headers: dict[str, str], params: dic
         raise EchoTikError("EchoTik API 返回内容不是 JSON。") from exc
 
 
-def search_by_image(db: Session, image_url: str) -> dict[str, Any]:
+def search_by_image(db: Session, image_url: str, region_override: str | None = None) -> dict[str, Any]:
     image_url = str(image_url or "").strip()
     if not image_url:
         raise EchoTikError("以图搜款需要图片地址。")
@@ -84,7 +84,7 @@ def search_by_image(db: Session, image_url: str) -> dict[str, Any]:
         image_base64 = base64.b64encode(image_response.content).decode("ascii")
     except requests.RequestException as exc:
         raise EchoTikError(f"下载以图搜款图片失败：{exc}") from exc
-    photo_params = {"region": str(options.get("photo_region") or "JP")}
+    photo_params = {"region": str(region_override or options.get("photo_region") or "JP")}
     if options.get("photo_sk"):
         photo_params["sk"] = str(options["photo_sk"])
     raw = _request_json(

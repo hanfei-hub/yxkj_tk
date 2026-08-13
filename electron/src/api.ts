@@ -45,7 +45,13 @@ export function logout() {
 
 export const getUser = () => api.get<User>("/api/auth/me").then((r) => r.data);
 export const getRecommendations = (limit = 12) => api.get<Product[]>(`/api/derived-recommendations?limit=${limit}`).then((r) => r.data || []);
-export const getRegions = () => api.get<Array<{ region_name?: string; region_code?: string }>>("/api/regions").then((r) => r.data || []);
+export const getRegions = () => api.get<Array<{ region_name?: string; region_code?: string }>>("/api/regions").then((r) => r.data || []).catch(() => ([
+  { region_name: "中国", region_code: "CN" },
+  { region_name: "美国", region_code: "US" },
+  { region_name: "日本", region_code: "JP" },
+  { region_name: "英国", region_code: "GB" },
+  { region_name: "东南亚", region_code: "SEA" },
+]));
 export const getRanks = (params: Record<string, string | number | boolean>) => api.get("/api/daily-recommendations", { params }).then((r) => r.data);
 export const syncConfiguredRanks = () => api.post("/api/fastmoss/sync-configured").then((r) => r.data);
 export const getLibrary = () => api.get<Product[]>("/api/ai/search-results").then((r) => r.data || []);
@@ -95,12 +101,14 @@ export const createThirdPartyConfig = (payload: Record<string, unknown>) => api.
 export const updateThirdPartyConfig = (id: number, payload: Record<string, unknown>) => api.put<ConfigItem>(`/api/admin/third-party-configs/${id}`, payload).then((r) => r.data);
 export const setThirdPartyStatus = (id: number, status: number) => api.patch(`/api/admin/third-party-configs/${id}/status`, { status });
 export const deleteThirdPartyConfig = (id: number) => api.delete(`/api/admin/third-party-configs/${id}`);
+export const testEchoTik = (payload: { operation: "photo_search" | "detail"; image_url?: string; product_ids?: string[]; region?: string }) => api.post("/api/admin/third-party-configs/echotik-test", payload, { timeout: 120000 }).then((r) => r.data);
 export const getSelectionAttributesAdmin = () => api.get<Record<string, unknown>[]>("/api/admin/selection-attributes").then((r) => r.data || []);
 export const createSelectionAttribute = (payload: Record<string, unknown>) => api.post("/api/admin/selection-attributes", payload).then((r) => r.data);
 export const updateSelectionAttribute = (id: number, payload: Record<string, unknown>) => api.put(`/api/admin/selection-attributes/${id}`, payload).then((r) => r.data);
 export const setSelectionAttributeStatus = (id: number, status: number) => api.patch(`/api/admin/selection-attributes/${id}/status`, { status });
 export const deleteSelectionAttribute = (id: number) => api.delete(`/api/admin/selection-attributes/${id}`);
 export const getPromptConstants = () => api.get<Record<string, unknown>[]>("/api/admin/prompt-constants").then((r) => r.data || []);
+export const getSmartSelectionIntro = () => getPromptConstants().then((items) => String(items.find((item) => item.constant_key === "smart_selection_intro" && Number(item.status ?? 1) === 1)?.constant_content || ""));
 export const createPromptConstant = (payload: Record<string, unknown>) => api.post("/api/admin/prompt-constants", payload).then((r) => r.data);
 export const updatePromptConstant = (id: number, payload: Record<string, unknown>) => api.put(`/api/admin/prompt-constants/${id}`, payload).then((r) => r.data);
 export const setPromptConstantStatus = (id: number, status: number) => api.patch(`/api/admin/prompt-constants/${id}/status`, { status });
