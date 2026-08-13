@@ -2330,6 +2330,17 @@ function LibraryPage({
   const [report, setReport] = useState<PipelineReportData | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
   const categories = FIXED_CATEGORIES;
+  const stats = useMemo(() => {
+    const total = rows.length;
+    const countries = new Set(
+      rows.map((r) => String(r.region || "").toUpperCase()).filter(Boolean),
+    ).size;
+    const cats = new Set(
+      rows.map((r) => String(r.category || "").trim()).filter(Boolean),
+    ).size;
+    const suppliable = rows.filter((r) => supplierUrl(r)).length;
+    return { total, countries, cats, suppliable };
+  }, [rows]);
 
   useEffect(() => {
     setSelected(rows[0] || null);
@@ -2390,6 +2401,28 @@ function LibraryPage({
           <p>查看当前账号最近 7 天的 AI 搜索选品结果</p>
         </div>
       </div>
+      <div className="library-stats">
+        <div className="library-stat">
+          <div className="label">选品总数</div>
+          <div className="value">{stats.total}</div>
+          <div className="sub">当前账号已入库商品</div>
+        </div>
+        <div className="library-stat">
+          <div className="label">覆盖国家</div>
+          <div className="value">{stats.countries}</div>
+          <div className="sub">跨境目标市场</div>
+        </div>
+        <div className="library-stat">
+          <div className="label">商品分类</div>
+          <div className="value">{stats.cats}</div>
+          <div className="sub">细分赛道数量</div>
+        </div>
+        <div className="library-stat">
+          <div className="label">可上品</div>
+          <div className="value">{stats.suppliable}</div>
+          <div className="sub">已匹配 1688 货源</div>
+        </div>
+      </div>
       <div className="library-filters">
         <div className="library-filter-row">
           <b>国家：</b>
@@ -2429,7 +2462,9 @@ function LibraryPage({
             <span>{filtered.length} 个商品</span>
           </div>
           <div className="library-grid">
-            {filtered.map((item) => (
+            {filtered.map((item, index) => {
+              const rank = index + 1;
+              return (
               <article
                 key={String(pid(item))}
                 className={
@@ -2445,8 +2480,17 @@ function LibraryPage({
                   ) : (
                     <div className="image-empty">暂无图片</div>
                   )}
+                  <span className={`card-index${rank <= 3 ? ` top${rank === 1 ? "" : rank}` : ""}`}>{rank}</span>
                 </div>
                 <h3>{title(item)}</h3>
+                <div className="card-tags">
+                  <span className="card-chip">{productSourceLabel(item)}</span>
+                  {supplierUrl(item) ? (
+                    <span className="supply-badge ok">有货源</span>
+                  ) : (
+                    <span className="supply-badge no">无货源</span>
+                  )}
+                </div>
                 <div className="library-card-meta">
                   <strong>{money(item)}</strong>
                   <span>
@@ -2471,7 +2515,7 @@ function LibraryPage({
                   {supplierUrl(item) ? "加入上品" : "无货源链接"}
                 </button>
               </article>
-            ))}
+            );})}`
           </div>
           {!filtered.length && (
             <div className="empty-state">
@@ -6155,6 +6199,12 @@ function Products3Content({
       (item) => item.code === String(value || "").toUpperCase(),
     )?.name || value || "未标注";
   const regionLabel = lookupRegionName;
+  const maxSales = Math.max(
+    1,
+    ...rows.map((r) =>
+      Number(r.sales_count ?? r.supplier_sales_count ?? 0),
+    ),
+  );
   if (page === "favorites")
     return (
       <section className="favorites-page">
@@ -6288,9 +6338,12 @@ function Products3Content({
           </div>
         </div>
         <div className="product-grid">
-          {rows.map((p) => {
+          {rows.map((p, index) => {
             const key = String(pid(p));
             const hasDerived = Number(p.derived_count || 0) > 0;
+            const rank = index + 1;
+            const sales = Number(p.sales_count ?? p.supplier_sales_count ?? 0);
+            const heat = Math.max(6, Math.round((sales / maxSales) * 100));
             return (
               <article
                 className={
@@ -6307,16 +6360,32 @@ function Products3Content({
                   ) : (
                     <div className="image-empty">暂无图片</div>
                   )}
+                  <span className={`card-index${rank <= 3 ? ` top${rank === 1 ? "" : rank}` : ""}`}>{rank}</span>
                 </div>
                 <h3>{title(p)}</h3>
+                <div className="card-tags">
+                  <span className="card-chip">{productSourceLabel(p)}</span>
+                  {supplierUrl(p) ? (
+                    <span className="supply-badge ok">有货源</span>
+                  ) : (
+                    <span className="supply-badge no">无货源</span>
+                  )}
+                </div>
                 <div className="product-meta">
                   <strong>{money(p)}</strong>
                   <span>
                     销量{" "}
-                    {Number(
-                      p.sales_count ?? p.supplier_sales_count ?? 0,
-                    ).toLocaleString()}
+                    {sales.toLocaleString()}
                   </span>
+                </div>
+                <div className="rank-heat">
+                  <div className="rank-heat-track">
+                    <div className="rank-heat-fill" style={{ width: `${heat}%` }} />
+                  </div>
+                  <div className="rank-heat-label">
+                    <span>热度</span>
+                    <span>销量 {sales.toLocaleString()}</span>
+                  </div>
                 </div>
                 <div className="product-actions">
                   <button
@@ -6581,6 +6650,12 @@ function Products3ContentFixed({
     FIXED_COUNTRIES.find(
       (item) => item.code === String(selected?.region || "").toUpperCase(),
     )?.name || selected?.region || "未标注";
+  const maxSales = Math.max(
+    1,
+    ...rows.map((r) =>
+      Number(r.sales_count ?? r.supplier_sales_count ?? 0),
+    ),
+  );
   async function viewDerived(product: Product) {
     setDerivedLoading(true);
     setError("");
@@ -6681,10 +6756,13 @@ function Products3ContentFixed({
             </div>
           </div>
           <div className="product-grid">
-            {rows.map((p) => {
+            {rows.map((p, index) => {
               const key = String(pid(p));
               const hasDerived =
                 derivedReady[key] ?? Number(p.derived_count || 0) > 0;
+              const rank = index + 1;
+              const sales = Number(p.sales_count ?? p.supplier_sales_count ?? 0);
+              const heat = Math.max(6, Math.round((sales / maxSales) * 100));
               return (
                 <article
                   className={
