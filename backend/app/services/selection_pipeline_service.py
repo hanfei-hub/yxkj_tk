@@ -19,6 +19,7 @@ from app.models.entities import (
     SelectionPipelineKeyword,
     SelectionPipelineTask,
     SelectionRestrictionRule,
+    UserSearchRecommendation,
 )
 from app.services.ai_model_service import MODEL_TYPE_GENERAL, ModelCallError, chat_completion, extract_json_object
 from app.services.echotik_service import EchoTikError, get_product_details, search_by_image
@@ -672,6 +673,116 @@ def _run_restriction_check(db: Session, products: list[SelectionDidadogProduct])
             product.restriction_status = "clear"
 
 
+def _auto_add_final_products_to_library(
+    db: Session,
+    task: SelectionPipelineTask,
+    report_analysis: dict[str, Any],
+) -> None:
+    """智能选品任务成功后，自动把最终商品写入用户选品库（带 task_id 去重）。"""
+    user_id = int(task.user_id or 0)
+    if not user_id:
+        return
+
+    final_products = list(db.scalars(
+        select(SelectionDidadogProduct)
+        .where(
+            SelectionDidadogProduct.pipeline_task_id == task.id,
+            SelectionDidadogProduct.selection_status == "final",
+        )
+    ).all())
+    if not final_products:
+        return
+
+    entry_ids = {p.image_search_entry_id for p in final_products if p.image_search_entry_id}
+    entries = list(db.scalars(
+        select(SelectionImageSearchEntry)
+        .where(SelectionImageSearchEntry.id.in_(entry_ids))
+    ).all()) if entry_ids else []
+    entry_map = {e.id: e for e in entries}
+    candidate_ids = {e.seed_candidate_id for e in entries if e.seed_candidate_id}
+    candidates = list(db.scalars(
+        select(Selection1688Candidate)
+        .where(Selection1688Candidate.id.in_(candidate_ids))
+    ).all()) if candidate_ids else []
+    candidate_map = {c.id: c for c in candidates}
+
+    tier_labels = {
+        "hot": "爆款",
+        "regular": "常规",
+        "new": "新品",
+        "quirky": "奇特",
+        "highlight": "亮点",
+    }
+
+    existing_keys: set[tuple[int, str]] = set()
+    for p in final_products:
+        title = str(p.title or "").strip()
+        if not title:
+            continue
+        if (task.id, title) in existing_keys:
+            continue
+        existing = db.scalar(
+            select(UserSearchRecommendation).where(
+                UserSearchRecommendation.user_id == user_id,
+                UserSearchRecommendation.task_id == task.id,
+                UserSearchRecommendation.title == title,
+            )
+        )
+        if existing:
+            existing_keys.add((task.id, title))
+            continue
+
+        entry = entry_map.get(p.image_search_entry_id)
+        candidate = candidate_map.get(entry.seed_candidate_id) if entry else None
+        meta: dict[str, Any]
+        try:
+            meta = json.loads(p.selection_meta or "{}")
+        except (TypeError, ValueError):
+            meta = {}
+        tier = str(meta.get("tier") or "regular")
+        reason = str(meta.get("reason") or "").strip()
+        tier_label = tier_labels.get(tier, "精选")
+
+        report_payload = {
+            "tier": tier,
+            "tier_label": tier_label,
+            "selection_reason": reason,
+            "_library_region": "JP",
+            "_library_currency": "JPY",
+            "_library_category": str(p.category or ""),
+            "didadog_product_id": str(p.didadog_product_id or ""),
+            "pipeline_report_summary": report_analysis.get("executive_summary") or "",
+        }
+
+        item = UserSearchRecommendation(
+            user_id=user_id,
+            task_id=task.id,
+            search_query=str(task.input_message or "智能选品")[:255],
+            source_type="ai_search",
+            title=title,
+            image_url=str(p.image_url or ""),
+            price=float(p.price or 0),
+            region="JP",
+            currency="JPY",
+            sales_count=int(p.sales_count or 0),
+            reason_summary=f"来自 AI 智能选品：{tier_label}款。{reason}"[:500],
+            analysis_report=json.dumps(report_payload, ensure_ascii=False),
+            supplier_product_id=str(candidate.external_product_id or "") if candidate else "",
+            supplier_title=str(candidate.title or "") if candidate else "",
+            supplier_image_url=str(candidate.image_url or "") if candidate else "",
+            supplier_price=float(candidate.price or 0) if candidate else None,
+            supplier_sales_count=int(candidate.sales_count or 0) if candidate else 0,
+            supplier_shop_name=str(candidate.shop_name or "") if candidate else "",
+            supplier_source_url=str(candidate.source_url or "") if candidate else "",
+            sort_order=0,
+            created_at=datetime.utcnow(),
+        )
+        db.add(item)
+        existing_keys.add((task.id, title))
+
+    db.commit()
+
+
 def run_selection_pipeline(task_id: int) -> None:
     with SessionLocal() as db:
         task = db.get(SelectionPipelineTask, task_id)
@@ -1032,5 +1143,10 @@ def run_selection_pipeline(task_id: int) -> None:
             task.finished_at = datetime.utcnow()
             task.result_snapshot = json.dumps({"targets": _pipeline_targets(keyword_limit, supplier_page_size, seed_per_keyword), "test_mode": test_mode, "message": "已完成选品流程和市场报告分析", "report_analysis": report_analysis}, ensure_ascii=False)
             db.commit()
+            try:
+                _auto_add_final_products_to_library(db, task, report_analysis)
+            except Exception as exc:
+                # 自动入库失败不应影响任务成功状态，只记录日志
+                print(f"[selection_pipeline] 自动入库失败 task={task.id}: {exc}")
         except Exception as exc:
             _write_error(db, task, str(exc))

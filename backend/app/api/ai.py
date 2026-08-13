@@ -148,6 +148,21 @@ def add_library_product(
     title = str(product.get("title") or product.get("derived_title") or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="商品名称不能为空")
+    raw_task_id = product.get("task_id")
+    try:
+        task_id = int(raw_task_id) if raw_task_id not in (None, "", 0) else None
+    except (TypeError, ValueError):
+        task_id = None
+    if task_id:
+        existing = db.scalar(
+            select(UserSearchRecommendation).where(
+                UserSearchRecommendation.user_id == int(user.get("id") or 0),
+                UserSearchRecommendation.task_id == task_id,
+                UserSearchRecommendation.title == title,
+            )
+        )
+        if existing:
+            return user_search_result_to_dict(existing)
     report = product.get("analysis_report") or {}
     if isinstance(report, str):
         try:
@@ -174,7 +189,7 @@ def add_library_product(
     report["_library_category"] = str(product.get("category") or "")
     item = UserSearchRecommendation(
         user_id=int(user.get("id") or 0),
-        task_id=None,
+        task_id=task_id,
         search_query=search_query,
         source_type=source_type,
         title=title,

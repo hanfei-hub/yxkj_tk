@@ -189,13 +189,6 @@ const menus: Array<{
     group: "选品工作台",
   },
   {
-    id: "favorites",
-    label: "采集箱",
-    icon: "favorites",
-    roles: ["admin", "student"],
-    group: "选品工作台",
-  },
-  {
     id: "dashboard",
     label: "数据看板",
     icon: "dashboard",
@@ -2323,10 +2316,10 @@ async function downloadPipelineReport(data: PipelineReportData) {
 
 function LibraryPage({
   rows,
-  onNotice,
+  onPublish,
 }: {
   rows: Product[];
-  onNotice: (message: string) => void;
+  onPublish: (product: Product) => void;
 }) {
   const [region, setRegion] = useState("ALL");
   const [category, setCategory] = useState("全部");
@@ -2334,18 +2327,8 @@ function LibraryPage({
   const [regions, setRegions] = useState<
     Array<{ region_name?: string; region_code?: string }>
   >([]);
-  const [reportTab, setReportTab] = useState<"first" | "last">("first");
-  const [favorites, setFavorites] = useState<Product[]>([]);
-  const dimensions = [
-    "使用场景",
-    "商品周期性",
-    "目标群体",
-    "短视频流量种草适配能力",
-    "日本市场偏好",
-    "是否属于新奇特商品",
-    "复购属性",
-    "竞品属性",
-  ];
+  const [report, setReport] = useState<PipelineReportData | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
   const categories = FIXED_CATEGORIES;
 
   useEffect(() => {
@@ -2354,10 +2337,6 @@ function LibraryPage({
       .getRegions()
       .then(setRegions)
       .catch(() => setRegions([]));
-    service
-      .getFavorites()
-      .then((items) => setFavorites(Array.isArray(items) ? items : []))
-      .catch(() => setFavorites([]));
   }, [rows]);
   const filtered = useMemo(
     () =>
@@ -2380,24 +2359,29 @@ function LibraryPage({
     if (selected && !filtered.some((item) => pid(item) === pid(selected)))
       setSelected(filtered[0] || null);
   }, [filtered]);
-  const visibleDimensions =
-    reportTab === "first" ? dimensions.slice(0, 6) : dimensions.slice(6);
-  const saved =
-    selected &&
-    favorites.some(
-      (item) =>
-        title(item) === title(selected) && picture(item) === picture(selected),
-    );
-  async function collect() {
-    if (!selected) return;
-    try {
-      const response = await service.collect(selected);
-      setFavorites((list) => [response?.data || selected, ...list]);
-      onNotice("已加入采集箱");
-    } catch (e) {
-      onNotice(e instanceof Error ? e.message : "加入采集箱失败");
+  useEffect(() => {
+    const tid = (selected as Record<string, unknown> | null)?.task_id;
+    if (!tid) {
+      setReport(null);
+      return;
     }
-  }
+    let cancelled = false;
+    setReportLoading(true);
+    service
+      .getSelectionPipelineTask(Number(tid))
+      .then((data) => {
+        if (!cancelled) setReport(data as PipelineReportData);
+      })
+      .catch(() => {
+        if (!cancelled) setReport(null);
+      })
+      .finally(() => {
+        if (!cancelled) setReportLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected]);
   return (
     <section className="library-page">
       <div className="library-heading">
@@ -2473,14 +2457,18 @@ function LibraryPage({
                   </span>
                 </div>
                 <button
+                  disabled={!supplierUrl(item)}
+                  title={
+                    supplierUrl(item)
+                      ? ""
+                      : "该商品暂无 1688 货源链接，无法加入上品"
+                  }
                   onClick={(e) => {
                     e.stopPropagation();
-                    collect();
+                    onPublish(item);
                   }}
                 >
-                  {saved && selected && pid(selected) === pid(item)
-                    ? "已在采集箱"
-                    : "加入采集箱"}
+                  {supplierUrl(item) ? "加入上品" : "无货源链接"}
                 </button>
               </article>
             ))}
@@ -2492,76 +2480,62 @@ function LibraryPage({
           )}
         </section>
         <aside className="library-report">
-          <h2>选品分析报告</h2>
+          <div className="library-report-head">
+            <h2>选品分析报告</h2>
+            {report && (
+              <button
+                className="secondary small"
+                onClick={() => downloadPipelineReport(report)}
+              >
+                ⇩ 导出报告
+              </button>
+            )}
+          </div>
           {selected ? (
-            <>
-              <div className="smart-report-product">
-                {picture(selected) ? (
-                  <img src={picture(selected)} />
-                ) : (
-                  <div className="image-empty">暂无图片</div>
-                )}
-                <div>
-                  <h3>{title(selected)}</h3>
-                  <strong>{money(selected)}</strong>
-                  <p>
-                    销量{" "}
-                    {Number(
-                      selected.sales_count ??
-                        selected.supplier_sales_count ??
-                        0,
-                    ).toLocaleString()}
-                  </p>
-                  <p>
-                    AI 参考分{" "}
-                    {Number(
-                      selected.ai_score ?? selected.weighted_score ?? 0,
-                    ).toFixed(1)}
-                  </p>
-                </div>
-              </div>
-              <div className="smart-report-tabs">
-                <button
-                  className={reportTab === "first" ? "active" : ""}
-                  onClick={() => setReportTab("first")}
-                >
-                  选品分析 1-6
-                </button>
-                <button
-                  className={reportTab === "last" ? "active" : ""}
-                  onClick={() => setReportTab("last")}
-                >
-                  选品分析 7-8
-                </button>
-              </div>
-              <div className="smart-dimensions">
-                {visibleDimensions.map((name, index) => (
-                  <div key={name}>
-                    <span className="smart-dimension-icon">{index + 1}</span>
-                    <div>
-                      <b>{name}</b>
-                      <small>
-                        {reportHas(selected, name)
-                          ? "已生成分析报告"
-                          : "暂无分析内容"}
-                      </small>
-                    </div>
-                    <strong>{reportHas(selected, name) ? "参考" : "-"}</strong>
+            reportLoading ? (
+              <div className="empty-state">正在加载选品分析报告…</div>
+            ) : report ? (
+              <SelectionReportBody data={report} />
+            ) : (
+              <>
+                <div className="smart-report-product">
+                  {picture(selected) ? (
+                    <img src={picture(selected)} />
+                  ) : (
+                    <div className="image-empty">暂无图片</div>
+                  )}
+                  <div>
+                    <h3>{title(selected)}</h3>
+                    <strong>{money(selected)}</strong>
+                    <p>
+                      销量{" "}
+                      {Number(
+                        selected.sales_count ??
+                          selected.supplier_sales_count ??
+                          0,
+                      ).toLocaleString()}
+                    </p>
                   </div>
-                ))}
-              </div>
-              <div className="smart-report-actions">
-                <button className="secondary" onClick={collect}>
-                  {saved ? "★ 已在采集箱" : "☆ 加入采集箱"}
-                </button>
-                <button
-                  className="primary"
-                  onClick={() => downloadReport(selected)}
-                >
-                  ⇩ 导出报告
-                </button>
-              </div>
-            </>
+                </div>
+                <div className="empty-state warn">
+                  该商品暂无智能选品分析报告（仅展示基础信息）。
+                </div>
+                <div className="smart-report-actions">
+                  <button
+                    className="primary"
+                    disabled={!supplierUrl(selected)}
+                    title={
+                      supplierUrl(selected)
+                        ? ""
+                        : "该商品暂无 1688 货源链接，无法加入上品"
+                    }
+                    onClick={() => onPublish(selected)}
+                  >
+                    加入上品
+                  </button>
+                </div>
+              </>
+            )
           ) : (
             <div className="empty-state">选择商品查看分析</div>
           )}
@@ -3479,16 +3453,10 @@ const TIER_LABEL: Record<string, string> = {
   highlight: "亮点",
 };
 
-function SelectionReport({
+function SelectionReportBody({
   data,
-  onClose,
-  onAddLibrary,
-  libraryAdded,
 }: {
   data: PipelineReportData;
-  onClose: () => void;
-  onAddLibrary: (item: Record<string, unknown>, key: string) => void;
-  libraryAdded: Record<string, boolean>;
 }) {
   const finals = data.final_items || [];
   const candidates = data.candidate_items || [];
@@ -3505,25 +3473,8 @@ function SelectionReport({
     return acc;
   }, {});
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
-    <div className="report-modal">
-      <div className="report-modal-backdrop" onClick={onClose} />
-      <div className="report-modal-content">
-        <div className="report-modal-header">
-          <h2>智能选品市场机会报告</h2>
-          <button className="report-modal-close" onClick={onClose} aria-label="关闭">
-            ×
-          </button>
-        </div>
-        <div className="report-modal-body">
+    <>
           <div className="report-cover">
             <span className="report-badge">已生成</span>
             <h3>智能选品市场机会报告</h3>
@@ -3631,17 +3582,7 @@ function SelectionReport({
                             查看货源 →
                           </span>
                         </div>
-                        <button
-                          className="report-library-button"
-                          disabled={libraryAdded[key]}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            void onAddLibrary(it, key);
-                          }}
-                        >
-                          {libraryAdded[key] ? "已加入选品库" : "加入选品库"}
-                        </button>
+                        <span className="report-library-badge">已自动加入选品库</span>
                       </a>
                     );
                   })}
@@ -3715,6 +3656,37 @@ function SelectionReport({
               <p className="report-conclusion">{report.conclusion}</p>
             ) : null}
           </div>
+        </>
+  );
+}
+
+function SelectionReport({
+  data,
+  onClose,
+}: {
+  data: PipelineReportData;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="report-modal">
+      <div className="report-modal-backdrop" onClick={onClose} />
+      <div className="report-modal-content">
+        <div className="report-modal-header">
+          <h2>智能选品市场机会报告</h2>
+          <button className="report-modal-close" onClick={onClose} aria-label="关闭">
+            ×
+          </button>
+        </div>
+        <div className="report-modal-body">
+          <SelectionReportBody data={data} />
         </div>
       </div>
     </div>
@@ -4137,11 +4109,9 @@ function SelectionStage(props: {
 function SmartSelection({
   user,
   onNotice,
-  onAddLibrary,
 }: {
   user: User;
   onNotice: (message: string) => void;
-  onAddLibrary: (p: Product) => Promise<void>;
 }) {
   const [message, setMessage] = useState("");
   const [taskId, setTaskId] = useState<number | null>(null);
@@ -4163,7 +4133,6 @@ function SmartSelection({
   const [counters, setCounters] = useState<Record<string, number>>({});
   const [lastTaskResult, setLastTaskResult] =
     useState<PipelineReportData | null>(null);
-  const [libraryAdded, setLibraryAdded] = useState<Record<string, boolean>>({});
   const [reportOpen, setReportOpen] = useState(false);
   const [logs, setLogs] = useState<
     Array<{ time: string; step: number; message: string }>
@@ -4338,14 +4307,6 @@ function SmartSelection({
     }
   }, [lastTaskResult, onNotice]);
 
-  const handleAddLibrary = useCallback(
-    async (item: Record<string, unknown>, itemKey: string) => {
-      await onAddLibrary(item as Product);
-      setLibraryAdded((current) => ({ ...current, [itemKey]: true }));
-    },
-    [onAddLibrary],
-  );
-
   return (
     <section className="smart-selection">
       <div className="smart-heading">
@@ -4442,16 +4403,21 @@ function SmartSelection({
           </div>
         </div>
         <aside className="smart-panel-right task-board-panel">
-          <div className="task-board-header">
+            <div className="task-board-header">
             <h2>任务结果看板</h2>
-            {status === "success" && lastTaskResult && (
-              <button
-                className="primary small"
-                onClick={() => setReportOpen(true)}
-              >
-                查看完整市场机会报告
-              </button>
-            )}
+            <div className="task-board-header-actions">
+              {status === "success" && lastTaskResult && (
+                <>
+                  <button
+                    className="primary small"
+                    onClick={() => setReportOpen(true)}
+                  >
+                    查看完整市场机会报告
+                  </button>
+                  <span className="task-board-auto-hint">已自动加入选品库</span>
+                </>
+              )}
+            </div>
           </div>
           <div className="task-board-logs">
             <h4>实时动态</h4>
@@ -4490,8 +4456,6 @@ function SmartSelection({
         <SelectionReport
           data={lastTaskResult}
           onClose={() => setReportOpen(false)}
-          onAddLibrary={handleAddLibrary}
-          libraryAdded={libraryAdded}
         />
       )}
     </section>
@@ -6997,7 +6961,7 @@ function App2Clean() {
     window.setTimeout(() => setNotice(""), 3000);
   };
   const load = async (next: Page) => {
-    if (!["library", "rank", "favorites"].includes(next)) return;
+    if (!["library", "rank"].includes(next)) return;
     try {
       const data =
         next === "library"
@@ -7169,10 +7133,11 @@ function App2Clean() {
             <SmartSelection
               user={user}
               onNotice={flash}
-              onAddLibrary={addToLibrary}
             />
           )}
-          {page === "library" && <LibraryPage rows={rows} onNotice={flash} />}
+          {page === "library" && (
+            <LibraryPage rows={rows} onPublish={publishProduct} />
+          )}
           {["rank", "favorites"].includes(page) && (
             <Products3
               page={page as "rank" | "favorites"}

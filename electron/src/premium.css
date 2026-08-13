@@ -728,6 +728,10 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
 }
 .report-library-button:hover:not(:disabled) { background: var(--accent-soft); }
 .report-library-button:disabled { color: var(--muted); border-color: var(--line); }
+.report-library-badge {
+  grid-column: 1 / -1; padding: 5px; border: 1px solid var(--line); background: var(--surface-2);
+  color: var(--text-2); border-radius: 6px; font-size: 10px; font-weight: 600; text-align: center;
+}
 .report-risk-list { list-style: decimal inside; margin: 0 0 10px; padding: 0; font-size: 11px; color: var(--text-2); line-height: 1.6; }
 .report-risk-list li { padding: 3px 0; }
 .report-strategy { font-size: 11px; color: var(--text-2); line-height: 1.5; margin: 0 0 6px; }
@@ -783,7 +787,7 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
   display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-top: 4px;
 }
 .library-workspace {
-  display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start;
+  display: grid; grid-template-columns: minmax(0, 1fr) 348px; gap: 16px; align-items: start;
 }
 .library-report {
   position: sticky; top: 88px; max-height: calc(100vh - 110px); overflow-y: auto;
@@ -1349,4 +1353,197 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
 }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
+
+/* ============================================================
+   选品库 / 新品榜单 / 采集箱 — 现代化重做（统一覆盖共享类）
+   ============================================================ */
+
+/* 1. 标题计数徽标 */
+.smart-section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+.smart-section-title h2 { font-size: 14px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+.smart-section-title span,
+.rank-page-heading > span {
+  font-size: 11px; font-weight: 700; color: var(--accent-strong);
+  background: var(--accent-soft); border: 1px solid var(--accent-line);
+  padding: 3px 11px; border-radius: 999px; white-space: nowrap;
+}
+
+/* 2. 筛选区：面板化 + 标签 chip */
+.library-filters, .rank-page-filters, .rank-filters {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-sm);
+  padding: 12px 14px; margin-bottom: 16px;
+}
+.library-filter-row, .rank-filter-row, .rank-filter-line { align-items: center; gap: 6px; }
+.library-filter-row b, .rank-filter-row b, .rank-filter-line b {
+  min-width: 64px; color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+  font-size: 11px; text-align: center;
+}
+.library-filter-row button, .rank-filter-row button, .rank-filter-line button { padding: 5px 12px; font-weight: 600; }
+.library-filter-row button.active, .rank-filter-row button.active, .rank-filter-line button.active {
+  box-shadow: 0 4px 10px rgba(59, 91, 253, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+/* 3. 商品卡片：选中高亮 + 显示分类标签 + 价格销售行对齐 */
+.product.selected, .library-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-md);
+}
+.product .product-tag { display: inline-flex; align-self: flex-start; margin: 6px 10px 0; }
+.library-card .library-card-meta, .product .product-meta {
+  flex-direction: row; align-items: baseline; justify-content: space-between; padding-top: 8px;
+}
+.library-card-meta strong, .product-meta strong { font-size: 16px; }
+.library-card-meta b, .product-meta b { font-size: 12.5px; }
+.library-card-meta span, .product-meta span { font-size: 11px; }
+
+/* 4. 采集箱 / 榜单 列表精致化 */
+.rankList, .favorite-list { gap: 8px; }
+.rankList-head, .favorite-list-head {
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-md) var(--r-md) 0 0; padding: 10px 14px;
+}
+.rankList-head span:first-child, .favorite-list-head span:first-child { padding-left: 48px; }
+.rankList-row, .favorite-list-row { padding: 12px 14px; border-radius: var(--r-md); align-items: center; }
+.rankList-row > span, .rankList-row > strong, .favorite-list-row > span, .favorite-list-row > strong { font-size: 12.5px; }
+.rankList-row .category, .favorite-list-row .category,
+.rankList-row .region, .favorite-list-row .region,
+.rankList-row .rankCategory, .favorite-list-row .rankCategory {
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 999px; padding: 3px 10px; font-size: 10.5px; color: var(--text-2); width: fit-content;
+}
+.rankList-row .favorite-thumb, .favorite-list-row .favorite-thumb { width: 44px; height: 44px; border-radius: 10px; }
+
+/* 5. 选品分析报告面板：分段控件 + 维度卡片 */
+.smart-report-tabs { background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 3px; gap: 3px; }
+.smart-report-tabs button { border-radius: 999px; padding: 7px 14px; border-bottom: none; }
+.smart-report-tabs button.active { background: var(--surface); border-bottom-color: transparent; box-shadow: var(--shadow-sm); color: var(--accent-strong); }
+.smart-dimensions { gap: 8px; }
+.smart-dimensions > div { flex-direction: row; align-items: center; gap: 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 11px; }
+.smart-dimensions > div > div b { font-size: 13px; }
+.smart-report-product { background: var(--surface-2); padding: 12px; gap: 12px; }
+.smart-report-product img, .smart-report-product .image-wrap { width: 64px; height: 64px; }
+.library-report { padding: 16px; border-radius: var(--r-xl); top: 92px; max-height: calc(100vh - 116px); }
+.library-report-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.library-report-head h2 { font-size: 14px; font-weight: 700; margin: 0; }
+.library-report-head .secondary.small { padding: 5px 10px; font-size: 11px; border-radius: 7px; }
+.task-board-header-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.task-board-auto-hint { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.empty-state.warn { color: #b8860b; border-color: rgba(184,134,11,0.4); background: rgba(184,134,11,0.08); }
+
+/* 6. 空状态强化 */
+.empty-state { border: 1px dashed var(--line-strong); border-radius: var(--r-lg); background: var(--surface-2); }
+
+/* ===== 按钮样式统一升级（modern refresh）===== */
+.btn, button.primary, button.secondary, button.danger, button.success,
+.library-card > button, .list-action, .smart-report-actions button,
+.product-actions .primary, .product-actions .secondary {
+  font-family: inherit;
+  border-radius: 10px;
+  padding: 9px 16px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: .2px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all .18s cubic-bezier(.2, 0, 0, 1);
+  border: 1px solid transparent;
+}
+
+/* 主操作：渐变 + 高光，悬浮上浮 */
+button.primary, .library-card > button,
+.list-action:first-child, .smart-report-actions .primary,
+.product-actions .primary, .video-actions .primary {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%);
+  color: #fff;
+  border-color: var(--accent-strong);
+  box-shadow: 0 6px 14px rgba(59, 91, 253, 0.22), inset 0 1px 0 rgba(255, 255, 255, .22);
+}
+button.primary:hover:not(:disabled), .library-card > button:hover:not(:disabled),
+.list-action:first-child:hover, .smart-report-actions .primary:hover:not(:disabled),
+.product-actions .primary:hover:not(:disabled), .video-actions .primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.04);
+  box-shadow: 0 10px 22px rgba(59, 91, 253, 0.3), inset 0 1px 0 rgba(255, 255, 255, .22);
+}
+button.primary:active:not(:disabled), .library-card > button:active:not(:disabled),
+.product-actions .primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 3px 8px rgba(59, 91, 253, 0.18);
+}
+
+/* 次操作：柔和描边 ghost */
+button.secondary, .smart-report-actions .secondary,
+.product-actions .secondary {
+  background: var(--surface);
+  color: var(--accent-strong);
+  border-color: var(--accent-line);
+}
+button.secondary:hover:not(:disabled), .smart-report-actions .secondary:hover:not(:disabled),
+.product-actions .secondary:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  transform: translateY(-1px);
+}
+
+/* 禁用态：清晰灰底，不靠透明度 */
+button.primary:disabled, .library-card > button:disabled,
+.list-action:disabled, button.secondary:disabled,
+.product-actions .primary:disabled, .product-actions .secondary:disabled {
+  background: var(--surface-3);
+  color: var(--muted);
+  border-color: var(--line);
+  box-shadow: none;
+  transform: none;
+  filter: none;
+  cursor: not-allowed;
+}
+
+/* 列表操作按钮 */
+.list-action {
+  padding: 7px 14px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text-2);
+}
+.list-action:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+.list-action:first-child {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%);
+  color: #fff;
+  border-color: var(--accent-strong);
+  box-shadow: 0 5px 12px rgba(59, 91, 253, 0.2);
+}
+.list-action:first-child:hover:not(:disabled) {
+  filter: brightness(1.04);
+  transform: translateY(-1px);
+}
+
+/* 筛选 chips：带底纹的胶囊，激活态更立体 */
+.library-filter-row button, .rank-filter-row button, .rank-filter-line button {
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+  font-weight: 600;
+  border-radius: 999px;
+}
+.library-filter-row button:hover, .rank-filter-row button:hover, .rank-filter-line button:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+.library-filter-row button.active, .rank-filter-row button.active, .rank-filter-line button.active {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%);
+  color: #fff;
+  border-color: var(--accent-strong);
+  box-shadow: 0 6px 14px rgba(59, 91, 253, 0.26);
 }
