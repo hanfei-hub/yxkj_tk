@@ -172,6 +172,15 @@ def raise_for_supplier_error(raw: Any) -> None:
         raise Supplier1688Error(f"1688 API 返回错误：{error}{code_text}")
 
 
+def default_search_filter() -> str:
+    """
+    默认 1688 item_search 过滤条件。
+    filtId 含义（按文档顺序）：1=48小时发货, 2=7+天包换, 3=赠运费险, 4=免费赊账
+    activityType 含义：1=包邮, 2=产地货源, 3=伙拼, 4=手机专享价
+    """
+    return "filtId:1,2,3,4;activityType:1;city:浙江;quantityBegin:1"
+
+
 def search_1688_products(db: Session, keyword: str, page: int = 1, page_size: int | None = None) -> dict[str, Any]:
     page_size = page_size or get_setting_int(db, "1688_page_size")
     keyword = keyword.strip()
@@ -192,8 +201,8 @@ def search_1688_products(db: Session, keyword: str, page: int = 1, page_size: in
         payload["sort"] = options["sort"]
     if options.get("cat"):
         payload["cat"] = options["cat"]
-    if options.get("filter"):
-        payload["filter"] = options["filter"]
+    # 配置级 filter 优先级最高；未配置时使用默认筛选（48h发货/7+天包换/运费险/赊账/包邮/浙江/起订量1）
+    payload["filter"] = options.get("filter") or default_search_filter()
     if options.get("result_type"):
         payload["result_type"] = options["result_type"]
     if options.get("lang"):

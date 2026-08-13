@@ -17,6 +17,18 @@ api.interceptors.request.use((config) => {
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err?.response?.status === 404) {
+      const cfg = err.config || {};
+      const method = String(cfg.method || "GET").toUpperCase();
+      const url = cfg.url || "";
+      err.message = `接口未找到 [404]: ${method} ${url}`;
+    }
+    return Promise.reject(err);
+  }
+);
 
 export async function login(username: string, password: string) {
   const { data } = await api.post<{ access_token: string; user?: User }>("/api/auth/login", { username, password });

@@ -9,6 +9,7 @@ import "./titlebar.css";
 import "./admin.css";
 import "./teacher.css";
 import App2 from "./app2";
+import "./premium.css";
 
 type Page = "studio" | "library" | "rank" | "favorites" | "teacher" | "dashboard" | "profile" | "store" | "video" | "admin";
 type Attribute = { id: number; name?: string; label?: string; enabled?: boolean };

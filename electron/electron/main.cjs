@@ -5,6 +5,13 @@ const fs = require("node:fs/promises");
 // 直接运行 Electron 二进制时也应加载内置 dist；只有 npm run dev 才使用 Vite 地址。
 const isDev = !app.isPackaged && process.env.ELECTRON_DEV === "1";
 
+function entryTarget() {
+  if (isDev) {
+    return "http://127.0.0.1:5173";
+  }
+  return path.join(__dirname, "../dist/index.html");
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1540,
@@ -26,10 +33,11 @@ function createWindow() {
     shell.openExternal(url);
     return { action: "deny" };
   });
+  const target = entryTarget();
   if (isDev) {
-    win.loadURL("http://127.0.0.1:5173");
+    win.loadURL(target);
   } else {
-    win.loadFile(path.join(__dirname, "../dist/index.html"));
+    win.loadFile(target);
   }
 }
 

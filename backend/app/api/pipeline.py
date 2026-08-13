@@ -79,6 +79,10 @@ def _linked_supplier_items(db: Session, task_id: int, status: str) -> list[dict]
         if not supplier or supplier.id in seen:
             continue
         seen.add(supplier.id)
+        try:
+            meta = json.loads(product.selection_meta or "{}")
+        except (TypeError, ValueError):
+            meta = {}
         result.append({
             "id": supplier.external_product_id or supplier.id,
             "title": supplier.title,
@@ -90,6 +94,10 @@ def _linked_supplier_items(db: Session, task_id: int, status: str) -> list[dict]
             "source_url": supplier.source_url,
             "selection_status": status,
             "eliminated": False,
+            "tier": meta.get("tier", "regular"),
+            "novelty_score": meta.get("novelty"),
+            "content_score": meta.get("content"),
+            "highlight_reason": meta.get("reason", ""),
         })
     return result
 
@@ -259,7 +267,7 @@ def get_selection_pipeline_task(
         ] + [
             {
                 "id": f"echotik-{item.id}",
-                "source": "echotik",
+                "source": "supply_fallback" if str(item.didadog_product_id or "").startswith("1688-") else "echotik",
                 "title": item.title or item.didadog_product_id,
                 "image_url": item.image_url,
                 "price": item.price,
