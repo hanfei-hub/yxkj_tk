@@ -1990,8 +1990,9 @@ function VideoPage({
 }
 
 function WindowTitlebar() {
+  const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
   return (
-    <div className="window-titlebar">
+    <div className={`window-titlebar${isMac ? " mac" : ""}`}>
       <div className="window-brand">
         <span className="window-brand-mark">TK</span>
         <strong>益行跨境 AI 平台</strong>
@@ -7115,7 +7116,7 @@ function App2Clean() {
         <aside className="sidebar">
           <div className="brand">
             <div className="brand-mark">TK</div>
-            <div>
+            <div className="brand-text">
               <b>益行跨境 AI 平台</b>
               <span>TikTok 日本选品专家</span>
             </div>
@@ -7136,7 +7137,7 @@ function App2Clean() {
                     onClick={() => setPage(item.id)}
                   >
                     <Icon name={item.icon} />
-                    {item.label}
+                    <span className="nav-label">{item.label}</span>
                   </button>
                 ))}
               </div>
@@ -7159,7 +7160,7 @@ function App2Clean() {
                 setUser(null);
               }}
             >
-              退出登录
+              <span className="logout-label">退出登录</span>
             </button>
           </div>
         </aside>
