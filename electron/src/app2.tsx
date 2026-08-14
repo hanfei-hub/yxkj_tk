@@ -6476,9 +6476,16 @@ function DerivationPipelineModal({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="derived-pipeline-head">
-          <div>
-            <h2>衍生品智能任务</h2>
-            <p>原商品：{title(source)}</p>
+          <div className="head-main">
+            {picture(source) ? (
+              <img src={picture(source)} loading="lazy" />
+            ) : (
+              <div className="image-empty" style={{ width: 52, height: 52, borderRadius: 10, display: "grid", placeItems: "center", fontSize: 11 }}>暂无图片</div>
+            )}
+            <div className="head-text">
+              <h2>衍生品智能任务</h2>
+              <p title={title(source)}>原商品：{title(source)}</p>
+            </div>
           </div>
           <div className="derived-pipeline-actions">
             <button
@@ -6564,22 +6571,21 @@ function DerivationPipelineModal({
                     <span>{group.items.length}/10 个商品</span>
                   </div>
                   <div className="task-board-items">
-                    {group.items.map((item) => (
+                    {group.items.map((item, idx) => (
                       <article
                         className={`task-board-item ${item.eliminated ? "eliminated" : ""}`}
                         key={String(item.id)}
+                        title={String(item.title || "未命名商品")}
                       >
                         <div className="task-board-image">
+                          <span className="derived-rank" style={{ position: "absolute", top: 4, left: 4, width: 18, height: 18, fontSize: 9, borderRadius: 5 }}>{idx + 1}</span>
                           {item.image_url ? (
-                            <img src={String(item.image_url)} />
+                            <img src={String(item.image_url)} loading="lazy" />
                           ) : (
                             <span>暂无图片</span>
                           )}
                         </div>
                         <b>{String(item.title || "未命名商品")}</b>
-                        <small>
-                          {String(item.shop_name || "优选供应商")}
-                        </small>
                         <div>
                           <strong>¥{Number(item.price || 0).toFixed(2)}</strong>
                           <span>
@@ -6827,62 +6833,98 @@ function Products3ContentFixed({
             onClick={(event) => event.stopPropagation()}
           >
             <button
-              className="modal-close"
+              className="derived-modal-close"
               onClick={() => setDerivedSource(null)}
             >
               ×
             </button>
-            <h2>查看衍生品</h2>
-            <p className="derived-source-title">
-              原商品：{title(derivedSource)}
-            </p>
-            {derivedLoading ? (
-              <div className="empty-state">正在读取衍生品...</div>
-            ) : error ? (
-              <div className="empty-state">{error}</div>
-            ) : !derivedRows.length ? (
-              <div className="empty-state">暂无衍生品</div>
-            ) : (
-              <div className="derived-modal-grid">
-                {derivedRows.map((item) => {
-                  const itemKey = String(pid(item));
-                  return (
-                    <article className="derived-modal-card" key={itemKey}>
-                      <div className="derived-modal-image">
-                        {picture(item) ? (
-                          <img src={picture(item)} />
-                        ) : (
-                          <div className="image-empty">暂无图片</div>
-                        )}
-                      </div>
-                      <h3>{title(item)}</h3>
-                      <div>
-                        <strong>{money(item)}</strong>
-                        <span>
-                          销量{" "}
-                          {Number(
-                            item.sales_count ?? item.supplier_sales_count ?? 0,
-                          ).toLocaleString()}
-                        </span>
-                      </div>
-                      <button
-                        className="secondary derived-library-button"
-                        disabled={derivedAdded[itemKey]}
-                        onClick={async () => {
-                          await onAddLibrary(item);
-                          setDerivedAdded((current) => ({
-                            ...current,
-                            [itemKey]: true,
-                          }));
-                        }}
-                      >
-                        {derivedAdded[itemKey] ? "已加入选品库" : "加入选品库"}
-                      </button>
-                    </article>
-                  );
-                })}
+            <div className="derived-modal-head">
+              {picture(derivedSource) ? (
+                <img src={picture(derivedSource)} loading="lazy" />
+              ) : (
+                <div className="derived-modal-image image-empty" style={{ width: 52, height: 52, borderRadius: 10 }}>暂无图片</div>
+              )}
+              <div className="head-text">
+                <span className="source-tag">原商品</span>
+                <h2>查看衍生品</h2>
+                <p className="source-title" title={title(derivedSource)}>
+                  {title(derivedSource)}
+                </p>
               </div>
-            )}
+            </div>
+            <div className="derived-modal-body">
+              {derivedLoading ? (
+                <div className="derived-empty">
+                  <span className="empty-icon">⟳</span>
+                  <b>正在读取衍生品</b>
+                  <span>请稍候，正在加载关联商品数据</span>
+                </div>
+              ) : error ? (
+                <div className="derived-empty">
+                  <span className="empty-icon">!</span>
+                  <b>读取失败</b>
+                  <span>{error}</span>
+                </div>
+              ) : !derivedRows.length ? (
+                <div className="derived-empty">
+                  <span className="empty-icon">✦</span>
+                  <b>暂无衍生品</b>
+                  <span>该商品尚未生成衍生方向，可点击「可以衍生」智能生成</span>
+                </div>
+              ) : (
+                <div className="derived-modal-grid">
+                  {derivedRows.map((item, index) => {
+                    const itemKey = String(pid(item));
+                    const sales = Number(
+                      item.sales_count ?? item.supplier_sales_count ?? 0,
+                    );
+                    const maxSales = Math.max(
+                      1,
+                      ...derivedRows.map((r) =>
+                        Number(r.sales_count ?? r.supplier_sales_count ?? 0),
+                      ),
+                    );
+                    const heat = Math.round((sales / maxSales) * 100);
+                    return (
+                      <article className="derived-modal-card" key={itemKey}>
+                        <span className="derived-rank">{index + 1}</span>
+                        <div className="derived-modal-image">
+                          {picture(item) ? (
+                            <img src={picture(item)} loading="lazy" />
+                          ) : (
+                            <div className="image-empty">暂无图片</div>
+                          )}
+                        </div>
+                        <div className="derived-card-body">
+                          <h3 title={title(item)}>{title(item)}</h3>
+                          <div className="derived-meta">
+                            <strong>{money(item)}</strong>
+                            <span>销量 {sales.toLocaleString()}</span>
+                          </div>
+                          <div className="derived-heat">
+                            <i><em style={{ width: `${heat}%` }} /></i>
+                            <span>热度 {heat}%</span>
+                          </div>
+                          <button
+                            className="derived-library-button"
+                            disabled={derivedAdded[itemKey]}
+                            onClick={async () => {
+                              await onAddLibrary(item);
+                              setDerivedAdded((current) => ({
+                                ...current,
+                                [itemKey]: true,
+                              }));
+                            }}
+                          >
+                            {derivedAdded[itemKey] ? "已加入选品库" : "加入选品库"}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </section>
         </div>
       )}
