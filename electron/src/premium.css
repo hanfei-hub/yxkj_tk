@@ -968,24 +968,53 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
   padding-left: 11px; border-left: 3px solid var(--accent-stream); padding-bottom: 0;
 }
 
-/* 选品库概览指标条 */
+/* 选品库标题：宋体衬线，强化国潮数据台气质 */
+.library-page .library-heading { margin-bottom: 18px; }
+.library-page .library-heading h2 {
+  font-family: "Songti SC", "STSong", "Source Han Serif SC", "SimSun", "Noto Serif SC", serif;
+  font-size: 23px; font-weight: 700; letter-spacing: .6px; padding-bottom: 0;
+}
+.library-page .library-heading p { color: var(--text-2); font-size: 12.5px; margin: 7px 0 0; }
+
+/* 选品库商品卡片：文字对齐、信息条留白、选中高亮 */
+.library-card h3 { padding: 0 11px; }
+.library-card .card-tags { padding: 0 11px; margin-top: 9px; }
+.library-card .library-card-meta { padding: 0 11px; }
+.library-card .library-card-heat { padding: 0 11px; margin-top: 8px; }
+.library-card > button { margin: auto 11px 12px; width: calc(100% - 22px); }
+
+/* 选品分析报告面板头部：朱砂竖条 + 紧凑导出按钮 */
+.library-report-head { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.library-report-head h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; }
+.library-report-head h2::before { content: ""; width: 4px; height: 15px; border-radius: 3px; background: var(--accent-stream); display: inline-block; }
+.library-report-head .secondary.small { padding: 6px 11px; font-size: 11px; border-radius: 8px; }
+
+/* 选品库概览指标条（带图标芯片） */
 .library-stats {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;
-  margin-bottom: 16px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(184px, 1fr)); gap: 14px;
+  margin-bottom: 18px;
 }
 .library-stat {
-  position: relative; overflow: hidden; background: var(--surface);
-  border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-sm);
-  padding: 14px 16px;
+  position: relative; overflow: hidden; display: flex; align-items: center; gap: 14px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm); padding: 16px 18px;
+  transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease;
 }
 .library-stat::before {
   content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
   background: var(--accent-stream);
 }
+.library-stat:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); border-color: var(--accent-line); }
+.stat-icon {
+  width: 42px; height: 42px; flex: none; border-radius: 12px; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent-strong); border: 1px solid var(--accent-line);
+}
+.stat-icon svg { width: 21px; height: 21px; }
+.stat-body { min-width: 0; }
 .library-stat .label { color: var(--muted); font-size: 11.5px; }
 .library-stat .value {
-  font-size: 24px; font-weight: 700; color: var(--accent-strong);
-  letter-spacing: -0.5px; margin-top: 4px; line-height: 1.1;
+  font-size: 25px; font-weight: 800; color: var(--accent-strong);
+  letter-spacing: -0.6px; margin-top: 3px; line-height: 1.05;
 }
 .library-stat .sub { font-size: 10.5px; color: var(--muted); margin-top: 3px; }
 
@@ -1634,7 +1663,8 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
 }
 .library-filter-row button, .rank-filter-row button, .rank-filter-line button { padding: 5px 12px; font-weight: 600; }
 .library-filter-row button.active, .rank-filter-row button.active, .rank-filter-line button.active {
-  box-shadow: 0 4px 10px rgba(59, 91, 253, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  background: var(--accent); color: #fff; border-color: var(--accent);
+  box-shadow: 0 4px 12px rgba(214, 69, 43, 0.28);
 }
 
 /* 3. 商品卡片：选中高亮 + 价格销售行对齐（分类标签路径多为英文且冗长，已在全局隐藏） */
