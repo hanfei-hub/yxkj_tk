@@ -368,14 +368,17 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
 .flow-status.success { background: rgba(22, 163, 74, 0.12); color: var(--success); }
 .flow-status.failed { background: rgba(220, 38, 38, 0.12); color: var(--danger); }
 
-/* 衍生品任务：流程与进度使用朱砂红品牌色 */
-.derived-pipeline-modal { --dp-accent: #d6452b; --dp-accent-soft: rgba(214,69,43,0.12); --dp-accent-line: rgba(214,69,43,0.32); --dp-accent-strong: #b93b23; }
+/* 衍生品任务：流程与进度使用朱砂红品牌色，并覆盖全局 accent 变量 */
+.derived-pipeline-modal {
+  --dp-accent: #d6452b; --dp-accent-soft: rgba(214,69,43,0.12); --dp-accent-line: rgba(214,69,43,0.32); --dp-accent-strong: #b93b23; --dp-accent-glow: rgba(214,69,43,0.22);
+  --accent: var(--dp-accent); --accent-soft: var(--dp-accent-soft); --accent-line: var(--dp-accent-line); --accent-strong: var(--dp-accent-strong); --accent-glow: var(--dp-accent-glow);
+}
 .derived-pipeline-modal .flow-node.active { border-color: var(--dp-accent-line); background: var(--dp-accent-soft); }
 .derived-pipeline-modal .flow-node.active span { background: var(--dp-accent); border-color: var(--dp-accent); }
 .derived-pipeline-modal .flow-node.active.running span { animation: dppulse 1.6s ease-in-out infinite; }
 @keyframes dppulse { 0%, 100% { box-shadow: 0 0 0 0 var(--dp-accent-soft); } 50% { box-shadow: 0 0 0 5px transparent; } }
 .derived-pipeline-modal .flow-status.running { background: var(--dp-accent-soft); color: var(--dp-accent-strong); border-color: var(--dp-accent-line); }
-.derived-pipeline-modal .derived-pipeline-progress i em { background: linear-gradient(90deg, var(--dp-accent), #e86b52); }
+.derived-pipeline-modal .derived-pipeline-progress i em { background: linear-gradient(90deg, var(--dp-accent), #e86b52); transform-origin: left; }
 .derived-pipeline-modal .derived-pipeline-progress b { color: var(--dp-accent-strong); }
 
 .smart-progress, .derived-pipeline-progress, .store-progress-line { margin-top: 12px; }
@@ -1410,14 +1413,27 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
 .derived-pipeline-modal .derived-pipeline-actions button.primary:hover:not(:disabled) { filter: brightness(1.04); transform: translateY(-1px); }
 .derived-pipeline-modal .derived-pipeline-actions button.primary:disabled { opacity: 0.6; cursor: default; transform: none; filter: none; }
 .derived-pipeline-modal .derived-pipeline-actions button.modal-close { position: static; width: 30px; height: 30px; border-radius: 8px; }
-.derived-pipeline-modal .derived-pipeline-progress { padding: 14px 18px; margin: 0; border-bottom: 1px solid var(--line); background: var(--surface); }
-.derived-pipeline-modal .derived-pipeline-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 0; padding: 16px 18px 18px; overflow-y: auto; flex: 1; }
+.derived-pipeline-modal .derived-pipeline-progress { padding: 12px 18px; margin: 0; border-bottom: 1px solid var(--line); background: var(--surface); }
+.derived-pipeline-modal .derived-pipeline-progress > div { margin-bottom: 6px; }
+.derived-pipeline-modal .derived-pipeline-progress i { height: 7px; background: var(--surface-2); border: 1px solid var(--line); }
+.derived-pipeline-modal .derived-pipeline-layout { display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 16px; padding: 16px 18px 18px; overflow: hidden; flex: 1; min-height: 0; }
 .derived-pipeline-modal .derived-pipeline-steps,
-.derived-pipeline-modal .derived-pipeline-board { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-xl); padding: 16px; margin: 0; box-shadow: var(--shadow-sm); }
-.derived-pipeline-modal .derived-panel-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.derived-pipeline-modal .derived-pipeline-board { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-xl); padding: 16px; margin: 0; box-shadow: var(--shadow-sm); height: 100%; overflow: hidden; display: flex; flex-direction: column; }
+.derived-pipeline-modal .derived-pipeline-steps { gap: 10px; }
+.derived-pipeline-modal .derived-pipeline-steps .derived-panel-title { flex: none; }
+.derived-pipeline-modal .derived-pipeline-steps .selection-flow-row { flex: 1; min-height: 0; overflow-y: auto; grid-template-columns: 1fr; gap: 8px; }
+.derived-pipeline-modal .derived-pipeline-board .derived-panel-title { flex: none; margin-bottom: 10px; }
+.derived-pipeline-modal .derived-panel-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .derived-pipeline-modal .derived-panel-title h3 { font-size: 14px; font-weight: 700; margin: 0; padding: 0; }
 .derived-pipeline-modal .derived-panel-title h3::after { display: none; }
 .derived-pipeline-modal .derived-panel-title > span { font-size: 11px; color: var(--text-2); font-weight: 500; }
+.derived-pipeline-modal .task-board-logs { flex: none; margin: 0 0 10px; }
+.derived-pipeline-modal .task-board-body { flex: 1; min-height: 0; padding: 0; overflow: hidden; }
+.derived-pipeline-modal .task-board-header { margin: 0 0 10px; padding: 0 0 10px; border-bottom: 1px solid var(--line); }
+.derived-pipeline-modal .task-board-header h2 { font-size: 15px; font-weight: 700; margin: 0; padding: 0; }
+.derived-pipeline-modal .task-board-header h2::after { display: none; }
+.derived-pipeline-modal .task-board-header button.small { padding: 6px 12px; font-size: 11px; border-radius: 7px; }
+.derived-pipeline-modal .task-board-auto-hint { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .derived-pipeline-modal .task-board-group { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 10px 12px; }
 .derived-pipeline-modal .task-board-group-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .derived-pipeline-modal .task-board-group-title b { font-size: 12px; font-weight: 700; color: var(--text); }
@@ -1550,6 +1566,9 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
    ============================================================ */
 @media (max-width: 1180px) {
   .dashboard-charts, .store-layout, .video-layout, .derived-pipeline-layout { grid-template-columns: 1fr; }
+  .derived-pipeline-modal .derived-pipeline-layout { overflow-y: auto; }
+  .derived-pipeline-modal .derived-pipeline-steps,
+  .derived-pipeline-modal .derived-pipeline-board { height: auto; min-height: 360px; }
   .smart-workspace { grid-template-columns: 1fr; }
   .smart-panel-right { position: static; max-height: none; }
   .library-workspace { grid-template-columns: 1fr; }

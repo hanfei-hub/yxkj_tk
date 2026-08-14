@@ -2210,8 +2210,10 @@ type PipelineReportData = {
   finished_at?: string;
   counters?: Record<string, number>;
   board_groups?: Array<{ keyword?: string; items?: PipelineReportItem[] }>;
+  board_items?: PipelineReportItem[];
   candidate_items?: PipelineReportItem[];
   final_items?: PipelineReportItem[];
+  keywords?: Array<Record<string, unknown>>;
   ai_report?: Record<string, unknown>;
 };
 
@@ -4069,6 +4071,380 @@ function SelectionStage(props: {
       );
     }
     return null;
+  }
+
+  return (
+    <div className="sel-timeline">
+      {steps.map((step, idx) => {
+        const done = idx < currentStep || allDone;
+        const active =
+          (idx === currentStep && status === "running") ||
+          (allDone && idx === 6);
+        const isOpen = !!expanded[idx];
+        if (!active) {
+          return (
+            <div
+              className={`sel-step ${done ? "done" : "pending"} ${isOpen ? "open" : ""}`}
+              key={step.key}
+            >
+              <button
+                type="button"
+                className="sel-step-toggle"
+                onClick={() =>
+                  setExpanded((prev) => ({ ...prev, [idx]: !prev[idx] }))
+                }
+                aria-expanded={isOpen}
+              >
+                <span className="sel-dot">{done ? "✓" : step.icon}</span>
+                <div className="sel-step-row">
+                  <span className="sel-caret">{isOpen ? "▾" : "▸"}</span>
+                  <b>{step.title}</b>
+                  <span className="sel-sum">{done ? summaryFor(idx) : "待执行"}</span>
+                </div>
+              </button>
+              {isOpen && (
+                <div className="sel-step-card">
+                  <div className="sel-lines">
+                    {linesFor(step.key).map((ln, i) => (
+                      <div
+                        className={`sel-line ${ln.kind}`}
+                        key={i}
+                        style={{ animationDelay: `${i * 0.12}s` }}
+                      >
+                        <span className="d" />
+                        <span>{ln.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {renderStageBody(step.key)}
+                </div>
+              )}
+            </div>
+          );
+        }
+        const lines = linesFor(step.key);
+        return (
+          <div className="sel-step active" key={step.key}>
+            <span className="sel-dot live">{step.icon}</span>
+            <div className="sel-step-card">
+              <div className="sel-step-head">
+                <b>{step.title}</b>
+                <span className="sel-badge">{allDone ? "已完成" : "进行中"}</span>
+              </div>
+              <div className="sel-lines">
+                {lines.map((ln, i) => (
+                  <div
+                    className={`sel-line ${ln.kind}`}
+                    key={i}
+                    style={{ animationDelay: `${i * 0.12}s` }}
+                  >
+                    <span className="d" />
+                    <span>{ln.text}</span>
+                  </div>
+                ))}
+              </div>
+              {renderStageBody(step.key)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DerivationStage(props: {
+  status: string;
+  currentStep: number;
+  reportData: PipelineReportData | null;
+  counters: Record<string, number>;
+  groups: Array<{ keyword_id: number; keyword: string; items: Array<Record<string, unknown>> }>;
+}) {
+  const { status, currentStep, reportData, counters, groups } = props;
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  const [showAllKeywords, setShowAllKeywords] = useState(false);
+
+  useEffect(() => {
+    if (status === "idle") {
+      setExpanded({});
+      setShowAllKeywords(false);
+    }
+  }, [status]);
+
+  const allDone = status === "success";
+  const liveGroups = useMemo(
+    () => groups.filter((g) => g.keyword_id !== -1 && g.keyword_id !== -2),
+    [groups],
+  );
+  const eliminated = useMemo(() => {
+    let e = 0, k = 0;
+    for (const g of liveGroups)
+      for (const it of g.items) {
+        if (it.eliminated) e++;
+        else k++;
+      }
+    return { e, k };
+  }, [liveGroups]);
+  const echotik = useMemo(
+    () => (reportData?.board_items || []).filter((b: Record<string, unknown>) => b.source === "echotik" || b.source === "supply_fallback").slice(0, 8),
+    [reportData],
+  );
+  const hasSupplyFallback = useMemo(
+    () => (reportData?.board_items || []).some((b: Record<string, unknown>) => b.source === "supply_fallback"),
+    [reportData],
+  );
+  const finalItems = useMemo(
+    () => Array.isArray(reportData?.final_items) ? reportData.final_items : [],
+    [reportData],
+  );
+  const keywords = useMemo(
+    () => Array.isArray(reportData?.keywords) ? reportData.keywords as Array<Record<string, unknown>> : [],
+    [reportData],
+  );
+
+  const steps = [
+    { key: "keyword", title: "AI 生成衍生方向", icon: "💡" },
+    { key: "supplier", title: "匹配优质供应链", icon: "🔗" },
+    { key: "trend", title: "拓展市场在售样本", icon: "🌐" },
+    { key: "risk", title: "日本法规风控", icon: "🛡" },
+    { key: "blue", title: "蓝海竞争过滤", icon: "🌊" },
+    { key: "report", title: "生成可视化报告", icon: "📊" },
+    { key: "final", title: "精选最终 10 款", icon: "🏆" },
+  ];
+
+  function summaryFor(idx: number): string {
+    switch (idx) {
+      case 0:
+        return keywords.length ? "衍生方向已生成" : "正在生成衍生方向";
+      case 1:
+        return counters.supplier_candidates ? "货源匹配完成" : "正在匹配供应链";
+      case 2:
+        return counters.image_search_entries ? "市场样本拓展完成" : "正在拓展市场样本";
+      case 3:
+        return eliminated.e !== undefined ? "风控审核完成" : "正在多维风控审核";
+      case 4:
+        return counters.candidates ? "蓝海机会识别完成" : "正在识别蓝海机会";
+      case 5:
+        return allDone ? "报告已生成" : "报告生成中";
+      case 6:
+        return finalItems.length ? "精选商品已出炉" : "正在精选最终商品";
+      default:
+        return "";
+    }
+  }
+
+  function linesFor(key: string): Array<{ kind: string; text: string }> {
+    switch (key) {
+      case "keyword":
+        return [
+          { kind: "think", text: "解析原商品属性，识别目标人群与使用场景" },
+          { kind: "think", text: "基于商品族特征生成差异化衍生方向" },
+          { kind: "metric", text: keywords.length ? `${keywords.length} 个衍生方向已生成` : "正在生成衍生方向…" },
+        ];
+      case "supplier":
+        return [
+          { kind: "think", text: "针对每个衍生方向定向匹配 1688 优质产业带" },
+          { kind: "think", text: "评估供应稳定性、价格带与起订能力" },
+          { kind: "metric", text: counters.supplier_candidates ? `${counters.supplier_candidates} 个供应链样本已锁定` : "正在锁定货源基准…" },
+        ];
+      case "trend":
+        return [
+          { kind: "think", text: "围绕核心衍生款拓展日本市场在售样本" },
+          { kind: "think", text: "评估同款竞争热度与定价空间" },
+          { kind: "metric", text: counters.image_search_entries ? "市场样本拓展完成" : "正在拓展市场样本…" },
+        ];
+      case "risk":
+        return [
+          { kind: "think", text: "多维风控：禁运禁售 · 专利商标 · 海关报关 · 平台限售" },
+          { kind: "metric", text: eliminated.e ? `${eliminated.e} 个高风险商品已剔除` : "正在剔除高风险商品…" },
+        ];
+      case "blue":
+        return [
+          { kind: "think", text: "比对平台爆款热度，规避红海竞争" },
+          { kind: "metric", text: counters.candidates ? `${counters.candidates} 个低竞争机会已锁定` : "正在锁定低竞争机会…" },
+        ];
+      case "report":
+        return [
+          { kind: "think", text: "AI 撰写衍生品市场机会报告：定位 / 受众 / 风险 / 上架建议" },
+          { kind: "metric", text: allDone ? "报告已生成，点右上角查看" : "报告生成中…" },
+        ];
+      case "final":
+        return [
+          { kind: "think", text: "综合稳健、亮点、趋势等多维度精选可上架商品" },
+          { kind: "metric", text: finalItems.length ? `${finalItems.length} 款最终商品已出炉` : "正在精选最终商品…" },
+        ];
+      default:
+        return [];
+    }
+  }
+
+  function renderStageBody(key: string) {
+    if (key === "keyword") {
+      const previewLimit = 12;
+      const canCollapse = keywords.length > previewLimit;
+      const visible = showAllKeywords || !canCollapse ? keywords : keywords.slice(0, previewLimit);
+      return keywords.length ? (
+        <div className="sel-chips">
+          {visible.map((k, i) => (
+            <span
+              className="sel-chip"
+              key={String(k.id || i)}
+              style={{ animationDelay: `${i * 0.02}s` }}
+            >
+              {String(k.keyword)}
+            </span>
+          ))}
+          {canCollapse && !showAllKeywords && (
+            <button
+              type="button"
+              className="sel-chips-toggle"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowAllKeywords(true);
+              }}
+            >
+              +{keywords.length - previewLimit} 个更多
+            </button>
+          )}
+          {canCollapse && showAllKeywords && (
+            <button
+              type="button"
+              className="sel-chips-toggle ghost"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowAllKeywords(false);
+              }}
+            >
+              收起
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="sel-wait">AI 正在拆解原商品，生成衍生方向…</div>
+      );
+    }
+    if (key === "supplier") {
+      return liveGroups.length ? (
+        <div className="sel-reels">
+          {liveGroups.slice(0, 12).map((g) => (
+            <div className="sel-reel-row" key={g.keyword_id}>
+              <span className="sel-reel-kw" title={String(g.keyword)}>
+                {String(g.keyword)}
+              </span>
+              <Reel items={g.items} tick={0} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="sel-wait">正在匹配优质产业带货源…</div>
+      );
+    }
+    if (key === "trend") {
+      return echotik.length ? (
+        <>
+          {hasSupplyFallback && (
+            <div className="sel-source-note">
+              当前基于供应链样本数据估算，销量口径为批发侧样本，非日本站实测数据，建议上架前二次验证。
+            </div>
+          )}
+          <div className="sel-echo">
+            {echotik.map((it, i) => {
+              const key = String(it.id || it.title || i);
+              const url = item1688Url(it);
+              return (
+                <a
+                  className="sel-echo-card"
+                  key={key}
+                  href={url || undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <div className="sel-echo-img">
+                    {it.image_url ? (
+                      <img src={String(it.image_url)} alt="" />
+                    ) : (
+                      <span>无图</span>
+                    )}
+                  </div>
+                </a>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <div className="sel-wait">正在拓展日本市场在售样本…</div>
+      );
+    }
+    if (key === "risk") {
+      return eliminated.e ? (
+        <div className="sel-elim">
+          {liveGroups
+            .flatMap((g) => g.items.filter((it) => it.eliminated).slice(0, 2))
+            .slice(0, 4)
+            .map((it, i) => (
+              <div className="sel-elim-row" key={i}>
+                <span className="x">×</span>
+                <b>{String(it.title || "高风险商品")}</b>
+              </div>
+            ))}
+        </div>
+      ) : (
+        <div className="sel-wait">尚未发现高风险商品…</div>
+      );
+    }
+    if (key === "final") {
+      return finalItems.length ? (
+        <>
+          {hasSupplyFallback && (
+            <div className="sel-source-note">
+              当前基于供应链样本数据估算，销量口径为批发侧样本，非日本站实测数据，建议上架前二次验证。
+            </div>
+          )}
+          <div className="sel-final-grid">
+            {finalItems.slice(0, 10).map((it, i) => {
+              const key = String(it.id || it.title || i);
+              const url = item1688Url(it);
+              return (
+                <a
+                  className="sel-final-card"
+                  key={key}
+                  href={url || undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={String(it.title || `商品 ${i + 1}`)}
+                >
+                  <span className={`sel-final-badge ${String(it.tier || "regular")}`}>
+                    {TIER_LABEL[String(it.tier || "regular")] || "常规"}
+                  </span>
+                  <div className="sel-final-img">
+                    {it.image_url ? (
+                      <img src={String(it.image_url)} alt="" />
+                    ) : (
+                      <span>{i + 1}</span>
+                    )}
+                  </div>
+                  <b>{String(it.title || `商品 ${i + 1}`)}</b>
+                  <small>{String(it.shop_name || "优选供应商")}</small>
+                  {it.highlight_reason ? (
+                    <em className="sel-final-reason">{String(it.highlight_reason)}</em>
+                  ) : null}
+                </a>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <div className="sel-wait">正在汇总精选商品…</div>
+      );
+    }
+    return null;
+  }
+
+  if (status === "idle") {
+    return (
+      <div className="empty-state">
+        点击「开始衍生」后，右侧将逐步呈现 AI 生成方向、供应链匹配、风控审核与最终精选报告。
+      </div>
+    );
   }
 
   return (
@@ -6427,6 +6803,7 @@ function DerivationPipelineModal({
   message,
   counters,
   groups,
+  reportData,
   onClose,
   onStart,
 }: {
@@ -6441,6 +6818,7 @@ function DerivationPipelineModal({
     keyword: string;
     items: Array<Record<string, unknown>>;
   }>;
+  reportData: PipelineReportData | null;
   onClose: () => void;
   onStart: () => void;
 }) {
@@ -6466,6 +6844,53 @@ function DerivationPipelineModal({
     final_selection: 6,
   };
   const currentStep = stepMap[stage] ?? Math.min(6, Math.floor(progress / 15));
+  const [logs, setLogs] = useState<
+    Array<{ time: string; step: number; message: string }>
+  >([]);
+  const [reportOpen, setReportOpen] = useState(false);
+  const displayedStageRef = useRef("");
+  const displayedStageAtRef = useRef(0);
+
+  useEffect(() => {
+    if (status === "idle") {
+      setLogs([]);
+      displayedStageRef.current = "";
+      return;
+    }
+    const elapsed = Date.now() - displayedStageAtRef.current;
+    if (
+      displayedStageRef.current &&
+      stage !== displayedStageRef.current &&
+      elapsed < 1000
+    ) {
+      const timer = window.setTimeout(() => {
+        displayedStageRef.current = stage;
+        displayedStageAtRef.current = Date.now();
+        const time = new Date().toLocaleTimeString("zh-CN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        setLogs((prev) =>
+          [...prev, { time, step: currentStep, message: message || nodes[currentStep] || "任务推进中" }].slice(-6),
+        );
+      }, 1000 - elapsed);
+      return () => window.clearTimeout(timer);
+    }
+    if (stage !== displayedStageRef.current) {
+      displayedStageRef.current = stage;
+      displayedStageAtRef.current = Date.now();
+      const time = new Date().toLocaleTimeString("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+      setLogs((prev) =>
+        [...prev, { time, step: currentStep, message: message || nodes[currentStep] || "任务推进中" }].slice(-6),
+      );
+    }
+  }, [stage, status, message, currentStep]);
+
   return (
     <div
       className="modal-backdrop"
@@ -6516,7 +6941,7 @@ function DerivationPipelineModal({
             <b>{progress}%</b>
           </div>
           <i>
-            <em style={{ width: `${progress}%` }} />
+            <em style={{ transform: `scaleX(${progress / 100})` }} />
           </i>
         </div>
         <div className="derived-pipeline-layout">
@@ -6557,56 +6982,63 @@ function DerivationPipelineModal({
             </div>
           </div>
           <div className="derived-pipeline-board">
-            <div className="derived-panel-title">
-              <h3>任务结果看板</h3>
-              <span>
-                潜力方向 {counters.keywords || 0} · 供应链样本 {counters.supplier_candidates || 0}
-              </span>
+            <div className="task-board-header">
+              <h2>任务结果看板</h2>
+              <div className="task-board-header-actions">
+                {status === "success" && reportData && (
+                  <button
+                    className="primary small"
+                    onClick={() => setReportOpen(true)}
+                  >
+                    查看完整市场机会报告
+                  </button>
+                )}
+                <span className="task-board-auto-hint">
+                  {status === "success"
+                    ? "已自动加入选品库"
+                    : status === "running"
+                      ? "AI 分析中…"
+                      : "等待开始"}
+                </span>
+              </div>
             </div>
-            <div className="derived-board-groups">
-              {groups.map((group) => (
-                <section className="task-board-group" key={group.keyword_id}>
-                  <div className="task-board-group-title">
-                    <b>{group.keyword}</b>
-                    <span>{group.items.length}/10 个商品</span>
+            <div className="task-board-logs">
+              <h4>实时动态</h4>
+              {logs.length ? (
+                logs.slice(-3).map((log, idx) => (
+                  <div
+                    key={`${log.time}-${idx}`}
+                    className={`task-board-log ${idx === logs.length - 1 && status === "running" ? "current" : ""}`}
+                  >
+                    <i />
+                    <time>{log.time}</time>
+                    <span>{log.message}</span>
                   </div>
-                  <div className="task-board-items">
-                    {group.items.map((item, idx) => (
-                      <article
-                        className={`task-board-item ${item.eliminated ? "eliminated" : ""}`}
-                        key={String(item.id)}
-                        title={String(item.title || "未命名商品")}
-                      >
-                        <div className="task-board-image">
-                          <span className="derived-rank" style={{ position: "absolute", top: 4, left: 4, width: 18, height: 18, fontSize: 9, borderRadius: 5 }}>{idx + 1}</span>
-                          {item.image_url ? (
-                            <img src={String(item.image_url)} loading="lazy" />
-                          ) : (
-                            <span>暂无图片</span>
-                          )}
-                        </div>
-                        <b>{String(item.title || "未命名商品")}</b>
-                        <div>
-                          <strong>¥{Number(item.price || 0).toFixed(2)}</strong>
-                          <span>
-                            {item.eliminated
-                              ? "已淘汰"
-                              : `销量 ${Number(item.sales_count || 0).toLocaleString()}`}
-                          </span>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                </section>
-              ))}
-              {!groups.length && (
-                <div className="empty-state">
-                  任务执行后，衍生商品与匹配货源会显示在这里。
+                ))
+              ) : (
+                <div className="task-board-log">
+                  <i />
+                  <span>等待任务开始…</span>
                 </div>
               )}
             </div>
+            <div className="task-board-body">
+              <DerivationStage
+                status={status}
+                currentStep={currentStep}
+                reportData={reportData}
+                counters={counters}
+                groups={groups}
+              />
+            </div>
           </div>
         </div>
+        {reportOpen && reportData && (
+          <SelectionReport
+            data={reportData}
+            onClose={() => setReportOpen(false)}
+          />
+        )}
       </section>
     </div>
   );
@@ -6652,6 +7084,8 @@ function Products3ContentFixed({
       items: Array<Record<string, unknown>>;
     }>
   >([]);
+  const [pipelineReportData, setPipelineReportData] =
+    useState<PipelineReportData | null>(null);
   const regionName =
     FIXED_COUNTRIES.find(
       (item) => item.code === String(selected?.region || "").toUpperCase(),
@@ -6689,6 +7123,7 @@ function Products3ContentFixed({
     setPipelineMessage("请确认后点击“开始衍生”");
     setPipelineCounters({});
     setPipelineGroups([]);
+    setPipelineReportData(null);
   }
   async function startDerived() {
     if (!derivedSource || pipelineStatus === "running") return;
@@ -6719,6 +7154,7 @@ function Products3ContentFixed({
         setPipelineCounters(data.counters || {});
         if (Array.isArray(data.board_groups))
           setPipelineGroups(data.board_groups);
+        setPipelineReportData(data as PipelineReportData);
         if (data.status === "success" || data.status === "failed") {
           window.clearInterval(timer);
           setPipelineStatus(data.status);
@@ -6937,6 +7373,7 @@ function Products3ContentFixed({
           message={pipelineMessage}
           counters={pipelineCounters}
           groups={pipelineGroups}
+          reportData={pipelineReportData}
           onStart={startDerived}
           onClose={() => {
             setPipelineTaskId(null);
