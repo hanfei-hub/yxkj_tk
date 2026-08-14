@@ -2466,6 +2466,16 @@ function LibraryPage({
           <div className="library-grid">
             {filtered.map((item, index) => {
               const rank = index + 1;
+              const sales = Number(
+                item.sales_count ?? item.supplier_sales_count ?? 0,
+              );
+              const maxSales = Math.max(
+                1,
+                ...filtered.map((r) =>
+                  Number(r.sales_count ?? r.supplier_sales_count ?? 0),
+                ),
+              );
+              const heat = Math.round((sales / maxSales) * 100);
               return (
               <article
                 key={String(pid(item))}
@@ -2495,12 +2505,11 @@ function LibraryPage({
                 </div>
                 <div className="library-card-meta">
                   <strong>{money(item)}</strong>
-                  <span>
-                    销量{" "}
-                    {Number(
-                      item.sales_count ?? item.supplier_sales_count ?? 0,
-                    ).toLocaleString()}
-                  </span>
+                  <span>销量 {sales.toLocaleString()}</span>
+                </div>
+                <div className="library-card-heat">
+                  <i><em style={{ width: `${heat}%` }} /></i>
+                  <span>热度 {heat}%</span>
                 </div>
                 <button
                   disabled={!supplierUrl(item)}
@@ -7331,7 +7340,7 @@ function Products3ContentFixed({
                             <div className="image-empty">暂无图片</div>
                           )}
                         </div>
-                        <div className="derived-card-info">
+                        <div className="derived-card-body">
                           <h3 title={title(item)}>{title(item)}</h3>
                           <div className="derived-meta">
                             <strong>{money(item)}</strong>
@@ -7341,20 +7350,20 @@ function Products3ContentFixed({
                             <i><em style={{ width: `${heat}%` }} /></i>
                             <span>热度 {heat}%</span>
                           </div>
+                          <button
+                            className="derived-library-button"
+                            disabled={derivedAdded[itemKey]}
+                            onClick={async () => {
+                              await onAddLibrary(item);
+                              setDerivedAdded((current) => ({
+                                ...current,
+                                [itemKey]: true,
+                              }));
+                            }}
+                          >
+                            {derivedAdded[itemKey] ? "已加入选品库" : "加入选品库"}
+                          </button>
                         </div>
-                        <button
-                          className="derived-library-button"
-                          disabled={derivedAdded[itemKey]}
-                          onClick={async () => {
-                            await onAddLibrary(item);
-                            setDerivedAdded((current) => ({
-                              ...current,
-                              [itemKey]: true,
-                            }));
-                          }}
-                        >
-                          {derivedAdded[itemKey] ? "已加入选品库" : "加入选品库"}
-                        </button>
                       </article>
                     );
                   })}
