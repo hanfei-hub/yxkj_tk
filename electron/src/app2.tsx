@@ -2440,9 +2440,11 @@ async function downloadPipelineReport(data: PipelineReportData) {
 function LibraryPage({
   rows,
   onPublish,
+  onAddLibrary,
 }: {
   rows: Product[];
   onPublish: (product: Product) => void;
+  onAddLibrary: (product: Product) => Promise<void>;
 }) {
   const [region, setRegion] = useState("ALL");
   const [category, setCategory] = useState("全部");
@@ -2455,6 +2457,28 @@ function LibraryPage({
   const [report, setReport] = useState<PipelineReportData | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
   const categories = FIXED_CATEGORIES;
+  const {
+    derivedSource,
+    setDerivedSource,
+    derivedRows,
+    derivedLoading,
+    error,
+    derivedReady,
+    derivedAdded,
+    setDerivedAdded,
+    pipelineActive,
+    pipelineProgress,
+    pipelineStage,
+    pipelineStatus,
+    pipelineMessage,
+    pipelineCounters,
+    pipelineGroups,
+    pipelineReportData,
+    viewDerived,
+    generateDerived,
+    startDerived,
+    closeDerived,
+  } = useDerivation();
   const stats = useMemo(() => {
     const total = rows.length;
     const countries = new Set(
@@ -2519,8 +2543,9 @@ function LibraryPage({
     };
   }, [selected]);
   return (
-    <section className="library-page">
-      <div className="library-heading">
+    <>
+      <section className="library-page">
+        <div className="library-heading">
         <div>
           <h2>选品库</h2>
           <p>查看当前账号最近 7 天的 AI 搜索选品结果</p>
@@ -2592,6 +2617,9 @@ function LibraryPage({
           </div>
           <div className="library-grid">
             {filtered.map((item, index) => {
+              const key = String(pid(item));
+              const hasDerived =
+                derivedReady[key] ?? Number(item.derived_count || 0) > 0;
               const rank = index + 1;
               const sales = Number(
                 item.sales_count ?? item.supplier_sales_count ?? 0,
@@ -2602,58 +2630,70 @@ function LibraryPage({
                   Number(r.sales_count ?? r.supplier_sales_count ?? 0),
                 ),
               );
-              const heat = Math.round((sales / maxSales) * 100);
+              const heat = Math.max(6, Math.round((sales / maxSales) * 100));
               return (
-              <article
-                key={String(pid(item))}
-                className={
-                  selected && pid(selected) === pid(item)
-                    ? "library-card selected"
-                    : "library-card"
-                }
-                onClick={() => setSelected(item)}
-              >
-                <div className="library-card-image">
-                  {picture(item) ? (
-                    <img src={picture(item)} loading="lazy" />
-                  ) : (
-                    <div className="image-empty">暂无图片</div>
-                  )}
-                  <span className={`card-index${rank <= 3 ? ` top${rank === 1 ? "" : rank}` : ""}`}>{rank}</span>
-                </div>
-                <h3>{title(item)}</h3>
-                <div className="card-tags">
-                  <span className="card-chip">{productSourceLabel(item)}</span>
-                  {supplierUrl(item) ? (
-                    <span className="supply-badge ok">有货源</span>
-                  ) : (
-                    <span className="supply-badge no">无货源</span>
-                  )}
-                </div>
-                <div className="library-card-meta">
-                  <strong>{money(item)}</strong>
-                  <span>销量 {sales.toLocaleString()}</span>
-                </div>
-                <div className="library-card-heat">
-                  <i><em style={{ width: `${heat}%` }} /></i>
-                  <span>热度 {heat}%</span>
-                </div>
-                <button
-                  disabled={!supplierUrl(item)}
-                  title={
-                    supplierUrl(item)
-                      ? ""
-                      : "该商品暂无 1688 货源链接，无法加入上品"
+                <article
+                  key={key}
+                  className={
+                    selected && pid(selected) === pid(item)
+                      ? "library-card selected"
+                      : "library-card"
                   }
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onPublish(item);
-                  }}
+                  onClick={() => setSelected(item)}
                 >
-                  {supplierUrl(item) ? "加入上品" : "无货源链接"}
-                </button>
-              </article>
-            );})}`
+                  <div className="library-card-image">
+                    {picture(item) ? (
+                      <img src={picture(item)} loading="lazy" />
+                    ) : (
+                      <div className="image-empty">暂无图片</div>
+                    )}
+                    <span
+                      className={`card-index${
+                        rank <= 3 ? ` top${rank === 1 ? "" : rank}` : ""
+                      }`}
+                    >
+                      {rank}
+                    </span>
+                  </div>
+                  <h3>{title(item)}</h3>
+                  <div className="product-meta">
+                    <strong>{money(item)}</strong>
+                    <span>销量 {sales.toLocaleString()}</span>
+                  </div>
+                  <div className="library-card-heat">
+                    <i><em style={{ width: `${heat}%` }} /></i>
+                    <span>热度 {heat}%</span>
+                  </div>
+                  <div className="product-actions">
+                    <button
+                      className="primary"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (hasDerived) void viewDerived(item);
+                        else void generateDerived(item);
+                      }}
+                    >
+                      {hasDerived ? "查看衍生品" : "可以衍生"}
+                    </button>
+                    <button
+                      className="secondary"
+                      disabled={!supplierUrl(item)}
+                      title={
+                        supplierUrl(item)
+                          ? ""
+                          : "该商品暂无 1688 货源链接，无法加入上品"
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onPublish(item);
+                      }}
+                    >
+                      {supplierUrl(item) ? "加入上品" : "无货源链接"}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
           {!filtered.length && (
             <div className="empty-state">
@@ -2724,7 +2764,124 @@ function LibraryPage({
         </aside>
       </div>
     </section>
-  );
+    {derivedSource && !pipelineActive && (
+      <div className="modal-backdrop" onClick={() => setDerivedSource(null)}>
+        <section
+          className="modal derived-products-modal"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            className="derived-modal-close"
+            onClick={() => setDerivedSource(null)}
+          >
+            ×
+          </button>
+          <div className="derived-modal-head">
+            {picture(derivedSource) ? (
+              <img src={picture(derivedSource)} loading="lazy" />
+            ) : (
+              <div className="derived-modal-image image-empty" style={{ width: 52, height: 52, borderRadius: 10 }}>暂无图片</div>
+            )}
+            <div className="head-text">
+              <span className="source-tag">原商品</span>
+              <h2>查看衍生品</h2>
+              <p className="source-title" title={title(derivedSource)}>
+                {title(derivedSource)}
+              </p>
+            </div>
+          </div>
+          <div className="derived-modal-body">
+            {derivedLoading ? (
+              <div className="derived-empty">
+                <span className="empty-icon">⟳</span>
+                <b>正在读取衍生品</b>
+                <span>请稍候，正在加载关联商品数据</span>
+              </div>
+            ) : error ? (
+              <div className="derived-empty">
+                <span className="empty-icon">!</span>
+                <b>读取失败</b>
+                <span>{error}</span>
+              </div>
+            ) : !derivedRows.length ? (
+              <div className="derived-empty">
+                <span className="empty-icon">✦</span>
+                <b>暂无衍生品</b>
+                <span>该商品尚未生成衍生方向，可点击「可以衍生」智能生成</span>
+              </div>
+            ) : (
+              <div className="derived-modal-grid">
+                {derivedRows.map((item, index) => {
+                  const itemKey = String(pid(item));
+                  const sales = Number(
+                    item.sales_count ?? item.supplier_sales_count ?? 0,
+                  );
+                  const maxSales = Math.max(
+                    1,
+                    ...derivedRows.map((r) =>
+                      Number(r.sales_count ?? r.supplier_sales_count ?? 0),
+                    ),
+                  );
+                  const heat = Math.round((sales / maxSales) * 100);
+                  return (
+                    <article className="derived-modal-card" key={itemKey}>
+                      <span className="derived-rank">{index + 1}</span>
+                      <div className="derived-modal-image">
+                        {picture(item) ? (
+                          <img src={picture(item)} loading="lazy" />
+                        ) : (
+                          <div className="image-empty">暂无图片</div>
+                        )}
+                      </div>
+                      <div className="derived-card-body">
+                        <h3 title={title(item)}>{title(item)}</h3>
+                        <div className="derived-meta">
+                          <strong>{money(item)}</strong>
+                          <span>销量 {sales.toLocaleString()}</span>
+                        </div>
+                        <div className="derived-heat">
+                          <i><em style={{ width: `${heat}%` }} /></i>
+                          <span>热度 {heat}%</span>
+                        </div>
+                        <button
+                          className="derived-library-button"
+                          disabled={derivedAdded[itemKey]}
+                          onClick={async () => {
+                            await onAddLibrary(item);
+                            setDerivedAdded((current) => ({
+                              ...current,
+                              [itemKey]: true,
+                            }));
+                          }}
+                        >
+                          {derivedAdded[itemKey] ? "已加入选品库" : "加入选品库"}
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+    )}
+    {derivedSource && pipelineActive && (
+      <DerivationPipelineModal
+        source={derivedSource}
+        progress={pipelineProgress}
+        stage={pipelineStage}
+        status={pipelineStatus}
+        message={pipelineMessage}
+        counters={pipelineCounters}
+        groups={pipelineGroups}
+        reportData={pipelineReportData}
+        onStart={startDerived}
+        onClose={closeDerived}
+      />
+    )}
+  </>
+);
 }
 
 function SmartSelectionLegacy({
@@ -7180,30 +7337,15 @@ function DerivationPipelineModal({
   );
 }
 
-function Products3ContentFixed({
-  rows,
-  selected,
-  onSelect,
-  onDerive,
-  onAddLibrary,
-  regions,
-}: {
-  rows: Product[];
-  selected: Product | null;
-  onSelect: (p: Product) => void;
-  onDerive: (p: Product) => void;
-  onAddLibrary: (p: Product) => Promise<void>;
-  regions: Array<{ region_name?: string; region_code?: string }>;
-}) {
-  const [added, setAdded] = useState<Record<string, boolean>>({});
-  const [derivedAdded, setDerivedAdded] = useState<Record<string, boolean>>({});
-  const [derivedReady, setDerivedReady] = useState<Record<string, boolean>>({});
+function useDerivation() {
   const [derivedSource, setDerivedSource] = useState<Product | null>(null);
   const [derivedRows, setDerivedRows] = useState<Product[]>([]);
   const [derivedLoading, setDerivedLoading] = useState(false);
   const [error, setError] = useState("");
-  const [pipelineTaskId, setPipelineTaskId] = useState<number | null>(null);
+  const [derivedReady, setDerivedReady] = useState<Record<string, boolean>>({});
+  const [derivedAdded, setDerivedAdded] = useState<Record<string, boolean>>({});
   const [pipelineActive, setPipelineActive] = useState(false);
+  const [pipelineTaskId, setPipelineTaskId] = useState<number | null>(null);
   const [pipelineProgress, setPipelineProgress] = useState(0);
   const [pipelineStage, setPipelineStage] = useState("created");
   const [pipelineStatus, setPipelineStatus] = useState<
@@ -7222,16 +7364,7 @@ function Products3ContentFixed({
   >([]);
   const [pipelineReportData, setPipelineReportData] =
     useState<PipelineReportData | null>(null);
-  const regionName =
-    FIXED_COUNTRIES.find(
-      (item) => item.code === String(selected?.region || "").toUpperCase(),
-    )?.name || selected?.region || "未标注";
-  const maxSales = Math.max(
-    1,
-    ...rows.map((r) =>
-      Number(r.sales_count ?? r.supplier_sales_count ?? 0),
-    ),
-  );
+
   async function viewDerived(product: Product) {
     setDerivedLoading(true);
     setError("");
@@ -7279,6 +7412,12 @@ function Products3ContentFixed({
       setPipelineMessage(e instanceof Error ? e.message : "启动衍生任务失败");
     }
   }
+  function closeDerived() {
+    setPipelineTaskId(null);
+    setPipelineActive(false);
+    setDerivedSource(null);
+  }
+
   useEffect(() => {
     if (!pipelineTaskId) return;
     const timer = window.setInterval(async () => {
@@ -7321,6 +7460,79 @@ function Products3ContentFixed({
       document.body.style.overflow = previousBodyOverflow;
     };
   }, [pipelineActive]);
+
+  return {
+    derivedSource,
+    setDerivedSource,
+    derivedRows,
+    derivedLoading,
+    error,
+    derivedReady,
+    derivedAdded,
+    setDerivedAdded,
+    pipelineActive,
+    pipelineProgress,
+    pipelineStage,
+    pipelineStatus,
+    pipelineMessage,
+    pipelineCounters,
+    pipelineGroups,
+    pipelineReportData,
+    viewDerived,
+    generateDerived,
+    startDerived,
+    closeDerived,
+  };
+}
+
+function Products3ContentFixed({
+  rows,
+  selected,
+  onSelect,
+  onDerive,
+  onAddLibrary,
+  regions,
+}: {
+  rows: Product[];
+  selected: Product | null;
+  onSelect: (p: Product) => void;
+  onDerive: (p: Product) => void;
+  onAddLibrary: (p: Product) => Promise<void>;
+  regions: Array<{ region_name?: string; region_code?: string }>;
+}) {
+  const [added, setAdded] = useState<Record<string, boolean>>({});
+  const {
+    derivedSource,
+    setDerivedSource,
+    derivedRows,
+    derivedLoading,
+    error,
+    derivedReady,
+    derivedAdded,
+    setDerivedAdded,
+    pipelineActive,
+    pipelineProgress,
+    pipelineStage,
+    pipelineStatus,
+    pipelineMessage,
+    pipelineCounters,
+    pipelineGroups,
+    pipelineReportData,
+    viewDerived,
+    generateDerived,
+    startDerived,
+    closeDerived,
+  } = useDerivation();
+  const regionName =
+    FIXED_COUNTRIES.find(
+      (item) => item.code === String(selected?.region || "").toUpperCase(),
+    )?.name || selected?.region || "未标注";
+  const maxSales = Math.max(
+    1,
+    ...rows.map((r) =>
+      Number(r.sales_count ?? r.supplier_sales_count ?? 0),
+    ),
+  );
   return (
     <>
       <div className="rank-workspace">
@@ -7511,11 +7723,7 @@ function Products3ContentFixed({
           groups={pipelineGroups}
           reportData={pipelineReportData}
           onStart={startDerived}
-          onClose={() => {
-            setPipelineTaskId(null);
-            setPipelineActive(false);
-            setDerivedSource(null);
-          }}
+          onClose={closeDerived}
         />
       )}
     </>
@@ -7805,7 +8013,7 @@ function App2Clean() {
             />
           )}
           {page === "library" && (
-            <LibraryPage rows={rows} onPublish={publishProduct} />
+            <LibraryPage rows={rows} onPublish={publishProduct} onAddLibrary={addToLibrary} />
           )}
           {["rank", "favorites"].includes(page) && (
             <Products3

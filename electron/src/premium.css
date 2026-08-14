@@ -1059,7 +1059,7 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
   transform: translateY(-3px); box-shadow: var(--shadow-md);
 }
 
-/* 选品库商品卡片：对齐新品榜单大卡片风格 */
+/* 选品库商品卡片：对齐新品榜单网格卡片风格（图片+标题+价格销量+热度条+双按钮） */
 .library-page .library-card {
   border-radius: 18px;
   background: var(--surface);
@@ -1086,20 +1086,18 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
 .library-page .library-card .card-index.top2 { background: linear-gradient(135deg, #e0863f, #c96a23); }
 .library-page .library-card .card-index.top3 { background: linear-gradient(135deg, #cdab57, #a9842f); }
 .library-page .library-card h3 { padding: 11px 12px 0; font-size: 13px; min-height: calc(13px * 1.4 * 2); }
-.library-page .library-card .card-tags { padding: 0 12px; margin-top: 8px; gap: 5px; }
-.library-page .library-card .card-chip,
-.library-page .library-card .supply-badge { padding: 3px 8px; font-size: 10px; border-radius: 999px; }
-.library-page .library-card .library-card-meta {
+.library-page .library-card .card-tags { display: none; }
+.library-page .library-card .product-meta {
   padding: 8px 12px 0; flex-direction: row; align-items: baseline; justify-content: space-between; gap: 0;
 }
-.library-page .library-card .library-card-meta strong { font-size: 17px; letter-spacing: -0.4px; }
-.library-page .library-card .library-card-meta span { font-size: 11px; color: var(--text-2); }
+.library-page .library-card .product-meta strong { font-size: 16px; color: var(--price); letter-spacing: -0.3px; }
+.library-page .library-card .product-meta span { font-size: 11px; color: var(--text-2); }
 .library-page .library-card .library-card-heat { padding: 6px 12px 0; margin-top: 0; }
-.library-page .library-card .library-card-heat i { height: 5px; border-radius: 999px; }
-.library-page .library-card > button {
-  margin: auto 12px 12px; width: calc(100% - 24px);
-  border-radius: 10px; padding: 8px 12px; font-size: 12px; font-weight: 700;
+.library-page .library-card .library-card-heat i { height: 3px; border-radius: 999px; }
+.library-page .library-card .product-actions {
+  padding: 10px 12px 12px; margin: auto 0 0;
 }
+.library-page .library-card > button { display: none; }
 
 /* ============================================================
    店铺管理
