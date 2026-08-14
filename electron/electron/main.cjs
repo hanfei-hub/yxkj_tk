@@ -21,7 +21,14 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
-  win.once("ready-to-show", () => win.show());
+  const revealWindow = () => {
+    if (win.isDestroyed()) return;
+    win.show();
+    win.focus();
+  };
+  win.once("ready-to-show", revealWindow);
+  win.webContents.once("did-fail-load", revealWindow);
+  setTimeout(revealWindow, 2500);
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
