@@ -7331,7 +7331,7 @@ function Products3ContentFixed({
                             <div className="image-empty">暂无图片</div>
                           )}
                         </div>
-                        <div className="derived-card-body">
+                        <div className="derived-card-info">
                           <h3 title={title(item)}>{title(item)}</h3>
                           <div className="derived-meta">
                             <strong>{money(item)}</strong>
@@ -7341,20 +7341,20 @@ function Products3ContentFixed({
                             <i><em style={{ width: `${heat}%` }} /></i>
                             <span>热度 {heat}%</span>
                           </div>
-                          <button
-                            className="derived-library-button"
-                            disabled={derivedAdded[itemKey]}
-                            onClick={async () => {
-                              await onAddLibrary(item);
-                              setDerivedAdded((current) => ({
-                                ...current,
-                                [itemKey]: true,
-                              }));
-                            }}
-                          >
-                            {derivedAdded[itemKey] ? "已加入选品库" : "加入选品库"}
-                          </button>
                         </div>
+                        <button
+                          className="derived-library-button"
+                          disabled={derivedAdded[itemKey]}
+                          onClick={async () => {
+                            await onAddLibrary(item);
+                            setDerivedAdded((current) => ({
+                              ...current,
+                              [itemKey]: true,
+                            }));
+                          }}
+                        >
+                          {derivedAdded[itemKey] ? "已加入选品库" : "加入选品库"}
+                        </button>
                       </article>
                     );
                   })}
