@@ -293,15 +293,123 @@ const FIXED_CATEGORIES = [
   "家具",
   "儿童时尚",
 ];
-const FIXED_COUNTRIES: Array<{ code: string; name: string }> = [
+const FIXED_COUNTRIES: Array<{ code: string; name: string; isNew?: boolean }> = [
   { code: "US", name: "美国" },
   { code: "JP", name: "日本" },
-  { code: "MY", name: "马来西亚" },
+  { code: "MY", name: "马来西亚", isNew: true },
   { code: "VN", name: "越南" },
   { code: "TH", name: "泰国" },
-  { code: "SG", name: "新加坡" },
+  { code: "SG", name: "新加坡", isNew: true },
   { code: "PH", name: "菲律宾" },
 ];
+
+function RegionFilterRow({
+  value,
+  onChange,
+  expanded,
+  onToggleExpand,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  expanded: boolean;
+  onToggleExpand: () => void;
+}) {
+  const firstRow = [{ code: "ALL", name: "全部" }, ...FIXED_COUNTRIES.slice(0, 4)];
+  const secondRow = FIXED_COUNTRIES.slice(4);
+  const renderChip = (item: (typeof FIXED_COUNTRIES)[0] | { code: string; name: string }) => (
+    <button
+      key={item.code}
+      className={value === item.code ? "active" : ""}
+      onClick={() => onChange(item.code)}
+    >
+      {item.name}
+      {"isNew" in item && item.isNew && <em className="new-badge">NEW</em>}
+    </button>
+  );
+  return (
+    <div className="filter-row">
+      <span className="filter-label">国家/地区：</span>
+      <div className="filter-chips">{firstRow.map(renderChip)}</div>
+      {secondRow.length > 0 && (
+        <button
+          type="button"
+          className="filter-toggle"
+          onClick={onToggleExpand}
+          aria-expanded={expanded}
+        >
+          {expanded ? "收起" : "展开"}
+          <span className={expanded ? "chevron-up" : "chevron-down"}>⌄</span>
+        </button>
+      )}
+      {expanded && secondRow.length > 0 && (
+        <div className="filter-chips filter-chips-more">{secondRow.map(renderChip)}</div>
+      )}
+    </div>
+  );
+}
+
+function CategoryFilterRow({
+  options,
+  value,
+  onChange,
+  expanded,
+  onToggleExpand,
+  allValue = "ALL",
+}: {
+  options: string[];
+  value: string;
+  onChange: (v: string) => void;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  allValue?: string;
+}) {
+  const first = options[0] || "全部";
+  const rest = options.slice(1);
+  const firstRowCount = 8;
+  const firstRow = [first, ...rest.slice(0, firstRowCount - 1)];
+  const secondRow = rest.slice(firstRowCount - 1);
+  return (
+    <div className="filter-row">
+      <span className="filter-label">商品分类：</span>
+      <div className="filter-chips">
+        {firstRow.map((item) => (
+          <button
+            key={item}
+            className={value === (item === first ? allValue : item) ? "active" : ""}
+            onClick={() => onChange(item === first ? allValue : item)}
+          >
+            {item}
+          </button>
+        ))}
+      </div>
+      {secondRow.length > 0 && (
+        <button
+          type="button"
+          className="filter-toggle"
+          onClick={onToggleExpand}
+          aria-expanded={expanded}
+        >
+          {expanded ? "收起" : "展开"}
+          <span className={expanded ? "chevron-up" : "chevron-down"}>⌄</span>
+        </button>
+      )}
+      {expanded && secondRow.length > 0 && (
+        <div className="filter-chips filter-chips-more">
+          {secondRow.map((item) => (
+            <button
+              key={item}
+              className={value === item ? "active" : ""}
+              onClick={() => onChange(item)}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function categoryLabel(value?: string) {
   return String(value || "").trim() || "未分类";
 }
@@ -2338,6 +2446,8 @@ function LibraryPage({
 }) {
   const [region, setRegion] = useState("ALL");
   const [category, setCategory] = useState("全部");
+  const [regionExpand, setRegionExpand] = useState(false);
+  const [categoryExpand, setCategoryExpand] = useState(false);
   const [selected, setSelected] = useState<Product | null>(null);
   const [regions, setRegions] = useState<
     Array<{ region_name?: string; region_code?: string }>
@@ -2458,37 +2568,21 @@ function LibraryPage({
           </div>
         </div>
       </div>
-      <div className="library-filters">
-        <div className="library-filter-row">
-          <b>国家：</b>
-          <button
-            className={region === "ALL" ? "active" : ""}
-            onClick={() => setRegion("ALL")}
-          >
-            全部
-          </button>
-          {FIXED_COUNTRIES.map((item) => (
-            <button
-              key={item.code}
-              className={region === item.code ? "active" : ""}
-              onClick={() => setRegion(item.code)}
-            >
-              {item.name}
-            </button>
-          ))}
-        </div>
-        <div className="library-filter-row">
-          <b>商品分类：</b>
-          {categories.map((item) => (
-            <button
-              key={item}
-              className={category === item ? "active" : ""}
-              onClick={() => setCategory(item)}
-            >
-              {item}
-            </button>
-          ))}
-        </div>
+      <div className="library-filters tiktok-filters">
+        <RegionFilterRow
+          value={region}
+          onChange={setRegion}
+          expanded={regionExpand}
+          onToggleExpand={() => setRegionExpand((v) => !v)}
+        />
+        <CategoryFilterRow
+          options={categories}
+          value={category}
+          onChange={setCategory}
+          expanded={categoryExpand}
+          onToggleExpand={() => setCategoryExpand((v) => !v)}
+          allValue="全部"
+        />
       </div>
       <div className="library-workspace">
         <section>
@@ -7449,6 +7543,8 @@ function Products3({
 }) {
   const [region, setRegion] = useState("ALL");
   const [category, setCategory] = useState("ALL");
+  const [regionExpand, setRegionExpand] = useState(false);
+  const [categoryExpand, setCategoryExpand] = useState(false);
   if (page === "favorites")
     return (
       <Products3Content
@@ -7478,45 +7574,21 @@ function Products3({
         </div>
         <span>{filtered.length} 个商品</span>
       </div>
-      <div className="rank-page-filters">
-        <div className="rank-filter-row">
-          <b>国家：</b>
-          <button
-            className={region === "ALL" ? "active" : ""}
-            onClick={() => setRegion("ALL")}
-          >
-            全部
-          </button>
-          {FIXED_COUNTRIES.map((item) => (
-            <button
-              key={item.code}
-              className={region === item.code ? "active" : ""}
-              onClick={() => setRegion(item.code)}
-            >
-              {item.name}
-            </button>
-          ))}
-        </div>
-        <div className="rank-filter-row">
-          <b>商品分类：</b>
-          <button
-            className={category === "ALL" ? "active" : ""}
-            onClick={() => setCategory("ALL")}
-          >
-            全部
-          </button>
-          {categoryOptions
-            .filter((item) => item !== "全部")
-            .map((item) => (
-              <button
-                key={item}
-                className={category === item ? "active" : ""}
-                onClick={() => setCategory(item)}
-              >
-                {item}
-              </button>
-            ))}
-        </div>
+      <div className="rank-page-filters tiktok-filters">
+        <RegionFilterRow
+          value={region}
+          onChange={setRegion}
+          expanded={regionExpand}
+          onToggleExpand={() => setRegionExpand((v) => !v)}
+        />
+        <CategoryFilterRow
+          options={categoryOptions}
+          value={category}
+          onChange={setCategory}
+          expanded={categoryExpand}
+          onToggleExpand={() => setCategoryExpand((v) => !v)}
+          allValue="ALL"
+        />
       </div>
       <Products3ContentFixed
         rows={filtered}

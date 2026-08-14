@@ -1718,6 +1718,66 @@ label { font-size: 12px; font-weight: 600; color: var(--text-2); }
   box-shadow: 0 4px 10px rgba(214, 69, 43, 0.25);
 }
 
+/* 2.1 TikTok 后台风格筛选区：左标签 + 胶囊 chips + 展开收起 + NEW badge */
+.tiktok-filters {
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-sm);
+  padding: 14px 16px;
+}
+.filter-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 10px 8px;
+}
+.filter-label {
+  grid-column: 1;
+  font-size: 12px; font-weight: 500; color: var(--text-2);
+  padding-top: 5px; white-space: nowrap; line-height: 1;
+}
+.filter-chips {
+  grid-column: 2;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+}
+.filter-toggle {
+  grid-column: 3;
+  align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--line-strong); background: var(--surface-2);
+  color: var(--text-2); font-size: 11px; font-weight: 500;
+  cursor: pointer; transition: all 0.15s ease;
+}
+.filter-toggle:hover { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft); }
+.filter-toggle span { display: inline-block; transition: transform 0.15s ease; line-height: 1; font-size: 12px; }
+.filter-toggle .chevron-up { transform: rotate(180deg); }
+.filter-chips-more { grid-column: 2; }
+.filter-chips button, .filter-chips-more button {
+  position: relative;
+  padding: 4px 11px; border-radius: 999px;
+  border: 1px solid var(--line-strong); background: var(--surface-2);
+  color: var(--text-2); font-size: 12px; font-weight: 500;
+  cursor: pointer; transition: all 0.15s ease;
+  line-height: 1.4;
+}
+.filter-chips button:hover, .filter-chips-more button:hover {
+  border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft);
+}
+.filter-chips button.active, .filter-chips-more button.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+  box-shadow: 0 4px 10px rgba(214, 69, 43, 0.25);
+}
+.filter-chips button .new-badge, .filter-chips-more button .new-badge {
+  position: absolute; top: -5px; right: -4px;
+  background: #13c2c2; color: #fff;
+  font-size: 8px; font-weight: 700; font-style: normal;
+  padding: 1px 4px; border-radius: 999px;
+  line-height: 1; letter-spacing: 0.2px;
+  box-shadow: 0 2px 4px rgba(19, 194, 194, 0.25);
+  pointer-events: none;
+}
+
 /* 3. 榜单商品卡片：选中高亮 + 价格销售行对齐 */
 .product.selected {
   border-color: var(--accent);
