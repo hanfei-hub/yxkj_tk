@@ -49,6 +49,16 @@ class SelectionPipelineRequest(BaseModel):
     message: str
     mode: str = "selection"
     source_product_id: int | None = None
+    region: str = "JP"
+    blue_ocean_strategy: str = "comprehensive"
+
+
+# 蓝海模式支持的市场区域（与 selection_pipeline_service._REGION_LANGUAGE 对齐）
+_SUPPORTED_REGIONS = {
+    "JP", "US", "GB", "DE", "FR", "IT", "ES", "ID", "MY",
+    "TH", "VN", "PH", "SG", "BR", "MX", "IE",
+}
+_SUPPORTED_STRATEGIES = {"comprehensive", "competition", "competition_growth"}
 
 
 def _report_product_payload(item: SelectionDidadogProduct) -> dict:
@@ -170,7 +180,22 @@ def create_selection_pipeline(
         raise HTTPException(status_code=400, detail="选品需求不能为空")
     if payload.mode == "derivation" and not payload.source_product_id:
         raise HTTPException(status_code=400, detail="衍生任务缺少原商品 ID")
-    task = create_selection_pipeline_task(db, user_id=int(user.get("id") or 0), message=message, mode=payload.mode, source_product_id=payload.source_product_id)
+    if payload.mode == "keyword_blue_ocean":
+        region = (payload.region or "JP").strip().upper()
+        strategy = (payload.blue_ocean_strategy or "comprehensive").strip() or "comprehensive"
+        if region not in _SUPPORTED_REGIONS:
+            raise HTTPException(status_code=400, detail=f"暂不支持的市场区域：{region}")
+        if strategy not in _SUPPORTED_STRATEGIES:
+            raise HTTPException(status_code=400, detail=f"暂不支持的蓝海策略：{strategy}")
+        task = create_selection_pipeline_task(
+            db, user_id=int(user.get("id") or 0), message=message,
+            mode="keyword_blue_ocean", region=region, blue_ocean_strategy=strategy,
+        )
+    else:
+        task = create_selection_pipeline_task(
+            db, user_id=int(user.get("id") or 0), message=message,
+            mode=payload.mode, source_product_id=payload.source_product_id,
+        )
     background_tasks.add_task(run_selection_pipeline, task.id)
     return {"ok": True, "task_id": task.id, "status": task.status, "stage": task.current_stage, "progress": task.stage_progress}
 
@@ -201,32 +226,50 @@ def get_selection_pipeline_task(
     didadog_products = list(db.scalars(select(SelectionDidadogProduct).where(SelectionDidadogProduct.pipeline_task_id == task.id).order_by(SelectionDidadogProduct.id)).all())
     linked_candidates = _linked_supplier_items(db, task.id, "candidate")
     linked_finals = _linked_supplier_items(db, task.id, "final")
-    try:
-        snapshot = json.loads(task.result_snapshot or "{}")
-    except ValueError:
-        snapshot = {}
-    return {
-        "id": task.id,
-        "mode": task.pipeline_mode,
-        "source_product_id": task.source_product_id,
-        "input_message": task.input_message,
-        "status": task.status,
-        "stage": task.current_stage,
-        "progress": task.stage_progress,
-        "message": snapshot.get("message") or task.error_message or "",
-        "ai_report": snapshot.get("report_analysis") or {},
-        "error_message": task.error_message,
-        "counters": {
-            "keywords": task.keyword_count,
-            "supplier_candidates": task.supplier_candidate_count,
-            "image_search_entries": task.image_search_entry_count,
-            "didadog_ids": task.didadog_id_count,
-            "didadog_details": task.didadog_detail_count,
-            "candidates": task.candidate_count,
-            "final_products": task.final_count,
-        },
-        "keywords": [{"id": item.id, "keyword": item.keyword, "supplier_count": item.supplier_count, "image_search_entry_count": item.image_search_entry_count, "didadog_product_count": item.didadog_product_count} for item in keywords],
-        "board_groups": [
+    # 关键词蓝海模式：商品直接落在 SelectionDidadogProduct（无 1688/图搜中间表），
+    # 需要据此重建候选/精选与按关键词分组，保证前端看板与报告正常渲染。
+    if task.pipeline_mode == "keyword_blue_ocean":
+        def _didadog_item(p: SelectionDidadogProduct) -> dict:
+            try:
+                meta = json.loads(p.selection_meta or "{}")
+            except (TypeError, ValueError):
+                meta = {}
+            eliminated = (
+                p.selection_status in {"eliminated", "failed"}
+                or p.detail_status in {"failed", "eliminated", "compliance_failed", "restriction_failed"}
+            )
+            return {
+                "id": p.didadog_product_id or f"d-{p.id}",
+                "title": p.title or p.didadog_product_id or "未命名商品",
+                "image_url": p.image_url,
+                "price": p.price,
+                "currency": p.currency or "CNY",
+                "sales_count": p.sales_count,
+                "shop_name": "",
+                "source_url": p.detail_url or p.source_url or "",
+                "selection_status": p.selection_status,
+                "eliminated": eliminated,
+                "tier": meta.get("tier", "regular"),
+                "novelty_score": meta.get("novelty"),
+                "content_score": meta.get("content"),
+                "highlight_reason": meta.get("reason", ""),
+            }
+
+        linked_candidates = [_didadog_item(p) for p in didadog_products if p.selection_status == "candidate"]
+        linked_finals = [_didadog_item(p) for p in didadog_products if p.selection_status == "final"]
+        _by_kw: dict[int, list[SelectionDidadogProduct]] = {}
+        for p in didadog_products:
+            _by_kw.setdefault(p.keyword_id, []).append(p)
+        board_groups = [
+            {
+                "keyword_id": kw.id,
+                "keyword": kw.keyword,
+                "items": [_didadog_item(p) for p in _by_kw.get(kw.id, [])][:10],
+            }
+            for kw in keywords
+        ]
+    else:
+        board_groups = [
             {
                 "keyword_id": keyword.id,
                 "keyword": keyword.keyword,
@@ -248,7 +291,35 @@ def get_selection_pipeline_task(
                 ][:10],
             }
             for keyword in keywords
-        ],
+        ]
+    try:
+        snapshot = json.loads(task.result_snapshot or "{}")
+    except ValueError:
+        snapshot = {}
+    return {
+        "id": task.id,
+        "mode": task.pipeline_mode,
+        "region": snapshot.get("region") or "JP",
+        "blue_ocean_strategy": snapshot.get("strategy") or "comprehensive",
+        "source_product_id": task.source_product_id,
+        "input_message": task.input_message,
+        "status": task.status,
+        "stage": task.current_stage,
+        "progress": task.stage_progress,
+        "message": snapshot.get("message") or task.error_message or "",
+        "ai_report": snapshot.get("report_analysis") or {},
+        "error_message": task.error_message,
+        "counters": {
+            "keywords": task.keyword_count,
+            "supplier_candidates": task.supplier_candidate_count,
+            "image_search_entries": task.image_search_entry_count,
+            "didadog_ids": task.didadog_id_count,
+            "didadog_details": task.didadog_detail_count,
+            "candidates": len(linked_candidates),
+            "final_products": task.final_count,
+        },
+        "keywords": [{"id": item.id, "keyword": item.keyword, "supplier_count": item.supplier_count, "image_search_entry_count": item.image_search_entry_count, "didadog_product_count": item.didadog_product_count} for item in keywords],
+        "board_groups": board_groups,
         "candidate_items": linked_candidates,
         "final_items": linked_finals,
         "board_items": [

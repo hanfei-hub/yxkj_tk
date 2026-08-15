@@ -22,7 +22,7 @@ from app.models.entities import (
     UserSearchRecommendation,
 )
 from app.services.ai_model_service import MODEL_TYPE_GENERAL, ModelCallError, chat_completion, extract_json_object
-from app.services.echotik_service import EchoTikError, get_product_details, search_by_image
+from app.services.echotik_service import EchoTikError, search_by_image, search_by_keyword
 from app.services.supplier_1688_service import Supplier1688Error, search_1688_products
 from app.services.system_settings_service import ensure_system_settings, get_setting_int
 
@@ -30,14 +30,15 @@ from app.services.system_settings_service import ensure_system_settings, get_set
 PIPELINE_TASK_TYPE = "selection_pipeline_v2"
 PIPELINE_STAGES = (
     "keyword_generation",
+    "keyword_translate",
     "supplier_search",
     "price_seed_selection",
     "image_search",
-    "product_detail",
     "blue_ocean_filter",
     "compliance_filter",
     "restriction_check",
     "final_selection",
+    "report_generation",
 )
 
 PIPELINE_TARGETS = {
@@ -54,7 +55,7 @@ PIPELINE_TARGETS = {
 def _pipeline_limits(db: Session) -> tuple[bool, int, int, int]:
     ensure_system_settings(db)
     test_mode = get_setting_int(db, "selection_pipeline_test_mode") == 1
-    keyword_limit = max(5, get_setting_int(db, "selection_pipeline_test_keywords")) if test_mode else 35
+    keyword_limit = max(10, get_setting_int(db, "selection_pipeline_test_keywords")) if test_mode else 35
     supplier_page_size = get_setting_int(db, "selection_pipeline_test_supplier_page_size") if test_mode else 10
     seed_per_keyword = 2
     return test_mode, max(1, keyword_limit), max(1, supplier_page_size), seed_per_keyword
@@ -64,19 +65,27 @@ def _pipeline_targets(keyword_limit: int, supplier_page_size: int, seed_per_keyw
     return {**PIPELINE_TARGETS, "keywords": keyword_limit, "supplier_candidates": keyword_limit * supplier_page_size, "image_search_entries": keyword_limit * seed_per_keyword, "didadog_ids": keyword_limit * seed_per_keyword * 6, "didadog_details": keyword_limit * seed_per_keyword * 6}
 
 
-def create_selection_pipeline_task(db: Session, *, user_id: int, message: str, mode: str = "selection", source_product_id: int | None = None) -> SelectionPipelineTask:
+def create_selection_pipeline_task(db: Session, *, user_id: int, message: str, mode: str = "selection", source_product_id: int | None = None, region: str = "JP", blue_ocean_strategy: str = "comprehensive") -> SelectionPipelineTask:
     test_mode, keyword_limit, supplier_page_size, seed_per_keyword = _pipeline_limits(db)
     targets = _pipeline_targets(keyword_limit, supplier_page_size, seed_per_keyword)
+    allowed_modes = {"selection", "derivation", "keyword_blue_ocean"}
     task = SelectionPipelineTask(
         user_id=user_id,
-        pipeline_mode=mode if mode in {"selection", "derivation"} else "selection",
+        pipeline_mode=mode if mode in allowed_modes else "selection",
         source_product_id=source_product_id,
         input_message=message.strip(),
         status="pending",
         current_stage="created",
         stage_progress=0,
         result_snapshot=json.dumps(
-            {"targets": targets, "stages": list(PIPELINE_STAGES), "test_mode": test_mode},
+            {
+                "targets": targets,
+                "stages": list(PIPELINE_STAGES),
+                "test_mode": test_mode,
+                "region": (region or "JP").upper(),
+                "strategy": blue_ocean_strategy or "comprehensive",
+                "mode": mode if mode in allowed_modes else "selection",
+            },
             ensure_ascii=False,
         ),
         started_at=datetime.utcnow(),
@@ -398,7 +407,7 @@ def _generate_report_analysis(db: Session, task: SelectionPipelineTask, candidat
     )
     if portfolio_hint:
         prompt += (
-            f"\n本次最终 10 款精选的组合分布为：{portfolio_hint}。"
+            f"\n本次最终 {getattr(task, 'final_count', 0) or 10} 款精选的组合分布为：{portfolio_hint}。"
             "请在 final_strategy 与 conclusion 中自然体现这一『爆款+常规+新品+奇特+亮点』多元组合思路，"
             "说明其兼顾已验证需求与内容出圈潜力，但严禁编造具体销量数字。"
         )
@@ -448,6 +457,37 @@ def _normalize_keywords(raw: Any) -> list[str]:
         if text and text not in result:
             result.append(text)
     return result[:50]
+
+
+def _normalize_blue_keywords(raw: Any) -> list[dict[str, str]]:
+    """解析蓝海模式的结构化关键词输出，每个元素含三个字段：
+    - search_term：简短核心搜索词（2-6 字中文短语，像真人会搜的词），用于 EchoTik / 1688 搜索；
+                   避免把长描述句直接拿去搜导致搜不到被误判蓝海。
+    - product_name：描述性商品名（场景/人群+功能+形态），用于展示/报告/关键词行。
+    - pain_point：对应的日本人群具体痛点（可选）。
+    兼容旧版纯字符串数组：字符串既作 search_term 也作 product_name。
+    """
+    if isinstance(raw, dict):
+        raw = raw.get("keywords") or raw.get("items") or raw.get("products") or []
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if isinstance(item, dict):
+            st = str(item.get("search_term") or item.get("keyword") or item.get("product_name")
+                     or item.get("title") or "").strip()
+            pn = str(item.get("product_name") or item.get("keyword") or item.get("title")
+                     or item.get("name") or st).strip()
+            pp = str(item.get("pain_point") or item.get("pain") or "").strip()
+        else:
+            st = pn = str(item or "").strip()
+            pp = ""
+        if not st or st in seen:
+            continue
+        seen.add(st)
+        out.append({"search_term": st, "product_name": pn, "pain_point": pp})
+    return out[:50]
 
 
 def _jp_trend_calendar(now: datetime) -> str:
@@ -600,13 +640,75 @@ def _write_error(db: Session, task: SelectionPipelineTask, message: str) -> None
 
 def _set_product_reason(product: SelectionDidadogProduct, reason: str) -> None:
     product.elimination_reason = reason[:1000]
+
+
+def _parse_photo_search_items(raw_response: Any) -> dict[str, dict[str, Any]]:
+    """从 photo-search 原始响应解析 search_result_id -> item 映射。"""
     try:
-        raw = json.loads(product.raw_data or "{}")
+        raw = json.loads(raw_response) if isinstance(raw_response, str) else raw_response
     except (TypeError, ValueError):
-        raw = {}
-    raw["selection_status"] = product.selection_status
-    raw["elimination_reason"] = product.elimination_reason
-    product.raw_data = json.dumps(raw, ensure_ascii=False)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    data = raw.get("data")
+    if not isinstance(data, dict):
+        return {}
+    items = data.get("e_com_items")
+    if not isinstance(items, list):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        state = item.get("shop_view_data", {}).get("init_state", {}) if isinstance(item.get("shop_view_data"), dict) else {}
+        # 合并 item 顶层与 init_state 层字段
+        merged = {**item, **state}
+        sid = str(merged.get("search_result_id") or merged.get("product_id") or merged.get("product_id_str") or "").strip()
+        if sid:
+            result[sid] = merged
+        item_key = str(merged.get("item_key") or "").strip()
+        if item_key and "_" in item_key:
+            # item_key 示例：202608151125399171EEEE36BB0E7AEE6B_1735563780077618288_1
+            key_id = item_key.rsplit("_", 1)[0].rsplit("_", 1)[-1]
+            if key_id and key_id not in result:
+                result[key_id] = merged
+    return result
+
+
+def _extract_product_cover(raw: dict[str, Any]) -> str:
+    """合并 detail/photo-search 多层图片字段，返回单个图片 URL。"""
+    cover_value = raw.get("image_url") or raw.get("imageUrl") or raw.get("cover_url") or raw.get("cover") or raw.get("main_image") or ""
+    if isinstance(cover_value, str) and cover_value.startswith("["):
+        try:
+            cover_items = json.loads(cover_value)
+            cover_value = (cover_items[0] or {}).get("url") if isinstance(cover_items, list) and cover_items else ""
+        except (TypeError, ValueError, IndexError):
+            cover_value = ""
+    return str(cover_value or "")
+
+
+def _extract_product_price(raw: dict[str, Any]) -> float:
+    for key in ("price", "min_price", "spu_avg_price", "sale_price_value", "product_price", "sales_price", "sale_price"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        try:
+            return float(str(value).replace(",", "").replace("円", "").strip())
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _extract_product_sales(raw: dict[str, Any]) -> int:
+    for key in ("sales_count", "sales", "sold_count", "total_sale_cnt", "sold_count_burying_point"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        try:
+            return int(str(value).replace(",", "").strip())
+        except (TypeError, ValueError):
+            continue
+    return 0
 
 
 def _parse_compliance_result(raw: Any) -> dict[str, tuple[bool, str]]:
@@ -636,9 +738,13 @@ def _run_compliance_filter(db: Session, products: list[SelectionDidadogProduct])
     names = [{"product_id": item.didadog_product_id, "title": item.title, "category": item.category} for item in products]
     prompt = (
         f"{constant.constant_content if constant else ''}\n"
-        "请按照日本法规、禁运、禁售、平台限制、专利侵权、商标侵权、海关报关与检疫受限审核以下商品。"
-        "判断维度：①禁运/禁售；②平台限售；③专利或商标侵权（含外观设计）；④海关报关受限或需检疫检验（如食品、药品、动植物、医疗器械）。只输出 JSON。"
-        "格式：{\"items\":[{\"product_id\":\"商品ID\",\"compliant\":true,\"reason\":\"原因\"}]}。"
+        "你是日本跨境商品合规预审员，负责判断商品是否可以在日本市场销售。"
+        "判断标准（严格区分）：\n"
+        "- 必须判为不合规（compliant=false）的情况：日本法律 outright 禁售、平台禁售、明显侵犯商标/专利/外观设计、海关明确禁止进口、需提供特许/检疫而无法满足。\n"
+        "- 应判为合规（compliant=true）的情况：普通日用品（如 USB 小风扇、收纳盒、水杯、保温杯、厨房工具、美妆小工具、宠物用品等）仅有一般认证要求（如 PSE、食品接触）但无明显禁售理由；标题信息不足但无明确风险。\n"
+        "- 不要把「建议做认证/测试」直接等同于不合规；只有「没有认证就一定不能卖」的商品才判 false。\n"
+        "- 对于常见低压 USB 供电小电器、普通塑料制品、玻璃/不锈钢餐具、普通家居用品，默认可通过，仅提示需关注的认证或标签要求。\n"
+        "只输出 JSON，格式：{\"items\":[{\"product_id\":\"商品ID\",\"compliant\":true|false,\"reason\":\"原因\"}]}。\n"
         f"商品：{json.dumps(names, ensure_ascii=False)}"
     )
     answer = chat_completion(
@@ -788,6 +894,9 @@ def run_selection_pipeline(task_id: int) -> None:
         task = db.get(SelectionPipelineTask, task_id)
         if not task:
             return
+        if task.pipeline_mode == "keyword_blue_ocean":
+            run_keyword_blue_ocean_pipeline(task_id)
+            return
         try:
             test_mode, keyword_limit, supplier_page_size, seed_per_keyword = _pipeline_limits(db)
             derivation_mode = task.pipeline_mode == "derivation"
@@ -906,14 +1015,23 @@ def run_selection_pipeline(task_id: int) -> None:
                     entry.returned_id_count = len(ids)
                     entry.raw_response = json.dumps(result.get("raw_data") or {}, ensure_ascii=False)
                     entry.status = "success"
+                    photo_items = _parse_photo_search_items(entry.raw_response)
                     for product_id in ids:
+                        item = photo_items.get(str(product_id), {}) or {}
                         db.add(SelectionDidadogProduct(
                             pipeline_task_id=task.id,
                             keyword_id=seed.keyword_id,
                             image_search_entry_id=entry.id,
                             user_id=task.user_id,
                             didadog_product_id=str(product_id),
-                            detail_status="pending",
+                            detail_status="success",
+                            title=str(item.get("title") or item.get("name") or item.get("product_name") or "")[:512],
+                            image_url=_extract_product_cover(item),
+                            detail_url=str(item.get("detail_url") or item.get("url") or item.get("share_url") or ""),
+                            price=_extract_product_price(item),
+                            sales_count=_extract_product_sales(item),
+                            category=str(item.get("category") or item.get("category_name") or "")[:255],
+                            raw_data=json.dumps(item, ensure_ascii=False),
                         ))
                 except EchoTikError as exc:
                     entry.status = "failed"
@@ -924,84 +1042,41 @@ def run_selection_pipeline(task_id: int) -> None:
             task.didadog_id_count = didadog_count
             update_pipeline_stage(db, task, stage="image_search", progress=70, message=f"以图搜款已完成，获得 {didadog_count} 个商品 ID")
 
-            products = list(db.scalars(select(SelectionDidadogProduct).where(SelectionDidadogProduct.pipeline_task_id == task.id, SelectionDidadogProduct.detail_status == "pending")).all())
-            for start in range(0, len(products), 10):
-                batch = products[start:start + 10]
-                try:
-                    details = get_product_details(db, [item.didadog_product_id for item in batch]).get("items") or []
-                    details_by_id = {str(item.get("product_id") or item.get("productId") or item.get("id")): item for item in details if isinstance(item, dict)}
-                    for product in batch:
-                        raw = details_by_id.get(product.didadog_product_id, {})
-                        product.title = str(raw.get("title") or raw.get("name") or raw.get("product_name") or "")[:512]
-                        cover_value = raw.get("image_url") or raw.get("imageUrl") or raw.get("cover") or raw.get("cover_url") or ""
-                        if isinstance(cover_value, str) and cover_value.startswith("["):
-                            try:
-                                cover_items = json.loads(cover_value)
-                                cover_value = (cover_items[0] or {}).get("url") if isinstance(cover_items, list) and cover_items else ""
-                            except (TypeError, ValueError, IndexError):
-                                cover_value = ""
-                        product.image_url = str(cover_value or "")
-                        product.detail_url = str(raw.get("detail_url") or raw.get("url") or raw.get("share_url") or "")
-                        product.price = float(raw.get("price") or raw.get("min_price") or raw.get("spu_avg_price") or 0)
-                        product.sales_count = int(raw.get("sales_count") or raw.get("sales") or raw.get("sold_count") or raw.get("total_sale_cnt") or 0)
-                        product.category = str(raw.get("category") or raw.get("category_name") or "")[:255]
-                        product.detail_status = "success"
-                        product.raw_data = json.dumps(raw, ensure_ascii=False)
-                except EchoTikError as exc:
-                    for product in batch:
-                        product.detail_status = "failed"
-                        product.raw_data = json.dumps({"error": str(exc)}, ensure_ascii=False)
-                db.commit()
-            task.didadog_detail_count = len([item for item in products if item.detail_status == "success"])
-            detailed_products = [item for item in products if item.detail_status == "success"]
+            # product/detail 阶段已移除：EchoTik 以图搜款返回的 e_com_items 已包含完整
+            # title/cover/price/sales 字段，图搜阶段已直接填充商品数据；不再二次调用
+            # product/detail（其 search_result_id 匹配率低，且额外消耗 EchoTik 配额）。
+            detailed_products = list(db.scalars(select(SelectionDidadogProduct).where(SelectionDidadogProduct.pipeline_task_id == task.id)).all())
+            task.didadog_detail_count = len(detailed_products)
 
             # 不使用 1688 兜底：EchoTik 以图搜款若全部失败或返回空，则本任务没有可用商品，
             # 下游筛选直接跳过，终局不会填充任何兜底商品（界面不展示任何商品）。
             if not detailed_products:
                 update_pipeline_stage(db, task, stage="image_search", progress=72, message="EchoTik 以图搜款未返回数据，本任务无可用商品，下游筛选跳过")
 
-            update_pipeline_stage(db, task, stage="blue_ocean_filter", progress=78, message="正在按大模型商品分组，筛出 100 个低销量蓝海候选")
+            update_pipeline_stage(db, task, stage="blue_ocean_filter", progress=78, message="正在按关键词分组筛出低销量蓝海候选")
+            # 蓝海筛选：按关键词分组，每组保留销量较低的最多 5 个；
+            # 若总数超过 30，则全局按销量升序保留最低的 30 个进入合规审核。
             grouped: dict[int, list[SelectionDidadogProduct]] = {}
             for product in detailed_products:
                 grouped.setdefault(product.keyword_id, []).append(product)
             blue_ocean_pool: list[SelectionDidadogProduct] = []
             for group in grouped.values():
                 group.sort(key=lambda item: (int(item.sales_count or 0), item.id))
-                for product in group[2:]:
+                for product in group[5:]:
                     product.selection_status = "blue_ocean_eliminated"
-                    _set_product_reason(product, "同大模型商品分组中销量较高，作为红海商品淘汰")
-                for product in group[:2]:
+                    _set_product_reason(product, "同关键词下销量较高，作为红海商品淘汰")
+                for product in group[:5]:
                     product.selection_status = "blue_ocean_pool"
                     blue_ocean_pool.append(product)
-            blue_ocean_pool.sort(key=lambda item: (-int(item.sales_count or 0), item.id))
-            for product in blue_ocean_pool[:max(0, len(blue_ocean_pool) - 30)]:
+            blue_ocean_pool.sort(key=lambda item: (int(item.sales_count or 0), item.id))
+            keep_count = min(30, len(blue_ocean_pool))
+            for product in blue_ocean_pool[keep_count:]:
                 product.selection_status = "blue_ocean_eliminated"
-                _set_product_reason(product, "销量排名靠前，淘汰以规避成熟红海商品")
-            candidates = [item for item in blue_ocean_pool if item.selection_status == "blue_ocean_pool"]
+                _set_product_reason(product, "全局销量排名靠前，淘汰以规避成熟红海商品")
+            candidates = blue_ocean_pool[:keep_count]
             for product in candidates:
                 product.selection_status = "candidate"
             task.candidate_count = len(candidates)
-            # Blue-ocean ranking is performed per 1688 image seed: sum all
-            # EchoTik sales returned for that seed, then keep the 30 lowest
-            # sales seeds and send their products to compliance review.
-            seed_groups: dict[int, list[SelectionDidadogProduct]] = {}
-            for product in detailed_products:
-                seed_groups.setdefault(product.image_search_entry_id, []).append(product)
-            ranked_seed_groups = sorted(
-                ((entry_id, group, sum(int(item.sales_count or 0) for item in group)) for entry_id, group in seed_groups.items()),
-                key=lambda item: (item[2], item[0]),
-            )
-            keep_group_count = min(30, len(ranked_seed_groups))
-            kept_seed_ids = {entry_id for entry_id, _, _ in ranked_seed_groups[:keep_group_count]}
-            for entry_id, group, total_sales in ranked_seed_groups:
-                for product in group:
-                    if entry_id in kept_seed_ids:
-                        product.selection_status = "candidate"
-                    else:
-                        product.selection_status = "blue_ocean_eliminated"
-                        _set_product_reason(product, f"对应1688商品的 EchoTik 商品销量合计为 {total_sales}，蓝海筛选淘汰")
-            candidates = [product for entry_id, group, _ in ranked_seed_groups if entry_id in kept_seed_ids for product in group]
-            task.candidate_count = keep_group_count
             db.commit()
             update_pipeline_stage(db, task, stage="compliance_filter", progress=85, message=f"正在审核 {len(candidates)} 个候选商品的日本法规和禁运风险")
             _run_compliance_filter(db, candidates)
@@ -1010,7 +1085,8 @@ def run_selection_pipeline(task_id: int) -> None:
             update_pipeline_stage(db, task, stage="restriction_check", progress=91, message="正在查询限售库并标记需要报白的商品")
             _run_restriction_check(db, passed)
             db.commit()
-            update_pipeline_stage(db, task, stage="final_selection", progress=96, message="正在按五类组合（爆款/常规/新品/奇特/亮点）精选最终 10 款")
+            final_limit = 3 if test_mode else 10
+            update_pipeline_stage(db, task, stage="final_selection", progress=96, message=f"正在按五类组合（爆款/常规/新品/奇特/亮点）精选最终 {final_limit} 款")
             eligible = [item for item in passed if item.restriction_status != "restricted"]
             now = datetime.utcnow() + timedelta(hours=9)
             scores = _score_novelty_content(db, eligible)
@@ -1084,8 +1160,8 @@ def run_selection_pipeline(task_id: int) -> None:
                         break
                 return out
 
-            # 每类配额 2 款，共 10；亮点要求标题去重（diversity）
-            QUOTA = {"highlight": 2, "quirky": 2, "new": 2, "hot": 2, "regular": 2}
+            # 测试阶段少量输出（3 款），生产保持 10 款；亮点要求标题去重（diversity）
+            QUOTA = {"highlight": 2, "quirky": 2, "new": 2, "hot": 2, "regular": 2} if final_limit >= 10 else {"highlight": 1, "quirky": 1, "new": 1, "hot": 0, "regular": 0}
             within_key: dict[str, Any] = {
                 "highlight": lambda p: (-(scores[p.id]["novelty"] + scores[p.id]["content"]), p.id),
                 "quirky": lambda p: (-scores[p.id]["novelty"], p.id),
@@ -1097,14 +1173,14 @@ def run_selection_pipeline(task_id: int) -> None:
                 _pick(buckets[tier], within_key[tier], QUOTA[tier], diversity=(tier == "highlight"))
 
             # 缺口补齐：剩余候选按综合分排序，分类取其本身分层（兜底常规）
-            if len(chosen_ids) < 10:
+            if len(chosen_ids) < final_limit:
                 remain = [p for p in eligible if p.id not in chosen_ids]
                 remain.sort(key=lambda p: (
                     -(scores[p.id]["novelty"] + scores[p.id]["content"] + _trend_score(p.title, p.category, now) * 2 + _sales_norm(p) * 30),
                     p.id,
                 ))
                 for p in remain:
-                    if len(chosen_ids) >= 10:
+                    if len(chosen_ids) >= final_limit:
                         break
                     chosen_ids.add(p.id)
 
@@ -1148,5 +1224,349 @@ def run_selection_pipeline(task_id: int) -> None:
             except Exception as exc:
                 # 自动入库失败不应影响任务成功状态，只记录日志
                 print(f"[selection_pipeline] 自动入库失败 task={task.id}: {exc}")
+        except Exception as exc:
+            _write_error(db, task, str(exc))
+
+
+# ===================== 新模式：关键词级蓝海筛选（keyword_blue_ocean） =====================
+
+_REGION_LANGUAGE = {
+    "JP": "日语", "US": "英语", "GB": "英语", "DE": "德语", "FR": "法语",
+    "IT": "意大利语", "ES": "西班牙语", "ID": "印尼语", "MY": "马来语",
+    "TH": "泰语", "VN": "越南语", "PH": "英语", "SG": "英语", "BR": "葡萄牙语",
+    "MX": "西班牙语", "IE": "英语",
+}
+# 蓝海阈值（接口不返回市场总量 total，用头部结果强度代理判断）
+_BLUE_SATURATION_MAX_SALE = 2000   # 头部单品销量超过此值视为已爆（红海）；仅用于排除爆款，不再卡低销量数字
+
+
+def _translate_keywords_to_region(db: Session, keywords: list[str], region: str) -> list[str]:
+    language = _REGION_LANGUAGE.get(region.upper(), "英语")
+    if region.upper() == "CN":
+        return list(keywords)
+    prompt = (
+        f"把下面的中文电商商品关键词翻译成{language}（用于搜索 TikTok {region} 站点的商品）。"
+        "只输出 JSON 数组，顺序与原数组一一对应，不要编号、不要解释。\n"
+        f"原关键词：{json.dumps(keywords, ensure_ascii=False)}"
+    )
+    try:
+        answer = chat_completion(
+            db,
+            [{"role": "system", "content": "你是跨境电商关键词翻译专家，只输出 JSON。"},
+             {"role": "user", "content": prompt}],
+            model_type=MODEL_TYPE_GENERAL, temperature=0.3, max_tokens=2000,
+        )
+        translated = _normalize_keywords(extract_json_object(answer))
+        if len(translated) == len(keywords):
+            return translated
+        out = []
+        for i, k in enumerate(keywords):
+            out.append(translated[i] if i < len(translated) and translated[i] else k)
+        return out
+    except (ModelCallError, ValueError, TypeError):
+        return list(keywords)
+
+
+def _aggregate_blue_features(products: list[dict[str, Any]]) -> dict[str, Any]:
+    sales = [int(p.get("total_sale_cnt") or 0) for p in products]
+    ifl = [int(p.get("total_ifl_cnt") or 0) for p in products]
+    gmv = [float(p.get("total_sale_gmv_amt") or 0) for p in products]
+    crawl: list[int] = []
+    for p in products:
+        try:
+            crawl.append(int(p.get("first_crawl_dt") or 0))
+        except (TypeError, ValueError):
+            crawl.append(0)
+    trend_up = 0
+    for p in products:
+        tf = p.get("sales_trend_flag")
+        if tf is True or tf == 1 or (isinstance(tf, str) and any(w in tf.lower() for w in ["up", "涨", "升", "rising", "green"])):
+            trend_up += 1
+    hot = sum(1 for p in products if p.get("is_hot"))
+    n = max(1, len(products))
+    now_yyyymm = int((datetime.utcnow() + timedelta(hours=9)).strftime("%Y%m"))
+    fresh = sum(1 for c in crawl if c and abs(now_yyyymm - (c // 100)) <= 4)  # 近 4 个月内收录
+    return {
+        "count": len(products),
+        "head_max_sale": max(sales) if sales else 0,
+        "head_avg_sale": (sum(sales) / n) if sales else 0.0,
+        "head_ifl": sum(ifl),
+        "head_gmv": sum(gmv),
+        "head_trend_up": trend_up / n,
+        "head_fresh": fresh / n,
+        "head_hot": hot,
+    }
+
+
+def _norm(v: float, lo: float, hi: float) -> float:
+    if hi <= lo:
+        return 0.5
+    return max(0.0, min(1.0, (v - lo) / (hi - lo)))
+
+
+def _score_blue_keywords(evaluated: list[dict[str, Any]], strategy: str) -> None:
+    max_sales = [e["features"]["head_max_sale"] for e in evaluated]
+    avg_sales = [e["features"]["head_avg_sale"] for e in evaluated]
+    ifls = [e["features"]["head_ifl"] for e in evaluated]
+    hots = [e["features"]["head_hot"] for e in evaluated]
+    lo_max, hi_max = min(max_sales), max(max_sales)
+    lo_avg, hi_avg = min(avg_sales), max(avg_sales)
+    lo_ifl, hi_ifl = min(ifls), max(ifls)
+    lo_hot, hi_hot = min(hots), max(hots)
+    for e in evaluated:
+        f = e["features"]
+        competition = 1 - _norm(f["head_max_sale"], lo_max, hi_max) - 0.3 * _norm(f["head_ifl"], lo_ifl, hi_ifl)
+        competition = max(0.0, min(1.0, competition))
+        demand_norm = _norm(f["head_avg_sale"], lo_avg, hi_avg)
+        trend = max(0.0, min(1.0, f["head_trend_up"] + 0.5 * f["head_fresh"]))
+        maturity = 1 - _norm(f["head_hot"], lo_hot, hi_hot)
+        if strategy == "competition":
+            score = competition
+        elif strategy == "competition_growth":
+            growth = max(0.0, min(1.0, f["head_trend_up"] + 0.5 * f["head_fresh"]))
+            score = 0.6 * competition + 0.4 * growth
+        else:  # comprehensive
+            score = 0.40 * competition + 0.20 * demand_norm + 0.25 * trend + 0.15 * maturity
+        # 蓝海门槛：不卡销量数字（AI 生成阶段也无法验证销量）。
+        # 仅保留唯一可验证硬闸：头部未爆（EchoTik 真实 head_max_sale <= 上限，非红海）。
+        # 1688 货源硬闸已移除——蓝海定义 = TK 低竞争，是否真有货源交由用户后续判断。
+        is_blue = (f["head_max_sale"] <= _BLUE_SATURATION_MAX_SALE)
+        e["competition"] = competition
+        e["demand_norm"] = demand_norm
+        e["trend"] = trend
+        e["score"] = float(score)
+        e["is_blue"] = bool(is_blue)
+
+
+def run_keyword_blue_ocean_pipeline(task_id: int) -> None:
+    with SessionLocal() as db:
+        task = db.get(SelectionPipelineTask, task_id)
+        if not task:
+            return
+        try:
+            snap: dict[str, Any] = {}
+            try:
+                snap = json.loads(task.result_snapshot or "{}")
+            except (TypeError, ValueError):
+                snap = {}
+            region = str(snap.get("region") or "JP").upper() or "JP"
+            strategy = str(snap.get("strategy") or "comprehensive")
+            test_mode = bool(snap.get("test_mode", False))
+            keyword_limit = 10 if test_mode else 50
+            target_blue = 5 if test_mode else 20
+            max_rounds = 3
+            supplier_page_size = 20
+
+            # ---------- 1) 关键词生成（中文） ----------
+            update_pipeline_stage(db, task, stage="keyword_generation", progress=5, message=f"正在生成 {keyword_limit} 个中文细分商品关键词")
+            constant = _constant_content(db, "selection_pipeline_keywords") + "\n重要要求：所有生成的商品名称必须使用简体中文，不得输出日文、英文或其他语言；商品名称要适合后续 1688 中文关键词搜索。"
+            trend_note = _jp_trend_calendar(datetime.utcnow() + timedelta(hours=9))
+            prompt = (
+                f"{constant}\n\n用户需求：{task.input_message}\n"
+                f"当前月份{region}站趋势背景：{trend_note}\n"
+                f"请只输出 JSON 数组，生成 {keyword_limit} 个适合 TikTok {region} 站蓝海选品的关键词对象。\n"
+                "每个对象必须包含三个字段：\n"
+                "  - search_term：中等长度的长尾搜索词（建议 4-10 个字的中文短语，像真人在电商/短视频里会搜的具体词，例如「免打孔浴室置物架」「挂脖便携小风扇」「宠物除毛滚筒」）；要比泛类目大词更具体、带上细分属性（如免打孔/便携/折叠/除毛），能体现差异化角度，但仍是搜得到的具体词——不要写成超过 12 字、带人群修饰的完整商品描述句。\n"
+                "  - product_name：描述性商品名（格式「具体场景/人群 + 功能 + 形态」，例如「租房党免打孔浴室防水防霉置物架」），用于展示和报告。\n"
+                "  - pain_point：该商品解决的日本人群具体痛点（一句话，例如「小户型浴室没处放洗浴用品」）。\n"
+                "要求：\n"
+                "1. 痛点锚定：pain_point 必须是日本普通人日常生活里【具体且真实】的痛点场景，避免空泛的「好用」「实用」「必备」这类词。\n"
+                "2. 避开红海：search_term 要具体到能区分竞争（带上「免打孔/便携/折叠/除毛」这类细分属性），偏向 TikTok 上尚无大量同质化店铺、尚未形成爆款的细分方向；严禁热门爆款同款（如普通手机壳、普通水杯、普通小风扇、普通数据线），也不要用一个词覆盖整个大品类（如只用「置物架」这种大词）。\n"
+                "3. 全部字段使用简体中文；不要编号、不要解释、不要重复对象。只输出 JSON，不要任何额外文字。"
+            )
+            answer = chat_completion(
+                db,
+                [{"role": "system", "content": "你是 TikTok 跨境选品关键词专家，只输出 JSON。"},
+                 {"role": "user", "content": prompt}],
+                model_type=MODEL_TYPE_GENERAL, max_tokens=6000, temperature=0.6,
+            )
+            blue_items = _normalize_blue_keywords(extract_json_object(answer))
+            if not blue_items:
+                raise ModelCallError("大模型未返回有效关键词。")
+
+            # ---------- 2) 翻译 + 3) 蓝海筛选循环 ----------
+            evaluated: list[dict[str, Any]] = []
+            blue_collected: list[dict[str, Any]] = []
+            seen_cn: set[str] = set()
+            round_no = 0
+            while round_no < max_rounds and len(blue_collected) < target_blue:
+                round_no += 1
+                update_pipeline_stage(db, task, stage="keyword_translate", progress=10 + round_no * 5, message=f"第 {round_no}/{max_rounds} 轮：翻译关键词并在 EchoTik 搜索判断蓝海")
+                if round_no == 1:
+                    batch = blue_items[:keyword_limit]
+                else:
+                    ans2 = chat_completion(
+                        db,
+                        [{"role": "system", "content": "你是 TikTok 跨境选品关键词专家，只输出 JSON。"},
+                         {"role": "user", "content": prompt + "\n（请另换一批与之前不重复的关键词对象）"}],
+                        model_type=MODEL_TYPE_GENERAL, max_tokens=6000, temperature=0.7,
+                    )
+                    batch = _normalize_blue_keywords(extract_json_object(ans2))[:keyword_limit]
+                    if not batch:
+                        break
+                # 翻译用 search_term（短核心词）；EchoTik 搜索也用 search_term，避免长描述句搜不到被误判蓝海
+                batch_local = _translate_keywords_to_region(db, [b["search_term"] for b in batch], region)
+                for b, local_search in zip(batch, batch_local):
+                    cn = b["product_name"]
+                    search_cn = b["search_term"]
+                    pain = b.get("pain_point", "")
+                    if search_cn in seen_cn:
+                        continue
+                    seen_cn.add(search_cn)
+                    try:
+                        res = search_by_keyword(db, local_search, region=region, page_num=1, page_size=10)
+                        products = res.get("products") or []
+                    except EchoTikError as exc:
+                        products = []
+                        print(f"[blue_ocean] keyword search failed {search_cn}: {exc}")
+                    feats = _aggregate_blue_features(products)
+                    evaluated.append({"cn": cn, "search_term": search_cn, "pain_point": pain, "local": local_search, "region": region, "features": feats, "products": products})
+                _score_blue_keywords(evaluated, strategy)
+                for e in evaluated:
+                    if e["is_blue"] and e["cn"] not in {b["cn"] for b in blue_collected}:
+                        blue_collected.append(e)
+                update_pipeline_stage(db, task, stage="blue_ocean_filter", progress=20 + round_no * 10, message=f"已找到 {len(blue_collected)}/{target_blue} 个蓝海关键词", counters={"keywords": len(evaluated), "candidates": len(blue_collected)})
+
+            if not blue_collected:
+                raise RuntimeError("多轮筛选后仍未找到任何蓝海关键词，请调整需求或放宽条件。")
+            blue_collected.sort(key=lambda e: e["score"], reverse=True)
+            blue_final = blue_collected[:target_blue]
+
+            # 持久化蓝海关键词行（拿到真实 id 供商品关联）
+            kw_rows: list[SelectionPipelineKeyword] = []
+            for rank, e in enumerate(blue_final, start=1):
+                row = SelectionPipelineKeyword(
+                    pipeline_task_id=task.id, user_id=task.user_id, source_index=rank,
+                    keyword=e["cn"], group_key=e["cn"], status="blue",
+                    didadog_product_count=len(e["products"]),
+                    raw_payload=json.dumps({"search_term": e["search_term"], "pain_point": e.get("pain_point", ""), "local": e["local"], "region": region, "features": e["features"], "score": e["score"], "strategy": strategy}, ensure_ascii=False),
+                )
+                db.add(row)
+                kw_rows.append(row)
+            task.keyword_count = len(blue_final)
+            db.commit()
+            kw_id_by_cn = {row.keyword: row.id for row in kw_rows}
+
+            # ---------- 4) 蓝海关键词 → EchoTik 商品（不再依赖 1688） ----------
+            update_pipeline_stage(db, task, stage="supplier_search", progress=45, message=f"正在用 {len(blue_final)} 个蓝海关键词生成 EchoTik 商品候选")
+            all_products: list[SelectionDidadogProduct] = []
+            for rank, e in enumerate(blue_final, start=1):
+                kid = kw_id_by_cn.get(e["cn"], 0)
+                items = e.get("products") or []
+                for ri, item in enumerate(items, start=1):
+                    product = SelectionDidadogProduct(
+                        pipeline_task_id=task.id, keyword_id=kid, user_id=task.user_id,
+                        didadog_product_id=str(item.get("product_id") or item.get("id") or f"tk_{kid}_{ri}"),
+                        title=str(item.get("title") or item.get("name") or e["cn"])[:512],
+                        image_url=_extract_product_cover(item),
+                        detail_url=str(item.get("detail_url") or item.get("url") or item.get("share_url") or ""),
+                        price=_extract_product_price(item),
+                        currency="JPY",
+                        sales_count=_extract_product_sales(item),
+                        category=str(e["cn"]),
+                        region=region,
+                        detail_status="success",
+                        compliance_status="pending",
+                        restriction_status="pending",
+                        selection_status="candidate",
+                        raw_data=json.dumps(item, ensure_ascii=False),
+                    )
+                    db.add(product)
+                    all_products.append(product)
+                update_pipeline_stage(db, task, stage="supplier_search", progress=45 + int(rank * 15 / max(len(blue_final), 1)), message=f"已完成 {rank}/{len(blue_final)} 个蓝海关键词的商品生成")
+            task.supplier_candidate_count = len(all_products)
+            db.commit()
+
+            # ---------- 5) 合规 + 限售 ----------
+            candidates = [p for p in all_products if p.selection_status == "candidate"]
+            update_pipeline_stage(db, task, stage="compliance_filter", progress=70, message="正在进行日本合规过滤")
+            _run_compliance_filter(db, candidates)
+            db.commit()
+            update_pipeline_stage(db, task, stage="restriction_check", progress=78, message="正在进行限售规则检查")
+            _run_restriction_check(db, candidates)
+            db.commit()
+
+            # ---------- 6) 最终精选（全局打分 + 新意/内容分层，测试 3 款 / 生产 10 款） ----------
+            final_limit = 3 if test_mode else 10
+            update_pipeline_stage(db, task, stage="final_selection", progress=88, message=f"正在全局打分精选最终 {final_limit} 款")
+            eligible = [p for p in candidates if p.compliance_status == "passed" and p.restriction_status != "restricted"]
+            prices = [float(p.price or 0) for p in eligible]
+            sales = [int(p.sales_count or 0) for p in eligible]
+            lo_p, hi_p = (min(prices), max(prices)) if prices else (0, 0)
+            lo_s, hi_s = (min(sales), max(sales)) if sales else (0, 0)
+            blue_score_by_cn = {e["cn"]: e["score"] for e in blue_final}
+            for p in eligible:
+                price_norm = 1 - _norm(float(p.price or 0), lo_p, hi_p)   # 价格越低越好
+                demand_norm = _norm(int(p.sales_count or 0), lo_s, hi_s)
+                blue_norm = _norm(float(blue_score_by_cn.get(p.category, 0)), 0.0, 1.0)
+                p._final_score = 0.30 * price_norm + 0.30 * demand_norm + 0.20 * blue_norm + 0.20 * 0.5
+
+            # 给蓝海候选也打新意/内容分，并分层（优先亮点款而非常规款）
+            scores = _score_novelty_content(db, eligible)
+            now = datetime.utcnow()
+            sales_vals = [int(p.sales_count or 0) for p in eligible]
+            s_min, s_max = (min(sales_vals), max(sales_vals)) if sales_vals else (0, 0)
+
+            def _bn_sales_norm(p: SelectionDidadogProduct) -> float:
+                if s_max <= s_min:
+                    return 0.5
+                return (int(p.sales_count or 0) - s_min) / (s_max - s_min)
+
+            TIER_PRIORITY = {"highlight": 0, "quirky": 1, "new": 2, "hot": 3, "regular": 4}
+            for p in eligible:
+                sc = scores.get(p.id, {"novelty": 50, "content": 50, "reason": ""})
+                nov, con = sc["novelty"], sc["content"]
+                tr = _trend_score(p.title, p.category, now)
+                sn = _bn_sales_norm(p)
+                if nov >= 68 and con >= 58:
+                    tier = "highlight"
+                elif nov >= 74:
+                    tier = "quirky"
+                elif tr >= 3 and sn < 0.55:
+                    tier = "new"
+                elif sn >= 0.65:
+                    tier = "hot"
+                else:
+                    tier = "regular"
+                p._tier = tier
+                _write_selection_meta(product=p, tier=tier, novelty=nov, content=con, reason=sc["reason"])
+
+            # 排序：优先亮点/奇特/新品，同层内按全局分
+            eligible.sort(key=lambda p: (
+                TIER_PRIORITY.get(getattr(p, "_tier", "regular"), 4),
+                -getattr(p, "_final_score", 0.0),
+            ))
+            chosen = eligible[:final_limit]
+            for p in eligible:
+                p.selection_status = "final" if p in chosen else "candidate"
+            task.final_count = len(chosen)
+            db.commit()
+
+            # ---------- 7) 报告（复用现有生成器，保持前端格式） ----------
+            update_pipeline_stage(db, task, stage="report_generation", progress=96, message="正在生成市场分析报告")
+            report_candidates = [p for p in all_products if p.selection_status == "candidate"]
+            report_finals = [p for p in all_products if p.selection_status == "final"]
+            report_analysis = _generate_report_analysis(db, task, report_candidates, report_finals)
+            task.status = "success"
+            task.current_stage = "final_selection"
+            task.stage_progress = 100
+            task.finished_at = datetime.utcnow()
+            task.result_snapshot = json.dumps({
+                "targets": {"keywords": len(blue_final), "blue_keywords": len(blue_final), "candidates": len(all_products), "final_products": len(chosen)},
+                "test_mode": test_mode, "region": region, "strategy": strategy,
+                "blue_keywords_detail": [
+                    {"keyword": e["cn"], "local": e["local"], "score": round(e["score"], 3),
+                     "head_max_sale": e["features"]["head_max_sale"], "head_avg_sale": round(e["features"]["head_avg_sale"], 2),
+                     "head_ifl": e["features"]["head_ifl"], "trend_up": round(e["features"]["head_trend_up"], 2)}
+                    for e in blue_final
+                ],
+                "message": "已完成关键词蓝海选品与市场报告分析",
+                "report_analysis": report_analysis,
+            }, ensure_ascii=False)
+            db.commit()
+            try:
+                _auto_add_final_products_to_library(db, task, report_analysis)
+            except Exception as exc:
+                print(f"[blue_ocean] 自动入库失败 task={task.id}: {exc}")
         except Exception as exc:
             _write_error(db, task, str(exc))

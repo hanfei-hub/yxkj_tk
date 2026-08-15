@@ -453,7 +453,7 @@ class SelectionDidadogProduct(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     pipeline_task_id: Mapped[int] = mapped_column(ForeignKey("selection_pipeline_tasks.id"), index=True)
     keyword_id: Mapped[int] = mapped_column(ForeignKey("selection_pipeline_keywords.id"), index=True)
-    image_search_entry_id: Mapped[int] = mapped_column(ForeignKey("selection_image_search_entries.id"), index=True)
+    image_search_entry_id: Mapped[int | None] = mapped_column(ForeignKey("selection_image_search_entries.id"), index=True, nullable=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     didadog_product_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     title: Mapped[str] = mapped_column(String(512), default="")

@@ -2454,8 +2454,6 @@ function LibraryPage({
   const [regions, setRegions] = useState<
     Array<{ region_name?: string; region_code?: string }>
   >([]);
-  const [report, setReport] = useState<PipelineReportData | null>(null);
-  const [reportLoading, setReportLoading] = useState(false);
   const categories = FIXED_CATEGORIES;
   const {
     derivedSource,
@@ -2519,29 +2517,6 @@ function LibraryPage({
     if (selected && !filtered.some((item) => pid(item) === pid(selected)))
       setSelected(filtered[0] || null);
   }, [filtered]);
-  useEffect(() => {
-    const tid = (selected as Record<string, unknown> | null)?.task_id;
-    if (!tid) {
-      setReport(null);
-      return;
-    }
-    let cancelled = false;
-    setReportLoading(true);
-    service
-      .getSelectionPipelineTask(Number(tid))
-      .then((data) => {
-        if (!cancelled) setReport(data as PipelineReportData);
-      })
-      .catch(() => {
-        if (!cancelled) setReport(null);
-      })
-      .finally(() => {
-        if (!cancelled) setReportLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selected]);
   return (
     <>
       <section className="library-page">
@@ -2654,15 +2629,15 @@ function LibraryPage({
                     >
                       {rank}
                     </span>
+                    <div className="library-card-heat">
+                      <i><em style={{ width: `${heat}%` }} /></i>
+                      <span>热度 {heat}%</span>
+                    </div>
                   </div>
                   <h3>{title(item)}</h3>
                   <div className="product-meta">
                     <strong>{money(item)}</strong>
                     <span>销量 {sales.toLocaleString()}</span>
-                  </div>
-                  <div className="library-card-heat">
-                    <i><em style={{ width: `${heat}%` }} /></i>
-                    <span>热度 {heat}%</span>
                   </div>
                   <div className="product-actions">
                     <button
@@ -2704,60 +2679,9 @@ function LibraryPage({
         <aside className="library-report">
           <div className="library-report-head">
             <h2>选品分析报告</h2>
-            {report && (
-              <button
-                className="secondary small"
-                onClick={() => downloadPipelineReport(report)}
-              >
-                ⇩ 导出报告
-              </button>
-            )}
           </div>
           {selected ? (
-            reportLoading ? (
-              <div className="empty-state">正在加载选品分析报告…</div>
-            ) : report ? (
-              <SelectionReportBody data={report} />
-            ) : (
-              <>
-                <div className="smart-report-product">
-                  {picture(selected) ? (
-                    <img src={picture(selected)} />
-                  ) : (
-                    <div className="image-empty">暂无图片</div>
-                  )}
-                  <div>
-                    <h3>{title(selected)}</h3>
-                    <strong>{money(selected)}</strong>
-                    <p>
-                      销量{" "}
-                      {Number(
-                        selected.sales_count ??
-                          selected.supplier_sales_count ??
-                          0,
-                      ).toLocaleString()}
-                    </p>
-                  </div>
-                </div>
-                <div className="empty-state warn">
-                  该商品暂无智能选品分析报告（仅展示基础信息）。
-                </div>
-                <div className="smart-report-actions">
-                  <button
-                    className="primary"
-                    disabled={!supplierUrl(selected)}
-                    title={
-                      supplierUrl(selected)
-                        ? ""
-                        : "该商品暂无 1688 货源链接，无法加入上品"
-                    }
-                    onClick={() => onPublish(selected)}
-                  >
-                    加入上品
-                  </button>
-                </div>
-              </>
-            )
+            <ProductAnalysisReport product={selected} />
           ) : (
             <div className="empty-state">选择商品查看分析</div>
           )}
@@ -2945,27 +2869,27 @@ function SmartSelectionLegacy({
     {
       title: "步骤 3：全网数据拓品，摸清市场全貌",
       description:
-        "围绕核心款拓展日本市场在售样本，掌握同赛道关联商品的款式、热度与定价大盘。",
+        "通过 EchoTik 以图搜款，围绕核心款拓展日本市场在售样本，掌握同赛道关联商品的款式、热度与定价大盘。",
     },
     {
-      title: "步骤 4：多维风控过滤，规避全部运营雷区",
-      description:
-        "依托益行深耕对日跨境的实战经验库，一次性筛除禁运禁售、专利侵权、平台限售、海关报关受限等高风险商品，从源头杜绝封号、扣货损失。",
-    },
-    {
-      title: "步骤 5：热销竞品规避，抢占蓝海赛道",
+      title: "步骤 4：热销竞品规避，抢占蓝海赛道",
       description:
         "自动比对平台现有爆款数据，直接剔除内卷严重的成熟热销品，帮你避开红海厮杀，优先锁定竞争小、增量空间足的蓝海单品。",
     },
     {
-      title: "步骤 6：自动生成专业可视化选品报告",
+      title: "步骤 5：多维风控过滤，规避全部运营雷区",
       description:
-        "一键输出完整决策报告，包含类目市场调研、精准产品定位画像、目标受众分析、全维度风险预警、平台限售标注，选品有据可依。",
+        "依托益行深耕对日跨境的实战经验库，一次性筛除禁运禁售、专利侵权、平台限售、海关报关受限等高风险商品，从源头杜绝封号、扣货损失。",
     },
     {
-      title: "步骤 7：输出最终精选 10 款优质爆品",
+      title: "步骤 6：输出最终精选 10 款优质爆品",
       description:
         "合规审核通过且非限售的商品中，按蓝海销量策略（销量升序）精选 10 款，输出可直接上架运营的清单。",
+    },
+    {
+      title: "步骤 7：自动生成专业可视化选品报告",
+      description:
+        "一键输出完整决策报告，包含类目市场调研、精准产品定位画像、目标受众分析、全维度风险预警、平台限售标注，选品有据可依。",
     },
   ];
 
@@ -2977,10 +2901,11 @@ function SmartSelectionLegacy({
       price_seed_selection: 1,
       image_search: 2,
       product_detail: 2,
-      compliance_filter: 3,
-      blue_ocean_filter: 4,
-      report_generation: 5,
-      final_selection: 6,
+      blue_ocean_filter: 3,
+      compliance_filter: 4,
+      restricted_check: 4,
+      final_selection: 5,
+      report_generation: 6,
     };
     return stage in stageIndex
       ? stageIndex[stage]
@@ -3459,27 +3384,27 @@ const FLOW_NODES = [
   {
     title: "步骤 3｜全网数据拓品摸清市场",
     description:
-      "围绕核心商品拓展日本市场在售样本，评估同款竞争热度与定价空间，为后续判断积累市场依据。",
+      "通过 EchoTik 以图搜款，拓展日本市场在售样本，评估同款竞争热度与定价空间，为后续判断积累市场依据。",
   },
   {
-    title: "步骤 4｜多维风控过滤",
-    description:
-      "多维审核剔除高风险商品：禁运禁售 · 专利商标侵权 · 海关报关受限 · 平台限售。",
-  },
-  {
-    title: "步骤 5｜热销竞品规避 · 抢占蓝海",
+    title: "步骤 4｜热销竞品规避 · 抢占蓝海",
     description:
       "比对平台爆款热度，规避内卷红海，锁定竞争小、增量足的潜力单品。",
   },
   {
-    title: "步骤 6｜自动生成市场机会报告",
+    title: "步骤 5｜多维风控过滤",
     description:
-      "AI 生成选品报告：市场简介 · 产品定位画像 · 目标受众 · 机会赛道 · 风险预警 · 限售标注。",
+      "多维审核剔除高风险商品：禁运禁售 · 专利商标侵权 · 海关报关受限 · 平台限售。",
   },
   {
-    title: "步骤 7｜输出最终精选 10 款",
+    title: "步骤 6｜输出最终精选 10 款",
     description:
       "综合稳健、亮点、趋势等多维度精选 10 款可上架商品，覆盖不同风险收益偏好。",
+  },
+  {
+    title: "步骤 7｜自动生成市场机会报告",
+    description:
+      "AI 生成选品报告：市场简介 · 产品定位画像 · 目标受众 · 机会赛道 · 风险预警 · 限售标注。",
   },
 ];
 const HOT_SEARCHES = [
@@ -3496,11 +3421,81 @@ const STAGE_MAP: Record<string, number> = {
   supplier_search: 1,
   price_seed_selection: 1,
   image_search: 2,
-  product_detail: 2,
+  blue_ocean_filter: 3,
+  compliance_filter: 4,
+  restricted_check: 4,
+  final_selection: 5,
+  report_generation: 6,
+};
+
+// 关键词蓝海模式：独立流程与时间线映射
+const REGION_OPTIONS: Array<{ code: string; label: string }> = [
+  { code: "JP", label: "日本" },
+  { code: "US", label: "美国" },
+  { code: "TH", label: "泰国" },
+  { code: "ID", label: "印尼" },
+  { code: "MY", label: "马来西亚" },
+  { code: "PH", label: "菲律宾" },
+  { code: "SG", label: "新加坡" },
+  { code: "VN", label: "越南" },
+  { code: "GB", label: "英国" },
+  { code: "DE", label: "德国" },
+  { code: "FR", label: "法国" },
+  { code: "ES", label: "西班牙" },
+  { code: "IT", label: "意大利" },
+  { code: "BR", label: "巴西" },
+  { code: "MX", label: "墨西哥" },
+  { code: "IE", label: "爱尔兰" },
+];
+
+const BLUE_OCEAN_FLOW_NODES = [
+  {
+    title: "步骤 1｜生成中文蓝海关键词",
+    description:
+      "AI 围绕选品需求拆解目标市场消费场景，生成一批中文细分商品关键词，便于后续 1688 货源搜索。",
+  },
+  {
+    title: "步骤 2｜翻译并 EchoTik 判断蓝海",
+    description:
+      "将关键词翻译为目标市场语言，在 EchoTik 按关键词搜索商品，依据头部销量强度判断蓝海程度并筛选蓝海关键词。",
+  },
+  {
+    title: "步骤 3｜1688 搜索蓝海货源",
+    description:
+      "用蓝海关键词在 1688 搜索可售货源，评估供应稳定性、价格带与起订能力，锁定稳定可售供货。",
+  },
+  {
+    title: "步骤 4｜日本合规过滤",
+    description:
+      "剔除禁运禁售、材质安全不达标等高风险商品，从源头规避封号与扣货损失。",
+  },
+  {
+    title: "步骤 5｜平台限售检查",
+    description:
+      "依据益行限售规则库核对平台限售与海关报关限制，标注受限商品。",
+  },
+  {
+    title: "步骤 6｜精选最终 10 款",
+    description:
+      "对合规且非限售商品全局打分，精选 10 款可上架商品，覆盖不同风险收益偏好。",
+  },
+  {
+    title: "步骤 7｜生成市场机会报告",
+    description:
+      "AI 生成选品报告：市场简介 · 定位画像 · 目标受众 · 机会赛道 · 风险预警 · 限售标注。",
+  },
+];
+
+const BLUE_OCEAN_STAGE_MAP: Record<string, number> = {
+  created: -1,
+  keyword_generation: 0,
+  keyword_translate: 1,
+  blue_ocean_filter: 1,
+  supplier_search: 2,
   compliance_filter: 3,
-  blue_ocean_filter: 4,
-  report_generation: 5,
-  final_selection: 6,
+  restriction_check: 4,
+  final_selection: 5,
+  report_generation: 6,
 };
 
 function item1688Url(it: Record<string, unknown>): string {
@@ -3792,6 +3787,309 @@ const TIER_LABEL: Record<string, string> = {
   highlight: "亮点",
 };
 
+function generateProductReport(
+  product: Product,
+  snapshot: Record<string, unknown>,
+) {
+  const category = String(product.category || snapshot.category || "未知类目");
+  const region = String(product.region || snapshot.region || "JP").toUpperCase();
+  const regionName =
+    region === "JP" ? "日本" : region === "CN" ? "中国" : region;
+  const price = Number(
+    product.price ?? product.supplier_price ?? snapshot.price ?? snapshot.min_price ?? 0,
+  );
+  const sales = Number(
+    product.sales_count ??
+      product.supplier_sales_count ??
+      snapshot.sales_count ??
+      snapshot.total_sale_cnt ??
+      0,
+  );
+  const titleStr = title(product);
+  const keywords = titleStr
+    .split(/[，,、\s]+/)
+    .filter((w) => w.length >= 2)
+    .slice(0, 3);
+  const hasSupply = Boolean(supplierUrl(product));
+
+  return {
+    marketScale:
+      `${regionName}${category}市场具备稳定的日常消费需求，TikTok 内容种草与短视频带货持续渗透，年轻用户对新奇特与高性价比商品关注度较高。`,
+    demandTrend: `围绕${keywords.join("、") || category}的搜索与内容互动呈上升趋势，用户偏好“小巧实用、视觉吸睛、价格透明”的短视频种草形式。`,
+    competition: `当前${category}市场以平价白牌与家用场景为主，缺少具有强场景化内容能力的差异化单品，中国供应链在性价比与快速响应上仍有空间。`,
+    positioning: {
+      positioning: `一款面向${regionName}${category}消费人群的${keywords[0] || category}产品，主打平价实用与短视频内容友好。`,
+      selling_point: `${price > 0 ? `价格门槛低（约 ${money(product)}）` : "平价区间"}、使用场景明确、便于在 15 秒内通过前后对比/开箱展示完成种草。`,
+      style: "平价实用 · 场景化种草 · 视觉友好",
+    },
+    targetAudience: {
+      persona: `18-35 岁${regionName}女性及年轻家庭用户为主，关注${category}相关的效率提升与情绪价值。`,
+      pain_point:
+        "追求高性价比、解决具体生活痛点，愿意为好物视频内容下单。",
+      scene:
+        "居家日常、通勤外出、短途旅行等高频生活场景，适合短视频场景化演示。",
+    },
+    metrics: {
+      price,
+      sales,
+      region: regionName,
+      category,
+      supplyStatus: hasSupply ? "已匹配 1688 货源" : "暂无货源链接",
+    },
+    opportunities: [
+      `TikTok ${category}内容赛道仍处于增量期，${keywords[0] || "该商品"}具备短视频直观展示优势。`,
+      price > 0 && price < 50
+        ? "定价处于低决策门槛区间，适合冲动下单与小额多件组合。"
+        : "价格带清晰，可通过差异化包装与内容组合提升转化。",
+      hasSupply
+        ? "已锁定供应链，可快速上品测款。"
+        : "建议优先补齐 1688 货源，再进入内容测款。",
+    ],
+    risks: [
+      `${regionName}市场对商品合规、标签说明、材质安全有明确要求，上架前需确认适用标准。`,
+      `${category}类目竞争激烈，需通过短视频场景化差异（使用前后对比、ASMR 开箱）避免同质化。`,
+      sales < 10
+        ? "当前样本销量较低，需小批量测款验证真实转化。"
+        : "数据样本有限，建议上架后持续监控 CTR 与转化率。",
+    ],
+    suggestions: [
+      `标题优化：保留核心关键词${keywords[0] ? `「${keywords[0]}」` : ""}，补充使用场景与人群词。`,
+      "视频方向：15 秒前后对比/使用教程/打包 ASMR，突出「小痛点→大改善」的转化路径。",
+      hasSupply
+        ? "上品策略：先以 1-2 个 SKU 测款，关注 7 天内的内容互动率与加购率。"
+        : "供应链：尽快通过以图搜款或 1688 关键词锁定稳定货源。",
+    ],
+  };
+}
+
+function ProductAnalysisReport({ product }: { product: Product }) {
+  const snapshot = (product.product_snapshot || {}) as Record<string, unknown>;
+  const rawReport = (
+    product.analysis_report ||
+    snapshot.analysis_report ||
+    snapshot.report
+  ) as Record<string, unknown> | undefined;
+  const report = useMemo<Record<string, unknown>>(() => {
+    if (rawReport && typeof rawReport === "object" && Object.keys(rawReport).length > 0) {
+      return rawReport;
+    }
+    return generateProductReport(product, snapshot) as Record<string, unknown>;
+  }, [product, snapshot, rawReport]);
+
+  const safe = report || ({} as Record<string, unknown>);
+  const marketIntro = safe.market_intro || safe;
+  const marketScale =
+    String(
+      safe.marketScale ||
+        (marketIntro as Record<string, unknown>).market_scale ||
+        "需进一步验证",
+    );
+  const demandTrend =
+    String(
+      safe.demandTrend ||
+        (marketIntro as Record<string, unknown>).demand_trend ||
+        "需进一步验证",
+    );
+  const competition =
+    String(
+      safe.competition ||
+        (marketIntro as Record<string, unknown>).competition ||
+        "需进一步验证",
+    );
+  const positioning = (safe.positioning ||
+    safe.product_positioning ||
+    {}) as Record<string, unknown>;
+  const audience = (safe.targetAudience ||
+    safe.target_audience ||
+    {}) as Record<string, unknown>;
+  const metrics = (safe.metrics || {}) as Record<string, unknown>;
+  const opportunities = Array.isArray(safe.opportunities || safe.opportunity_points)
+    ? ((safe.opportunities || safe.opportunity_points) as unknown[])
+    : [];
+  const risks = Array.isArray(safe.risks || safe.risk_points)
+    ? ((safe.risks || safe.risk_points) as unknown[])
+    : [];
+  const suggestions = Array.isArray(safe.suggestions || safe.action_suggestions)
+    ? ((safe.suggestions || safe.action_suggestions) as unknown[])
+    : [];
+  const regionTag = product.region === "JP" ? "日本 TikTok" : product.region || "跨境市场";
+  const supplyTag = supplierUrl(product) ? "供应链已匹配" : "待匹配货源";
+
+  return (
+    <div className="product-analysis-report">
+      <div className="report-cover">
+        {picture(product) ? (
+          <img
+            src={picture(product)}
+            alt=""
+            className="product-analysis-thumb"
+          />
+        ) : (
+          <div className="product-analysis-thumb image-empty">暂无图片</div>
+        )}
+        <div className="product-analysis-cover-info">
+          <span className="report-badge">已生成</span>
+          <h3>{title(product)}</h3>
+          <p>
+            {money(product)} · 销量{" "}
+            {Number(
+              product.sales_count ?? product.supplier_sales_count ?? 0,
+            ).toLocaleString()}
+          </p>
+          <div className="report-tags">
+            <span>{regionTag}</span>
+            <span>{product.category || "蓝海选品"}</span>
+            <span>{supplyTag}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="report-section">
+        <h4>一、市场简介</h4>
+        <div className="report-intro-grid">
+          <div>
+            <b>市场规模</b>
+            <p>{marketScale}</p>
+          </div>
+          <div>
+            <b>需求趋势</b>
+            <p>{demandTrend}</p>
+          </div>
+          <div>
+            <b>竞争格局</b>
+            <p>{competition}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="report-section">
+        <h4>二、产品定位画像</h4>
+        <div className="report-intro-grid">
+          <div>
+            <b>定位描述</b>
+            <p>
+              {String(
+                positioning.positioning ||
+                  positioning.positioning_desc ||
+                  "需进一步验证",
+              )}
+            </p>
+          </div>
+          <div>
+            <b>核心卖点</b>
+            <p>
+              {String(
+                positioning.selling_point ||
+                  positioning.selling_points ||
+                  "需进一步验证",
+              )}
+            </p>
+          </div>
+          <div>
+            <b>风格调性</b>
+            <p>
+              {String(
+                positioning.style || positioning.style_tone || "需进一步验证",
+              )}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="report-section">
+        <h4>三、目标受众分析</h4>
+        <div className="report-intro-grid">
+          <div>
+            <b>人群画像</b>
+            <p>
+              {String(
+                audience.persona || audience.user_profile || "需进一步验证",
+              )}
+            </p>
+          </div>
+          <div>
+            <b>痛点需求</b>
+            <p>
+              {String(
+                audience.pain_point || audience.pain_points || "需进一步验证",
+              )}
+            </p>
+          </div>
+          <div>
+            <b>使用场景</b>
+            <p>
+              {String(
+                audience.scene || audience.usage_scenes || "需进一步验证",
+              )}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="report-section">
+        <h4>四、关键数据洞察</h4>
+        <div className="report-intro-grid">
+          <div>
+            <b>价格带</b>
+            <p>
+              {metrics.price
+                ? `¥${Number(metrics.price).toFixed(2)}`
+                : money(product)}
+            </p>
+          </div>
+          <div>
+            <b>销量热度</b>
+            <p>
+              {Number(
+                product.sales_count ?? product.supplier_sales_count ?? 0,
+              ).toLocaleString()}
+              （样本数据）
+            </p>
+          </div>
+          <div>
+            <b>货源状态</b>
+            <p>
+              {String(
+                metrics.supplyStatus ||
+                  (supplierUrl(product) ? "已匹配 1688 货源" : "暂无货源链接"),
+              )}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="report-section">
+        <h4>五、机会与风险</h4>
+        {opportunities.length > 0 ? (
+          <ul className="report-risk-list">
+            {opportunities.map((o, i) => (
+              <li key={i}>{String(o)}</li>
+            ))}
+          </ul>
+        ) : null}
+        {risks.length > 0 ? (
+          <ul className="report-risk-list">
+            {risks.map((r, i) => (
+              <li key={i}>{String(r)}</li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+
+      <div className="report-section">
+        <h4>六、行动建议</h4>
+        {suggestions.length > 0 ? (
+          <ul className="report-risk-list">
+            {suggestions.map((s, i) => (
+              <li key={i}>{String(s)}</li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function SelectionReportBody({
   data,
 }: {
@@ -3905,7 +4203,7 @@ function SelectionReportBody({
                           <b>{String(it.title || "未命名商品")}</b>
                           <div className="report-product-price-row">
                             <span className="report-product-market">
-                              US${Number(it.price || 0).toFixed(2)}
+                              {money(it as Product)}
                             </span>
                             <span className="report-product-source">
                               ¥
@@ -4118,10 +4416,10 @@ function SelectionStage(props: {
     { key: "keyword", title: "AI 对话挖掘潜力爆品", icon: "🔍" },
     { key: "supplier", title: "智能匹配优质供应链", icon: "🔗" },
     { key: "trend", title: "全网数据拓品摸清市场", icon: "🌐" },
-    { key: "risk", title: "多维风控过滤", icon: "🛡" },
     { key: "blue", title: "热销竞品规避 · 抢占蓝海", icon: "🌊" },
-    { key: "report", title: "自动生成市场机会报告", icon: "📊" },
+    { key: "risk", title: "多维风控过滤", icon: "🛡" },
     { key: "final", title: "输出最终精选 10 款", icon: "🏆" },
+    { key: "report", title: "自动生成市场机会报告", icon: "📊" },
   ];
 
   if (status === "idle") {
@@ -4141,13 +4439,13 @@ function SelectionStage(props: {
       case 2:
         return counters.image_search_entries ? "市场样本拓展完成" : "正在拓展市场样本";
       case 3:
-        return eliminated.e !== undefined ? "风控审核完成" : "正在多维风控审核";
-      case 4:
         return counters.candidates ? "蓝海机会识别完成" : "正在识别蓝海机会";
+      case 4:
+        return eliminated.e !== undefined ? "风控审核完成" : "正在多维风控审核";
       case 5:
-        return allDone ? "报告已生成" : "报告生成中";
-      case 6:
         return finalItems.length ? "精选商品已出炉" : "正在精选最终商品";
+      case 6:
+        return allDone ? "报告已生成" : "报告生成中";
       default:
         return "";
     }
@@ -4827,6 +5125,11 @@ function SmartSelection({
   onNotice: (message: string) => void;
 }) {
   const [message, setMessage] = useState("");
+  const [mode, setMode] = useState<"selection" | "keyword_blue_ocean">("selection");
+  const [region, setRegion] = useState("JP");
+  const [strategy, setStrategy] = useState("comprehensive");
+  const [testMode, setTestMode] = useState(false);
+  const [taskMode, setTaskMode] = useState<"selection" | "keyword_blue_ocean">("selection");
   const [taskId, setTaskId] = useState<number | null>(null);
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState("created");
@@ -4853,17 +5156,21 @@ function SmartSelection({
   const displayedStageRef = useRef("");
   const displayedStageAtRef = useRef(0);
 
+  const flowNodes =
+    taskMode === "keyword_blue_ocean" ? BLUE_OCEAN_FLOW_NODES : FLOW_NODES;
+  const stageMap =
+    taskMode === "keyword_blue_ocean" ? BLUE_OCEAN_STAGE_MAP : STAGE_MAP;
   const currentStep = useMemo(
     () =>
-      stage in STAGE_MAP
-        ? STAGE_MAP[stage]
-        : Math.min(6, Math.floor(progress / 15)),
-    [stage, progress],
+      stage in stageMap
+        ? stageMap[stage]
+        : Math.min(flowNodes.length - 1, Math.floor(progress / 15)),
+    [stage, progress, stageMap, flowNodes],
   );
 
   const pushLog = useCallback((nextStage: string, nextMessage: string) => {
-    const stepIndex = STAGE_MAP[nextStage] ?? -1;
-    const label = stepIndex >= 0 ? FLOW_NODES[stepIndex]?.title : "任务初始化";
+    const stepIndex = stageMap[nextStage] ?? -1;
+    const label = stepIndex >= 0 ? flowNodes[stepIndex]?.title : "任务初始化";
     const time = new Date().toLocaleTimeString("zh-CN", {
       hour: "2-digit",
       minute: "2-digit",
@@ -4876,7 +5183,7 @@ function SmartSelection({
       ];
       return next.slice(-6);
     });
-  }, []);
+  }, [stageMap, flowNodes]);
 
   async function applyTaskData(
     data: Record<string, any>,
@@ -4900,6 +5207,8 @@ function SmartSelection({
     }
     const nextProgress = Number(data.progress || 0);
     const nextMessage = String(data.message || "");
+    if (data.mode)
+      setTaskMode(data.mode === "keyword_blue_ocean" ? "keyword_blue_ocean" : "selection");
     setProgress(nextProgress);
     setStage(nextStage);
     setTaskMessage(nextMessage);
@@ -4961,6 +5270,18 @@ function SmartSelection({
   }, [user.id, user.username]);
 
   useEffect(() => {
+    void (async () => {
+      try {
+        const settings = await service.getSystemSettings();
+        const raw = settings && (settings as Record<string, unknown>)["selection_pipeline_test_mode"];
+        setTestMode(String(raw ?? "0") === "1");
+      } catch {
+        // 读取测试模式开关失败则保持默认（关闭）
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
     if (!taskId) return;
     const timer = window.setInterval(async () => {
       try {
@@ -4996,8 +5317,13 @@ function SmartSelection({
       setBoardItems([]);
       setCounters({});
       setLogs([]);
-      const result = await service.createSelectionPipelineTask(message.trim());
+      const result = await service.createSelectionPipelineTask(message.trim(), {
+        mode,
+        region,
+        blue_ocean_strategy: strategy,
+      });
       if (!result.task_id) throw new Error("服务未返回任务编号");
+      setTaskMode(mode);
       localStorage.setItem(
         `tk_selection_pipeline_task_${user.id || user.username || "current"}`,
         String(result.task_id),
@@ -5007,7 +5333,7 @@ function SmartSelection({
       setStatus("failed");
       onNotice(error instanceof Error ? error.message : "启动选品任务失败");
     }
-  }, [message, taskId, user.id, user.username]);
+  }, [message, mode, region, strategy, taskId, user.id, user.username]);
 
   const exportReport = useCallback(async () => {
     if (!lastTaskResult?.id) return;
@@ -5042,6 +5368,61 @@ function SmartSelection({
               onChange={(event) => setMessage(event.target.value)}
               disabled={Boolean(taskId)}
             />
+            <div className="smart-options">
+              <label>
+                <span>选品模式</span>
+                <select
+                  value={mode}
+                  disabled={Boolean(taskId)}
+                  onChange={(event) => setMode(event.target.value as "selection" | "keyword_blue_ocean")}
+                >
+                  <option value="selection">常规选品（图搜+蓝海）</option>
+                  <option value="keyword_blue_ocean">关键词蓝海（EchoTik 关键词筛蓝海）</option>
+                </select>
+              </label>
+              <label>
+                <span>目标市场</span>
+                <select
+                  value={region}
+                  disabled={Boolean(taskId)}
+                  onChange={(event) => setRegion(event.target.value)}
+                >
+                  {REGION_OPTIONS.map((r) => (
+                    <option key={r.code} value={r.code}>{r.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>蓝海策略</span>
+                <select
+                  value={strategy}
+                  disabled={Boolean(taskId) || mode !== "keyword_blue_ocean"}
+                  onChange={(event) => setStrategy(event.target.value)}
+                >
+                  <option value="comprehensive">综合评分</option>
+                  <option value="competition">低竞争优先</option>
+                  <option value="competition_growth">低竞争+成长</option>
+                </select>
+              </label>
+            </div>
+            <label className="smart-testmode">
+              <input
+                type="checkbox"
+                checked={testMode}
+                disabled={Boolean(taskId)}
+                onChange={async (e) => {
+                  const next = e.target.checked;
+                  setTestMode(next);
+                  try {
+                    await service.updateSystemSettings({ selection_pipeline_test_mode: next ? "1" : "0" });
+                  } catch {
+                    setTestMode(!next);
+                    onNotice("保存测试模式失败，请重试");
+                  }
+                }}
+              />
+              <span>测试模式（关键词 10 个 / 最终 3 款）</span>
+            </label>
             <div className="smart-controls">
               <span>{message.length}/300</span>
               <button
@@ -5086,7 +5467,7 @@ function SmartSelection({
                 <p>
                   {status === "idle"
                     ? "点击智能选品后实时查看进度"
-                    : `当前第 ${Math.max(1, currentStep + 1)} 步：${taskMessage || FLOW_NODES[Math.max(0, currentStep)]?.title || ""}`}
+                    : `当前第 ${Math.max(1, currentStep + 1)} 步：${taskMessage || flowNodes[Math.max(0, currentStep)]?.title || ""}`}
                 </p>
               </div>
               <span className={`flow-status ${status}`}>
@@ -5100,7 +5481,7 @@ function SmartSelection({
               </span>
             </div>
             <div className="selection-flow-row">
-              {FLOW_NODES.map((node, index) => (
+              {flowNodes.map((node, index) => (
                 <div
                   key={node.title}
                   className={`flow-node ${index < currentStep || status === "success" ? "done" : index === currentStep && status === "running" ? "active running" : ""}`}

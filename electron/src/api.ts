@@ -84,7 +84,7 @@ export const collect = (product: Product) => api.post("/api/favorites", {
 });
 export const removeFavorite = (id: number | string) => api.delete(`/api/favorites/${id}`);
 export const searchSelection = (message: string, count: number) => api.post<{ task_id?: number; credit_balance?: number; message?: string }>("/api/ai/chat-selection", { message, count }).then((r) => r.data);
-export const createSelectionPipelineTask = (message: string, options: { mode?: "selection" | "derivation"; source_product_id?: number | string } = {}) => api.post<{ task_id?: number; status?: string; stage?: string; progress?: number }>("/api/selection-pipeline/tasks", { message, ...options }).then((r) => r.data);
+export const createSelectionPipelineTask = (message: string, options: { mode?: "selection" | "derivation" | "keyword_blue_ocean"; source_product_id?: number | string; region?: string; blue_ocean_strategy?: string } = {}) => api.post<{ task_id?: number; status?: string; stage?: string; progress?: number }>("/api/selection-pipeline/tasks", { message, ...options }).then((r) => r.data);
 export const getLatestSelectionPipelineTask = () => api.get<{ task_id?: number | null }>("/api/selection-pipeline/tasks/latest").then((r) => r.data);
 export const getSelectionPipelineTask = (taskId: number | string) => api.get(`/api/selection-pipeline/tasks/${taskId}`).then((r) => r.data);
 export const getSelectionPipelineReportContent = (taskId: number | string) => api.post(`/api/selection-pipeline/tasks/${taskId}/report-content`).then((r) => r.data);

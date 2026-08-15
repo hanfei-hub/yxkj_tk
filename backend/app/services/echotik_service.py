@@ -24,6 +24,11 @@ DEFAULT_ECHOTIK_OPTIONS: dict[str, Any] = {
     "detail_ids_field": "product_ids",
     "detail_ids_separator": ",",
     "detail_batch_size": 10,
+    "list_path": "/api/v3/echotik/product/list",
+    "list_method": "GET",
+    "list_page_size": 10,
+    "list_max_page_size": 10,
+    "list_retry": 4,
 }
 
 
@@ -111,6 +116,64 @@ def get_product_details(db: Session, product_ids: list[str]) -> dict[str, Any]:
     value = str(options.get("detail_ids_separator") or ",").join(ids)
     raw = _request_json(str(options.get("detail_method") or "GET").upper(), url, headers=_auth_headers(config), params={field: value})
     return {"ok": True, "product_ids": ids, "items": extract_items(raw), "raw_data": raw}
+
+
+def search_by_keyword(
+    db: Session,
+    keyword: str,
+    region: str = "JP",
+    page_num: int = 1,
+    page_size: int | None = None,
+) -> dict[str, Any]:
+    """EchoTik 关键词商品搜索（蓝海判断用）。
+
+    接口：GET /api/v3/echotik/product/list
+    返回：{code, message, data:[商品...]}。注意：该接口不返回市场总量 total，
+    仅返回当前页商品（page_size 上限 10）。
+    """
+    keyword = str(keyword or "").strip()
+    if not keyword:
+        raise EchoTikError("关键词搜索需要关键词。")
+    region = str(region or "JP").strip() or "JP"
+    config = get_echotik_api_config(db)
+    options = echotik_options(config)
+    max_ps = int(options.get("list_max_page_size") or 10)
+    ps = max(1, min(int(page_size or options.get("list_page_size") or 10), max_ps))
+    url = urljoin(
+        (config.api_base_url or DEFAULT_ECHOTIK_BASE_URL).rstrip("/") + "/",
+        str(options["list_path"]).lstrip("/"),
+    )
+    params = {"keyword": keyword, "region": region, "page_num": int(page_num or 1), "page_size": ps}
+    retries = max(1, int(options.get("list_retry") or 4))
+    raw: Any = None
+    last_err: Exception | None = None
+    for _ in range(retries):
+        try:
+            raw = _request_json(str(options.get("list_method") or "GET").upper(), url, headers=_auth_headers(config), params=params)
+            products = _extract_list_products(raw)
+            if products:  # 拿到有效数据才算成功，避免空响应被误判
+                return {"ok": True, "keyword": keyword, "region": region, "page_num": params["page_num"], "total": None, "products": products, "raw_data": raw}
+        except (EchoTikError, ValueError) as exc:
+            last_err = exc
+    if raw is not None:
+        products = _extract_list_products(raw)
+        if products:
+            return {"ok": True, "keyword": keyword, "region": region, "page_num": params["page_num"], "total": None, "products": products, "raw_data": raw}
+    raise EchoTikError(f"EchoTik 关键词搜索失败（keyword={keyword}, region={region}）：{last_err or '空响应'}") from last_err
+
+
+def _extract_list_products(raw: Any) -> list[dict[str, Any]]:
+    if isinstance(raw, list):
+        return [p for p in raw if isinstance(p, dict)]
+    if not isinstance(raw, dict):
+        return []
+    data = raw.get("data")
+    if isinstance(data, list):
+        return [p for p in data if isinstance(p, dict)]
+    if isinstance(data, dict):
+        inner = data.get("products") or data.get("list") or data.get("items") or []
+        return [p for p in inner if isinstance(p, dict)] if isinstance(inner, list) else []
+    return []
 
 
 def extract_product_ids(raw: Any) -> list[str]:
