@@ -21,6 +21,7 @@ class User(Base, TimestampMixin):
     role: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[int] = mapped_column(Integer, default=1)
     credit_balance: Mapped[int] = mapped_column(Integer, default=0)
+    pending_review_student: Mapped[int] = mapped_column(Integer, default=0, index=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
@@ -484,6 +485,10 @@ class SelectionRestrictionRule(Base, TimestampMixin):
     title_keyword: Mapped[str] = mapped_column(String(255), default="", index=True)
     action: Mapped[str] = mapped_column(String(32), default="restricted")
     reason: Mapped[str] = mapped_column(Text, default="")
+    audience_weight: Mapped[float] = mapped_column(Float, default=25.0)
+    scene_weight: Mapped[float] = mapped_column(Float, default=25.0)
+    verb_weight: Mapped[float] = mapped_column(Float, default=25.0)
+    periodicity_weight: Mapped[float] = mapped_column(Float, default=25.0)
     status: Mapped[int] = mapped_column(Integer, default=1, index=True)
 
 
@@ -660,6 +665,10 @@ class FavoriteProduct(Base, TimestampMixin):
     recommendation_reason: Mapped[str] = mapped_column(Text, default="")
     analysis_report: Mapped[str] = mapped_column(Text, default="{}")
     product_snapshot: Mapped[str] = mapped_column(Text, default="{}")
+    review_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    reviewed_by: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_comment: Mapped[str] = mapped_column(Text, default="")
 
 
 class UserSearchRecommendation(Base):

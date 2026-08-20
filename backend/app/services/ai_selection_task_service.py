@@ -393,20 +393,25 @@ def user_search_result_to_dict(item: UserSearchRecommendation) -> dict[str, Any]
         report = {}
     if not isinstance(report, dict):
         report = {}
+    source_type = item.source_type or ("new_product" if item.search_query == "榜单加入选品库" else "ai_search")
+    # AI 智能选品的商品价格来自中国供应链；兼容早期误写成 JP/JPY 的历史记录。
+    display_region = "CN" if source_type == "ai_search" else (item.region or report.get("_library_region") or "CN")
+    display_currency = "CNY" if source_type == "ai_search" else (item.currency or report.get("_library_currency") or "CNY")
     return {
         "id": item.id,
+        "source_product_id": report.get("_library_source_product_id"),
         "user_id": item.user_id,
         "task_id": item.task_id,
         "search_query": item.search_query,
-        "source_type": item.source_type or ("new_product" if item.search_query == "榜单加入选品库" else "ai_search"),
+        "source_type": source_type,
         "title": item.title,
         "image_url": item.image_url,
         "price": item.price,
         "sales_count": item.sales_count,
         "reason_summary": item.reason_summary,
         "analysis_report": item.analysis_report,
-        "region": item.region or report.get("_library_region") or "CN",
-        "currency": item.currency or report.get("_library_currency") or "CNY",
+        "region": display_region,
+        "currency": display_currency,
         "category": report.get("_library_category", ""),
         "supplier_search_status": item.supplier_search_status,
         "supplier_next_page": item.supplier_next_page,

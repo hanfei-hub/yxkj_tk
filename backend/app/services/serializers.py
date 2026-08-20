@@ -34,6 +34,7 @@ def user_to_dict(user: User) -> dict[str, Any]:
         "role": user.role,
         "status": user.status,
         "credit_balance": user.credit_balance,
+        "pending_review_student": int(user.pending_review_student or 0),
         "last_login_at": fmt_dt(user.last_login_at),
         "created_at": fmt_dt(user.created_at),
         "updated_at": fmt_dt(user.updated_at),
@@ -252,6 +253,8 @@ def favorite_to_dict(item: FavoriteProduct) -> dict[str, Any]:
         }
     )
     source_type = str(item.source_type or snapshot.get("source_type") or "derived")
+    review_status = item.review_status or "pending"
+    review_comment = item.review_comment or ""
     return {
         "id": item.id,
         "title": item.title,
@@ -273,6 +276,10 @@ def favorite_to_dict(item: FavoriteProduct) -> dict[str, Any]:
         "supplier_sales_count": snapshot.get("supplier_sales_count"),
         "supplier_shop_name": snapshot.get("supplier_shop_name") or "",
         "product_snapshot": snapshot,
+        "review_status": review_status,
+        "reviewed_by": item.reviewed_by,
+        "reviewed_at": fmt_dt(item.reviewed_at),
+        "review_comment": review_comment,
         "created_at": fmt_dt(item.created_at),
     }
 

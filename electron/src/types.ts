@@ -7,10 +7,12 @@ export interface User {
   role: Role;
   credits?: number;
   credit_balance?: number;
+  pending_review_student?: number;
 }
 
 export interface Product {
   id?: number | string;
+  derived_id?: number | string;
   source_product_id?: number | string;
   title?: string;
   derived_title?: string;
@@ -35,6 +37,9 @@ export interface Product {
   supplier_shop_name?: string;
   product_snapshot?: Record<string, unknown>;
   derived_count?: number;
+  review_status?: string;
+  review_comment?: string;
+  reviewed_at?: string;
 }
 
 export interface ConfigItem {

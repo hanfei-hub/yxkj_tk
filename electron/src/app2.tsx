@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Product, Role, User, VideoProject } from "./types";
 import * as service from "./api";
 import "./migrated.css";
+import "./ui-fixes.css";
 import { SmartSelectionWorkspace } from "./smart-selection-workspace";
+import { Dashboard } from "./dashboard-summary";
 
-type Page = "studio" | "library" | "rank" | "favorites" | "teacher" | "dashboard" | "store" | "video" | "profile" | "about" | "admin";
+type Page = "studio" | "library" | "rank" | "favorites" | "teacher" | "teacher-review" | "families" | "dashboard" | "store" | "video" | "profile" | "about" | "admin";
 const legacySelectionFlowLabels = [
   "步骤 1：AI 对话挖掘潜力爆品",
   "步骤 2：智能匹配 1688 优质供应链",
@@ -20,6 +23,8 @@ const menus: Array<{ id: Page; label: string; icon: string; roles: Role[] }> = [
   { id: "rank", label: "新品榜单", icon: "♜", roles: ["admin", "teacher", "student"] },
   { id: "favorites", label: "采集箱", icon: "☆", roles: ["admin", "student"] },
   { id: "teacher", label: "教师看板", icon: "▤", roles: ["admin", "teacher"] },
+  { id: "teacher-review", label: "教师审核", icon: "✓", roles: ["admin", "teacher"] },
+  { id: "families", label: "商品族管理", icon: "◎", roles: ["admin"] },
   { id: "dashboard", label: "数据看板", icon: "◔", roles: ["admin", "teacher"] },
   { id: "store", label: "店铺管理", icon: "▥", roles: ["admin", "teacher", "student"] },
   { id: "video", label: "视频生成", icon: "▶", roles: ["admin", "teacher", "student"] },
@@ -28,16 +33,59 @@ const menus: Array<{ id: Page; label: string; icon: string; roles: Role[] }> = [
   { id: "admin", label: "系统管理", icon: "▦", roles: ["admin"] },
 ];
 function title(p: Product) { return p.title || p.derived_title || "未命名商品"; }
+function roleLabel(role?: string) { return ({ admin: "管理员", teacher: "教师", student: "普通用户" } as Record<string, string>)[String(role || "")] || String(role || "普通用户"); }
 function picture(p: Product) { const snapshot = p.product_snapshot || {}; return p.image_url || p.supplier_image_url || String(snapshot.image_url || snapshot.supplier_image_url || snapshot.pic_url || ""); }
 function supplierUrl(p: Product) { const snapshot = p.product_snapshot || {}; return p.supplier_source_url || String(snapshot.supplier_source_url || snapshot.source_url || snapshot.detail_url || (snapshot.supplier_product_id ? `https://detail.1688.com/offer/${snapshot.supplier_product_id}.html` : "")); }
 const FIXED_CATEGORIES = ["全部", "美妆个护", "女装与女士内衣", "保健", "时尚配件", "运动与户外", "手机与数码", "居家日用", "食品饮料", "玩具和爱好"];
-function categoryLabel(value?: string) { return String(value || "").trim() || "未分类"; }
+const CATEGORY_LABELS: Record<string, string> = {
+  beauty: "美妆个护", personal_care: "美妆个护", health: "保健", fashion: "女装与女式内衣",
+  clothing: "女装与女式内衣", accessories: "时尚配件", sports: "运动与户外", outdoor: "运动与户外",
+  electronics: "手机与数码", phone_accessories: "手机与数码", home: "居家日用", home_living: "居家日用",
+  kitchen: "厨房用品", food: "食品饮料", toys: "玩具和爱好", pet: "宠物用品", baby: "母婴用品",
+  stationery: "文具办公", jewelry: "珠宝饰品", daily_necessities: "居家日用"
+};
+function categoryLabel(value?: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return "未分类";
+  if (/[^\x00-\x7F]/.test(raw)) return raw;
+  const normalized = raw.toLowerCase().replace(/[\s-]+/g, "_");
+  if (CATEGORY_LABELS[normalized]) return CATEGORY_LABELS[normalized];
+  const match = Object.entries(CATEGORY_LABELS).find(([key]) => normalized.includes(key));
+  return match?.[1] || raw;
+}
 function productSourceLabel(item: Product) { return ({ derived: "衍生品", new_product: "新品榜", ai_search: "AI搜索" } as Record<string, string>)[String(item.source_type || "").toLowerCase()] || (item.list_type ? "新品榜" : "商品快照"); }
 function regionLabel(value?: string) { return value || "未标注"; }
-function money(p: Product) { const n = Number(p.price ?? p.supplier_price ?? 0); const currency = String(p.currency || "").toUpperCase(); const symbol = ["CNY", "RMB", "YUAN"].includes(currency) || p.region === "CN" ? "¥" : currency === "JPY" || p.region === "JP" ? "円" : "$"; return `${symbol}${n.toFixed(2)}`; }
+function money(p: Product) {
+  const n = Number(p.price ?? p.supplier_price ?? 0);
+  const raw = p as Product & { region_code?: string; market?: string; currency_code?: string };
+  const currency = String(p.currency || raw.currency_code || "").toUpperCase();
+  const region = String(p.region || raw.region_code || raw.market || "").toUpperCase();
+  const symbols: Record<string, string> = { CNY: "¥", RMB: "¥", YUAN: "¥", JPY: "円", USD: "$", THB: "฿", VND: "₫", MYR: "RM", PHP: "₱", SGD: "S$", IDR: "Rp", KRW: "₩", GBP: "£", EUR: "€" };
+  const symbol = ({ CN: "¥", JP: "円", US: "$", TH: "฿", VN: "₫", MY: "RM", PH: "₱", SG: "S$", ID: "Rp", KR: "₩", GB: "£" } as Record<string, string>)[region] || symbols[currency] || "$";
+  return `${symbol}${n.toFixed(2)}`;
+}
 function pid(p: Product) { return p.id ?? p.source_product_id ?? title(p); }
+function productIdentity(p: Product) {
+  const raw = p as Product & { region_code?: string; market?: string };
+  const region = String(p.region || raw.region_code || raw.market || "").toUpperCase() || "UNKNOWN";
+  const source = String(p.source_type || p.list_type || "product").toLowerCase();
+  const snapshot = p.product_snapshot || {};
+  const sourceId = source === "derived"
+    ? (p.derived_id ?? p.id ?? snapshot._library_derived_id ?? p.source_product_id)
+    : (p.source_product_id ?? p.id);
+  if (sourceId !== undefined && sourceId !== null && String(sourceId).trim()) return region + "|" + source + "|id:" + String(sourceId).trim();
+  const image = picture(p).trim();
+  if (image) return region + "|" + source + "|image:" + image;
+  return region + "|" + source + "|title:" + title(p).trim().toLowerCase();
+}
+function productMatches(a: Product, b: Product) {
+  return productIdentity(a) === productIdentity(b);
+}
+function uniqueProducts(items: Product[]) {
+  return Array.from(new Map(items.map((item) => [productIdentity(item), item])).values());
+}
 
-function Login({ done }: { done: (u: User) => void }) { const [mode, setMode] = useState<"account" | "phone">("account"); const [account, setAccount] = useState(""); const [password, setPassword] = useState(""); const [phone, setPhone] = useState(""); const [code, setCode] = useState(""); const [error, setError] = useState(""); const [sending, setSending] = useState(false); const [seconds, setSeconds] = useState(0); async function sendCode() { if (!phone.trim()) { setError("请输入手机号"); return; } setSending(true); setError(""); try { await service.smsSendCode(phone.trim()); setSeconds(60); const timer = window.setInterval(() => setSeconds((value) => { if (value <= 1) { window.clearInterval(timer); return 0; } return value - 1; }), 1000); } catch (x) { setError(x instanceof Error ? x.message : "验证码发送失败"); } finally { setSending(false); } } async function submit(event: React.FormEvent) { event.preventDefault(); setError(""); try { done(mode === "account" ? await service.login(account, password) : await service.smsLogin(phone.trim(), code.trim())); } catch (x) { setError(x instanceof Error ? x.message : "登录失败"); } } return <div className="login-page"><div className="login-visual"><div className="brand-mark large">TK</div><h1>益行跨境 AI 平台</h1><p>TikTok 日本市场智能选品工作台</p></div><form className="login-card" onSubmit={submit}><h2>欢迎回来</h2><div className="login-tabs"><button type="button" className={mode === "phone" ? "active" : ""} onClick={() => { setMode("phone"); setError(""); }}>手机验证码登录</button><button type="button" className={mode === "account" ? "active" : ""} onClick={() => { setMode("account"); setError(""); }}>账号密码登录</button></div>{mode === "account" ? <><label>账号<input value={account} onChange={(e) => setAccount(e.target.value)} required /></label><label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label></> : <><label>手机号<input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="请输入手机号" required /></label><label>验证码<div className="code-input"><input value={code} onChange={(e) => setCode(e.target.value)} placeholder="请输入短信验证码" required /><button type="button" onClick={() => void sendCode()} disabled={sending || seconds > 0}>{seconds ? `${seconds}s 后重发` : sending ? "发送中..." : "获取验证码"}</button></div></label></>}{error && <div className="error">{error}</div>}<button className="primary">登录</button><small className="login-tip">手机号首次登录会自动创建学生账号</small></form></div>; }
+function Login({ done }: { done: (u: User) => void }) { const [mode, setMode] = useState<"account" | "phone">("account"); const [account, setAccount] = useState(""); const [password, setPassword] = useState(""); const [phone, setPhone] = useState(""); const [code, setCode] = useState(""); const [error, setError] = useState(""); const [sending, setSending] = useState(false); const [seconds, setSeconds] = useState(0); async function sendCode() { if (!phone.trim()) { setError("请输入手机号"); return; } setSending(true); setError(""); try { await service.smsSendCode(phone.trim()); setSeconds(60); const timer = window.setInterval(() => setSeconds((value) => { if (value <= 1) { window.clearInterval(timer); return 0; } return value - 1; }), 1000); } catch (x) { setError(x instanceof Error ? x.message : "验证码发送失败"); } finally { setSending(false); } } async function submit(event: React.FormEvent) { event.preventDefault(); setError(""); try { done(mode === "account" ? await service.login(account, password) : await service.smsLogin(phone.trim(), code.trim())); } catch (x) { setError(x instanceof Error ? x.message : "登录失败"); } } return <div className="login-page"><div className="login-visual"><div className="brand-mark large">TK</div><h1>益行跨境 AI 平台</h1><p>TikTok 日本市场智能选品工作台</p></div><form className="login-card" onSubmit={submit}><h2>欢迎回来</h2><div className="login-tabs"><button type="button" className={mode === "phone" ? "active" : ""} onClick={() => { setMode("phone"); setError(""); }}>手机验证码登录</button><button type="button" className={mode === "account" ? "active" : ""} onClick={() => { setMode("account"); setError(""); }}>账号密码登录</button></div>{mode === "account" ? <><label>账号<input value={account} onChange={(e) => setAccount(e.target.value)} required /></label><label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label></> : <><label>手机号<input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="请输入手机号" required /></label><label>验证码<div className="code-input"><input value={code} onChange={(e) => setCode(e.target.value)} placeholder="请输入短信验证码" required /><button type="button" onClick={() => void sendCode()} disabled={sending || seconds > 0}>{seconds ? `${seconds}s 后重发` : sending ? "发送中..." : "获取验证码"}</button></div></label></>}{error && <div className="error">{error}</div>}<button className="primary">登录</button><small className="login-tip">手机号首次登录会自动创建普通用户账号</small></form></div>; }
 
 function Products({ page, rows, onSelect, selected, onCollect }: { page: Page; rows: Product[]; onSelect: (p: Product) => void; selected: Product | null; onCollect: (p: Product) => void }) { return <div className="workspace"><section className="products"><div className="section-heading"><div><h2>{page === "library" ? "选品库" : page === "favorites" ? "采集箱" : "新品榜单"}</h2><p>{rows.length} 个商品</p></div></div><div className="product-grid">{rows.map((p) => <article className={selected && pid(selected) === pid(p) ? "product selected" : "product"} key={String(pid(p))} onClick={() => onSelect(p)}><div className="image-wrap">{picture(p) ? <img src={picture(p)} loading="lazy" /> : <div className="image-empty">暂无图片</div>}</div><h3>{title(p)}</h3><div className="product-tag">{p.source_type || p.category || "商品"}</div><div className="product-meta"><strong>{money(p)}</strong><span>销量 {Number(p.sales_count ?? p.supplier_sales_count ?? 0).toLocaleString()}</span></div><button onClick={(e) => { e.stopPropagation(); onCollect(p); }}>加入采集箱</button></article>)}</div>{!rows.length && <div className="empty-state">暂无数据</div>}</section><aside className="report"><h2>选品分析报告</h2>{selected ? <><div className="report-product">{picture(selected) ? <img src={picture(selected)} /> : <div className="image-empty">暂无图片</div>}<div><h3>{title(selected)}</h3><strong>{money(selected)}</strong><p>请从详情页查看完整分析</p></div></div><button className="primary full" onClick={() => onCollect(selected)}>加入采集箱</button></> : <div className="empty-state">请选择商品</div>}</aside></div>; }
 
@@ -47,7 +95,7 @@ function Admin({ notice }: { notice: (s: string) => void }) { const [tab, setTab
 
 function Studio({ search }: { search: (message: string, count: number) => Promise<void> }) { const [message, setMessage] = useState(""); const [count, setCount] = useState(10); const [busy, setBusy] = useState(false); return <section className="studio"><div className="studio-intro"><div><em>✦</em><h2>告诉我您想找什么样的产品？</h2><p>例如：最近在日本 TikTok 上热卖的厨房小工具，价格在1000日元以内</p></div><span>AI 选品助手</span></div><div className="prompt-box"><textarea placeholder="告诉我您想找什么样的产品？" value={message} onChange={(e) => setMessage(e.target.value)} /><div className="prompt-bottom"><small>{message.length}/300</small><select value={count} onChange={(e) => setCount(Number(e.target.value))}><option value={10}>10 条 · 10 积分</option><option value={15}>15 条 · 15 积分</option><option value={20}>20 条 · 20 积分</option></select><button className="primary" disabled={!message.trim() || busy} onClick={async () => { setBusy(true); try { await search(message, count); } finally { setBusy(false); } }}>{busy ? "分析中..." : "智能选品"}</button></div></div></section>; }
 
-function Dashboard() { const barRef=useRef<HTMLDivElement>(null); const radarRef=useRef<HTMLDivElement>(null); const [data,setData]=useState<Record<string,unknown>>({}); useEffect(()=>{service.getPipelineStatus().then(x=>setData(x||{})).catch(()=>setData({}));},[]); useEffect(()=>{type Chart={setOption:(option:unknown)=>void;resize:()=>void;dispose:()=>void};type Engine={init:(el:HTMLElement)=>Chart};const run=()=>{const engine=(window as Window & {echarts?:Engine}).echarts;if(!engine||!barRef.current||!radarRef.current)return;const bar=engine.init(barRef.current);const radar=engine.init(radarRef.current);bar.setOption({tooltip:{trigger:"axis"},grid:{left:42,right:18,top:25,bottom:28},xAxis:{type:"category",data:["FastMoss","AI衍生","1688匹配","视频任务"]},yAxis:{type:"value"},series:[{type:"bar",barWidth:28,data:[Number(data.fastmoss_count||12),Number(data.derived_count||8),Number(data.match_count||6),Number(data.video_count||3),],itemStyle:{color:"#168c70",borderRadius:[6,6,0,0]}}]});radar.setOption({tooltip:{},radar:{indicator:[{name:"市场需求",max:100},{name:"短视频适配",max:100},{name:"利润空间",max:100},{name:"新奇特",max:100},{name:"复购属性",max:100},{name:"日本偏好",max:100}],radius:"65%"},series:[{type:"radar",data:[{value:[86,91,78,88,64,84],name:"综合选品画像",areaStyle:{color:"rgba(22,140,112,.22)"},lineStyle:{color:"#168c70"},itemStyle:{color:"#168c70"}}]}]});const resize=()=>{bar.resize();radar.resize()};window.addEventListener("resize",resize);return()=>{window.removeEventListener("resize",resize);bar.dispose();radar.dispose();};};const existing=document.querySelector('script[data-echarts="1"]') as HTMLScriptElement|null;if((window as Window & {echarts?:Engine}).echarts) return run();if(existing){existing.addEventListener("load",run);return()=>existing.removeEventListener("load",run);}const script=document.createElement("script");script.dataset.echarts="1";script.src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js";script.onload=run;document.head.appendChild(script);return()=>{script.onload=null;};},[data]);return <section className="dashboard-page"><div className="dashboard-metrics"><div><span>任务状态</span><b>{String(data.status||"运行中")}</b></div><div><span>今日任务</span><b>{String(data.today_tasks||data.task_count||0)}</b></div><div><span>衍生品数量</span><b>{String(data.derived_count||0)}</b></div><div><span>接口状态</span><b className="ok">在线</b></div></div><div className="dashboard-charts"><section className="chart-card"><h3>业务环节分布</h3><div ref={barRef} className="echart-box"/></section><section className="chart-card"><h3>选品雷达</h3><div ref={radarRef} className="echart-box"/></section></div></section>; }
+function DashboardLegacy() { const barRef=useRef<HTMLDivElement>(null); const radarRef=useRef<HTMLDivElement>(null); const [data,setData]=useState<Record<string,unknown>>({}); useEffect(()=>{service.getPipelineStatus().then(x=>setData(x||{})).catch(()=>setData({}));},[]); useEffect(()=>{type Chart={setOption:(option:unknown)=>void;resize:()=>void;dispose:()=>void};type Engine={init:(el:HTMLElement)=>Chart};const run=()=>{const engine=(window as Window & {echarts?:Engine}).echarts;if(!engine||!barRef.current||!radarRef.current)return;const bar=engine.init(barRef.current);const radar=engine.init(radarRef.current);bar.setOption({tooltip:{trigger:"axis"},grid:{left:42,right:18,top:25,bottom:28},xAxis:{type:"category",data:["FastMoss","AI衍生","1688匹配","视频任务"]},yAxis:{type:"value"},series:[{type:"bar",barWidth:28,data:[Number(data.fastmoss_count||12),Number(data.derived_count||8),Number(data.match_count||6),Number(data.video_count||3),],itemStyle:{color:"#168c70",borderRadius:[6,6,0,0]}}]});radar.setOption({tooltip:{},radar:{indicator:[{name:"市场需求",max:100},{name:"短视频适配",max:100},{name:"利润空间",max:100},{name:"新奇特",max:100},{name:"复购属性",max:100},{name:"日本偏好",max:100}],radius:"65%"},series:[{type:"radar",data:[{value:[86,91,78,88,64,84],name:"综合选品画像",areaStyle:{color:"rgba(22,140,112,.22)"},lineStyle:{color:"#168c70"},itemStyle:{color:"#168c70"}}]}]});const resize=()=>{bar.resize();radar.resize()};window.addEventListener("resize",resize);return()=>{window.removeEventListener("resize",resize);bar.dispose();radar.dispose();};};const existing=document.querySelector('script[data-echarts="1"]') as HTMLScriptElement|null;if((window as Window & {echarts?:Engine}).echarts) return run();if(existing){existing.addEventListener("load",run);return()=>existing.removeEventListener("load",run);}const script=document.createElement("script");script.dataset.echarts="1";script.src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js";script.onload=run;document.head.appendChild(script);return()=>{script.onload=null;};},[data]);return <section className="dashboard-page"><div className="dashboard-metrics"><div><span>任务状态</span><b>{String(data.status||"运行中")}</b></div><div><span>今日任务</span><b>{String(data.today_tasks||data.task_count||0)}</b></div><div><span>衍生品数量</span><b>{String(data.derived_count||0)}</b></div><div><span>接口状态</span><b className="ok">在线</b></div></div><div className="dashboard-charts"><section className="chart-card"><h3>业务环节分布</h3><div ref={barRef} className="echart-box"/></section><section className="chart-card"><h3>选品雷达</h3><div ref={radarRef} className="echart-box"/></section></div></section>; }
 
 function StorePage({ user, notice, onCreditChange }: { user: User; notice: (s: string) => void; onCreditChange: (credits: number) => void }) {
   const [links, setLinks] = useState(() => { const value = localStorage.getItem("tk_publish_prefill_url") || ""; localStorage.removeItem("tk_publish_prefill_url"); return value; });
@@ -161,9 +209,9 @@ function StorePage({ user, notice, onCreditChange }: { user: User; notice: (s: s
 
 function VideoPage({ user, notice, onCreditChange }: { user: User; notice: (s: string) => void; onCreditChange: (credits: number) => void }) { const [projects,setProjects]=useState<VideoProject[]>([]); const [project,setProject]=useState<VideoProject|null>(null); const [step,setStep]=useState(0); const [titleValue,setTitleValue]=useState(""); const [market,setMarket]=useState("日本"); const [language,setLanguage]=useState("日语"); const [details,setDetails]=useState(""); const [strategy,setStrategy]=useState("auto_safe"); const [script,setScript]=useState(""); const [files,setFiles]=useState<File[]>([]); const [role,setRole]=useState("产品主图"); const [desc,setDesc]=useState(""); const [model,setModel]=useState("auto"); const [models,setModels]=useState<Array<{label?:string;value?:string}>>([]); const [busy,setBusy]=useState(false); const [taskBusy,setTaskBusy]=useState(false); const selectProject=(p:VideoProject)=>{setProject(p);setTitleValue(p.title||"");setMarket(p.target_market||"日本");setLanguage(p.video_language||"日语");setDetails(p.product_details||"");setScript(p.script_text||"");}; const refresh=async()=>{try{const rows=await service.getVideoProjects();setProjects(rows);if(!project&&rows[0])selectProject(rows[0]);}catch(e){notice(e instanceof Error?e.message:"读取视频项目失败");}}; useEffect(()=>{refresh();service.getVideoModels().then(setModels).catch(()=>setModels([]));},[]); async function createProject(){setBusy(true);try{const p=await service.createVideoProject({title:titleValue||"新视频项目",target_market:market,video_language:language,product_details:details+"\nvideo_strategy_key:"+strategy});setProjects(r=>[p,...r]);selectProject(p);notice("视频项目已创建");}catch(e){notice(e instanceof Error?e.message:"创建项目失败");}finally{setBusy(false);}} async function saveInfo(){if(!project){await createProject();return;}setBusy(true);try{const p=await service.updateVideoProject(project.id,{title:titleValue||"新视频项目",target_market:market,video_language:language,product_details:details+"\nvideo_strategy_key:"+strategy});setProject(p);setProjects(r=>r.map(x=>x.id===p.id?p:x));notice("产品信息已保存");}catch(e){notice(e instanceof Error?e.message:"保存产品信息失败");}finally{setBusy(false);}} async function upload(){if(!project){notice("请先保存项目");return;}if(!files.length){notice("请选择产品图片");return;}setBusy(true);try{let p=project;for(let i=0;i<files.length;i++)p=await service.uploadVideoAsset(project.id,files[i],{role,description:desc,is_primary:i===0?1:0});setProject(p);setProjects(r=>r.map(x=>x.id===p.id?p:x));setFiles([]);notice("产品图上传完成");}catch(e){notice(e instanceof Error?e.message:"上传图片失败");}finally{setBusy(false);}} async function generate(){if(!project){notice("请先保存项目");return;}setBusy(true);try{const p=await service.generateVideoScript(project.id);setProject(p);setScript(p.script_text||"");setStep(2);notice("AI脚本已生成");}catch(e){notice(e instanceof Error?e.message:"脚本生成失败");}finally{setBusy(false);}} async function saveScript(){if(!project)return;setBusy(true);try{const p=await service.saveVideoScript(project.id,{script_text:script,storyboard:[]});setProject(p);setProjects(r=>r.map(x=>x.id===p.id?p:x));notice("脚本已保存");}catch(e){notice(e instanceof Error?e.message:"保存脚本失败");}finally{setBusy(false);}} async function submit(){if(!project){notice("请先保存项目");return;}if(Number(user.credits||0)<100){notice("积分不足，提交生成视频需要100积分");return;}if(!project.assets?.length){notice("请先上传产品图");return;}await saveScript();setTaskBusy(true);try{const p=await service.submitVideoTask(project.id,{generation_mode:"image_to_video",model_name:model});if(typeof p.credit_balance==="number")onCreditChange(p.credit_balance);setProject(p);setProjects(r=>r.map(x=>x.id===p.id?p:x));setStep(3);notice("视频任务已提交");}catch(e){notice(e instanceof Error?e.message:"提交视频失败");}finally{setTaskBusy(false);}} const task=project?.tasks?.[0]; const video=task?.video_url||task?.result_video_url||project?.result_video_url; const url=(v?:string)=>v?(v.startsWith("http")?v:String(service.api.defaults.baseURL||"")+v):""; const opts=models.length?models:[{label:"默认推荐",value:"auto"},{label:"Seedance 2.0 Fast",value:"doubao-seedance-2-0-fast"},{label:"即梦电商特价",value:"buming:seedance-2-0-ecom-special"}]; return <section className="video-page"><div className="video-heading"><div><h2>视频生成</h2><p>上传产品图，生成脚本，再提交视频。产品图会作为强参考。提交生成视频消耗 100 积分。</p></div><div className="video-credit">当前积分 <b>{user.credits??0}</b></div></div><div className="video-layout"><aside className="video-projects"><div className="video-projects-head"><h3>我的项目</h3><button onClick={refresh}>刷新</button></div>{projects.map(p=><button key={p.id} className={project?.id===p.id?"video-project active":"video-project"} onClick={()=>selectProject(p)}><b>{p.title||("项目 "+p.id)}</b><span>{p.status||"draft"}</span></button>)}{!projects.length&&<div className="video-empty">暂无项目</div>}</aside><div className="video-workspace"><div className="video-steps">{["产品信息","产品图片","视频脚本","生成视频"].map((x,i)=><button key={x} className={step===i?"active":""} onClick={()=>setStep(i)}><i>{i+1}</i>{x}</button>)}</div>{step===0&&<section className="video-card"><h3>第 1 步：填写产品信息</h3><div className="video-form-grid"><label>项目标题<input value={titleValue} onChange={e=>setTitleValue(e.target.value)}/></label><label>目标市场<select value={market} onChange={e=>setMarket(e.target.value)}><option>日本</option><option>美国</option><option>英国</option><option>东南亚</option></select></label><label>字幕/口播语言<select value={language} onChange={e=>setLanguage(e.target.value)}><option>日语</option><option>英语</option><option>中文</option><option>韩语</option></select></label><label>拍摄方案<select value={strategy} onChange={e=>setStrategy(e.target.value)}><option value="auto_safe">自动稳妥</option><option value="static_display">静态展示</option><option value="light_interaction">轻交互</option><option value="handheld_demo">手持演示</option><option value="wearable_demo">佩戴演示</option></select></label><label className="video-span-2">产品详情<textarea value={details} onChange={e=>setDetails(e.target.value)} placeholder="粘贴产品详情、卖点、人群、场景、风格要求。"/></label></div><div className="video-actions"><button className="primary" onClick={createProject} disabled={busy}>保存为新项目</button><button onClick={saveInfo} disabled={busy||!project}>保存当前产品信息</button></div></section>}{step===1&&<section className="video-card"><h3>第 2 步：上传产品图</h3><div className="video-upload-row"><input value={role} onChange={e=>setRole(e.target.value)} placeholder="图片角色"/><input value={desc} onChange={e=>setDesc(e.target.value)} placeholder="图片说明"/><input type="file" accept="image/*" multiple onChange={e=>setFiles(Array.from(e.target.files||[]))}/><button className="primary" onClick={upload} disabled={busy||!files.length||!project}>上传图片</button></div><div className="video-assets">{(project?.assets||[]).map(a=><article key={a.id}><div className="video-asset-image">{url(a.public_url||a.url)?<img src={url(a.public_url||a.url)}/>:<span>暂无图片</span>}</div><div><b>{a.role||"产品图片"}</b><p>{a.description||"无说明"}</p><small>{a.is_primary?"主参考图":"参考图"}</small></div><button onClick={async()=>{if(project){try{const p=await service.deleteVideoAsset(project.id,a.id);setProject(p);notice("图片已删除");}catch(e){notice(e instanceof Error?e.message:"删除失败");}}}}>删除</button></article>)}{!project?.assets?.length&&<div className="video-empty">暂无产品图</div>}</div></section>}{step===2&&<section className="video-card"><h3>第 3 步：生成并修改脚本</h3><div className="video-actions"><button className="primary" onClick={generate} disabled={busy||!project}>AI 生成脚本</button><button onClick={saveScript} disabled={busy||!project}>保存修改后的脚本</button></div><textarea className="video-script" value={script} onChange={e=>setScript(e.target.value)} placeholder="点击 AI 生成脚本，或直接输入脚本。"/></section>}{step===3&&<section className="video-card video-generate-card"><h3>第 4 步：生成视频</h3><div className="video-submit-row"><label>生成方案<select value={model} onChange={e=>setModel(e.target.value)}>{opts.map(o=><option key={o.value} value={o.value}>{o.label||o.value}</option>)}</select></label><button className="primary" onClick={submit} disabled={taskBusy||!project}>提交生成视频 · 100积分</button></div><div className="video-status"><b>当前状态：{task?.status||project?.status||"未提交"}</b><span>{task?.provider_task_id?"任务号："+task.provider_task_id:"尚未提交任务"}</span>{task?.error_message&&<p className="video-error">{task.error_message}</p>}</div>{video?<video className="video-preview" controls src={url(video)}/>:<div className="video-preview-empty">生成完成后会在这里预览视频</div>}<button onClick={async()=>{if(project&&task?.id){try{setProject(await service.refreshVideoTask(project.id,task.id));notice("任务已刷新");}catch(e){notice(e instanceof Error?e.message:"刷新失败");}}}}>刷新任务</button></section>}</div></div></section>; }
 
-function WindowTitlebar() { return <div className="window-titlebar"><div className="window-brand"><span className="window-brand-mark">TK</span><strong>益行跨境 AI 平台</strong></div><div className="window-tools"><button aria-label="Help" title="Help">?</button><button aria-label="Messages" title="Messages">MSG</button><button aria-label="Settings" title="Settings">SET</button><div className="window-controls"><button aria-label="Minimize" title="Minimize" onClick={() => window.desktop?.minimize()}>-</button><button aria-label="Maximize" title="Maximize" onClick={() => window.desktop?.toggleMaximize()}>[]</button><button className="close" aria-label="Close" title="Close" onClick={() => window.desktop?.close()}>X</button></div></div></div>; } /*
+function WindowTitlebar() { return <div className="window-titlebar"><div className="window-brand"><span className="window-brand-mark">TK</span><strong>益行跨境 AI 平台</strong></div><div className="window-tools"><button aria-label="帮助" title="帮助"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.35 2.35 0 1 1 3.55 2.02c-.86.5-1.35 1.03-1.35 2.15"/><circle cx="12" cy="16.6" r=".7" fill="currentColor" stroke="none"/></svg></button><button aria-label="消息" title="消息"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v10.8H9l-5 3v-13z"/><path d="M8 10.5h.01M12 10.5h.01M16 10.5h.01"/></svg></button><button aria-label="设置" title="设置"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19 13.2l1.1 1-.3 2-1.6.7-1.1 1.1.2 1.7-1.8.8-1.3-1.1-1.5.2-1 1.4-1.9-.6-.3-1.7-1.1-1.1-1.7.2-.8-1.8 1.1-1.3-.2-1.5-1.4-1 .6-1.9 1.7-.3 1.1-1.1-.2-1.7 1.8-.8 1.3 1.1 1.5-.2 1-1.4 1.9.6.3 1.7 1.1 1.1 1.7-.2.8 1.8-1.1 1.3z"/></svg></button><div className="window-controls"><button aria-label="最小化" title="最小化" onClick={() => window.desktop?.minimize()}><span className="window-minimize-glyph" /></button><button aria-label="最大化" title="最大化" onClick={() => window.desktop?.toggleMaximize()}><span className="window-maximize-glyph" /></button><button className="close" aria-label="关闭" title="关闭" onClick={() => window.desktop?.close()}><span className="window-close-glyph" /></button></div></div></div>; } /*
 
-export default function App2() { const stored = localStorage.getItem("tk_electron_user"); const [user, setUser] = useState<User | null>(() => stored ? JSON.parse(stored) : null); const [page, setPage] = useState<Page>("studio"); const [rows, setRows] = useState<Product[]>([]); const [selected, setSelected] = useState<Product | null>(null); const [notice, setNotice] = useState(""); const allowed = useMemo(() => menus.filter((m) => m.roles.includes(user?.role || "student")), [user]); const flash = (s: string) => { setNotice(s); window.setTimeout(() => setNotice(""), 3000); }; async function load(next: Page) { if (!["library", "rank", "favorites"].includes(next)) return; try { const data = next === "library" ? await service.getLibrary() : next === "favorites" ? await service.getFavorites() : await service.getRanks({ region: "JP", list_type: "new", page: 1, pagesize: 50, paged: true }); const list = Array.isArray(data) ? data : (data as { items?: Product[] })?.items || []; setRows(list); setSelected(list[0] || null); } catch (e) { flash(e instanceof Error ? e.message : "读取数据失败"); } } useEffect(() => { if (user) load(page); }, [user, page]); if (!user) return <><WindowTitlebar /><Login done={setUser} /></>; const collect = async (p: Product) => { try { await service.collect(p); flash("已加入采集箱"); } catch (e) { flash(e instanceof Error ? e.message : "加入失败"); } }; return <><WindowTitlebar /><div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark">TK</div><div><b>益行跨境 AI 平台</b><span>TikTok 日本选品专家</span></div></div><nav>{allowed.map((m) => <button key={m.id} className={page === m.id ? "active" : ""} onClick={() => setPage(m.id)}><i>{m.icon}</i>{m.label}</button>)}</nav><div className="account"><div className="avatar">{(user.real_name || user.username || "系").slice(0, 1)}</div><div className="account-copy"><b>{user.real_name || user.username}</b><span>{user.role} · 积分 {user.credits ?? 0}</span></div><button className="logout" onClick={() => { service.logout(); setUser(null); }}>退出登录</button></div></aside><main className="main"><header><div><h1>{menus.find((m) => m.id === page)?.label}</h1><span>益行跨境 · 日本市场选品工作台</span></div></header>{page === "studio" && <Studio search={async (message, count) => { await service.searchSelection(message, count); flash("选品完成，结果已进入选品库"); setPage("library"); }} />}{["library", "rank", "favorites"].includes(page) && <Products page={page} rows={rows} selected={selected} onSelect={setSelected} onCollect={collect} />}{page === "dashboard" && <Dashboard />}{page === "store" && <Store notice={flash} />}{page === "video" && <Video notice={flash} />}{page === "profile" && <div className="module-card"><h2>个人中心</h2><p>当前账号：{user.username || user.real_name}</p><p>当前积分：{user.credits ?? 0}</p></div>}{page === "teacher" && <Teacher notice={flash} />}{page === "admin" && <Admin notice={flash} />}{notice && <div className="toast">{notice}</div>}</main></div>; }
+export default function App2() { const stored = localStorage.getItem("tk_electron_user"); const [user, setUser] = useState<User | null>(() => stored ? JSON.parse(stored) : null); const [page, setPage] = useState<Page>("studio"); const [rows, setRows] = useState<Product[]>([]); const [selected, setSelected] = useState<Product | null>(null); const [notice, setNotice] = useState(""); const allowed = useMemo(() => menus.filter((m) => m.roles.includes(user?.role || "student")), [user]); const flash = (s: string) => { setNotice(s); window.setTimeout(() => setNotice(""), 3000); }; async function load(next: Page) { if (!["library", "rank", "favorites"].includes(next)) return; try { const data = next === "library" ? await service.getLibrary() : next === "favorites" ? await service.getFavorites() : await service.getRanks({ region: "JP", list_type: "new", page: 1, pagesize: 50, paged: true }); const list = Array.isArray(data) ? data : (data as { items?: Product[] })?.items || []; setRows(list); setSelected(list[0] || null); } catch (e) { flash(e instanceof Error ? e.message : "读取数据失败"); } } useEffect(() => { if (user) load(page); }, [user, page]); if (!user) return <><WindowTitlebar /><Login done={setUser} /></>; const collect = async (p: Product) => { try { await service.collect(p); flash("已加入采集箱"); } catch (e) { flash(e instanceof Error ? e.message : "加入失败"); } }; return <><WindowTitlebar /><div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark">TK</div><div><b>益行跨境 AI 平台</b><span>TikTok 日本选品专家</span></div></div><nav>{allowed.map((m) => <button key={m.id} className={page === m.id ? "active" : ""} onClick={() => setPage(m.id)}><i>{m.icon}</i>{m.label}</button>)}</nav><div className="account"><div className="avatar">{(user.real_name || user.username || "系").slice(0, 1)}</div><div className="account-copy"><b>{user.real_name || user.username}</b><span>{roleLabel(user.role)} · 积分 {user.credits ?? 0}</span></div><button className="logout" onClick={() => { service.logout(); setUser(null); }}>退出登录</button></div></aside><main className="main"><header><div><h1>{menus.find((m) => m.id === page)?.label}</h1><span>益行跨境 · 日本市场选品工作台</span></div></header>{page === "studio" && <Studio search={async (message, count) => { await service.searchSelection(message, count); flash("选品完成，结果已进入选品库"); setPage("library"); }} />}{["library", "rank", "favorites"].includes(page) && <Products page={page} rows={rows} selected={selected} onSelect={setSelected} onCollect={collect} />}{page === "dashboard" && <Dashboard />}{page === "store" && <Store notice={flash} />}{page === "video" && <Video notice={flash} />}{page === "profile" && <div className="module-card"><h2>个人中心</h2><p>当前账号：{user.username || user.real_name}</p><p>当前积分：{user.credits ?? 0}</p></div>}{page === "teacher" && <Teacher notice={flash} />}{page === "admin" && <Admin notice={flash} />}{notice && <div className="toast">{notice}</div>}</main></div>; }
 */
 
 function Profile({ user, onNotice, onCreditChange }: { user: User; onNotice: (message: string) => void; onCreditChange: (credits: number) => void }) {
@@ -175,16 +223,15 @@ function Profile({ user, onNotice, onCreditChange }: { user: User; onNotice: (me
   function updateOpacity(value: string) {
     setOpacity(value);
     const saved = JSON.parse(localStorage.getItem("tk_theme") || "{}");
-    const next = { font: "Microsoft YaHei UI", size: "14px", background: "background.png", ...saved, opacity: value };
+    const next = { font: "Microsoft YaHei UI", size: "14px", background: "background.png", style: "glass", ...saved, opacity: value };
     localStorage.setItem("tk_theme", JSON.stringify(next));
     applyTheme(next);
   }
   return <section className="profile">
-    <div className="profile-card"><div className="avatar large-avatar">{(user.real_name || user.username || "A").slice(0, 1)}</div><div><h2>{user.real_name || user.username}</h2><p>{user.role} · 当前积分 <b className="profile-credit">{credits}</b></p></div><button className="secondary profile-refresh" onClick={async () => { try { const fresh = await service.getUser(); onCreditChange(Number(fresh.credits ?? fresh.credit_balance ?? 0)); onNotice("积分余额已刷新"); } catch (e) { onNotice(e instanceof Error ? e.message : "刷新积分失败"); } }}>刷新余额</button></div>
     <div className="settings-card credit-card"><h2>积分中心</h2><div className="credit-balance"><strong>{credits}</strong><span>当前可用积分</span></div><p>积分用于智能选品、衍生品生成、视频生成和自动上架等功能。</p><button className="primary" onClick={() => setShowQr(true)}>扫码联系管理员充值</button></div>
     <div className="settings-card"><h2>修改密码</h2><label>原密码<input type="password" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} /></label><label>新密码<input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} /></label><button className="primary" onClick={async () => { try { await service.changePassword(oldPassword, newPassword); onNotice("密码已更新"); setOldPassword(""); setNewPassword(""); } catch (e) { onNotice(e instanceof Error ? e.message : "修改失败"); } }}>保存新密码</button></div>
     <div className="settings-card transparency-settings"><h2>软件透明度</h2><p>调整菜单栏和内容区的透明显现程度，修改会即时生效。</p><label className="opacity-control"><span>透明度 {Math.round(Number(opacity) * 100)}%</span><input type="range" min="0.12" max="0.72" step="0.02" value={opacity} onChange={(e) => updateOpacity(e.target.value)} /></label></div>
-    {showQr && <div className="modal-backdrop" onClick={() => setShowQr(false)}><div className="modal recharge-modal" onClick={(e) => e.stopPropagation()}><button className="modal-close" onClick={() => setShowQr(false)}>×</button><h2>积分充值</h2><p>扫码添加管理员好友，发送登录账号、充值金额和希望获得的积分。</p><img src="/recharge_qr.png" alt="积分充值二维码" /><small>充值到账后，点击“刷新余额”即可查看。</small></div></div>}
+    {showQr && <div className="modal-backdrop" onClick={() => setShowQr(false)}><div className="modal recharge-modal" onClick={(e) => e.stopPropagation()}><button className="modal-close" onClick={() => setShowQr(false)}>×</button><h2>联系管理员</h2><p>扫码添加管理员，咨询积分充值和平台使用问题。</p><img src="./contact-admin-qr.jpg" alt="联系管理员二维码" /><small>添加后请备注登录账号，方便管理员处理。</small></div></div>}
   </section>;
 }
 
@@ -195,6 +242,48 @@ function reportText(item: Product) {
 
 function reportHas(item: Product, keyword: string) {
   return reportText(item).includes(keyword);
+}
+
+function productAnalysis(item: Product) {
+  const raw = item.analysis_report ?? (item.product_snapshot as Record<string, unknown> | undefined)?.selection_meta;
+  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+  if (typeof raw === "string") {
+    try { const parsed = JSON.parse(raw); return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {}; } catch { return {}; }
+  }
+  return {};
+}
+
+function analysisValue(data: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = data[key];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value);
+  }
+  return "";
+}
+
+function LibraryReport({ selected, saved, collect, onNotice }: { selected: Product; saved: boolean; collect: () => Promise<void>; onNotice: (message: string) => void }) {
+  const analysis = productAnalysis(selected);
+  const snapshot = (selected.product_snapshot || {}) as Record<string, unknown>;
+  const supplierPrice = Number(selected.supplier_price ?? snapshot.supplier_price ?? 0);
+  const sellingPrice = Number(selected.price ?? supplierPrice ?? 0);
+  const margin = sellingPrice > 0 && supplierPrice > 0 ? sellingPrice - supplierPrice : 0;
+  const marginRate = sellingPrice > 0 && supplierPrice > 0 ? (margin / sellingPrice) * 100 : 0;
+  const novelty = analysisValue(analysis, "novelty", "novelty_score");
+  const tier = analysisValue(analysis, "tier", "opportunity_level");
+  const reason = analysisValue(analysis, "reason", "recommendation_reason") || selected.recommendation_reason || "暂无推荐依据";
+  const content = analysisValue(analysis, "content", "summary", "description");
+  const market = analysisValue(analysis, "market_summary", "market_intro");
+  const audience = analysisValue(analysis, "target_audience", "audience", "persona");
+  const scene = analysisValue(analysis, "scene", "usage_scene", "scenario");
+  const compliance = analysisValue(analysis, "compliance_status", "compliance", "risk_level") || (selected.review_status === "rejected" ? `驳回：${selected.review_comment || "存在审核问题"}` : "待复核");
+  const source = productSourceLabel(selected);
+  return <>
+    <div className="smart-report-product"><div className="smart-report-product-image">{picture(selected) ? <img src={picture(selected)} /> : <div className="image-empty">暂无图片</div>}</div><div><h3>{title(selected)}</h3><strong>{money(selected)}</strong><p>销量 {Number(selected.sales_count ?? selected.supplier_sales_count ?? 0).toLocaleString()}</p><p>{regionLabel(selected.region)} · {categoryLabel(selected.category)} · {source}</p></div></div>
+    <div className="library-report-section"><h3>商品与供应链</h3><div className="library-report-facts"><span>1688 货源价<b>{supplierPrice > 0 ? `¥${supplierPrice.toFixed(2)}` : "暂无"}</b></span><span>利润参考<b>{margin > 0 ? `¥${margin.toFixed(2)} / ${marginRate.toFixed(1)}%` : "暂无"}</b></span><span>供应商<b>{String(selected.supplier_shop_name || snapshot.supplier_shop_name || "暂无")}</b></span><span>货源编号<b>{String(selected.supplier_product_id || snapshot.supplier_product_id || "暂无")}</b></span></div>{supplierUrl(selected) && <a className="library-report-link" href={supplierUrl(selected)} target="_blank" rel="noreferrer">查看 1688 货源</a>}</div>
+    <div className="library-report-section"><h3>蓝海判断</h3><div className="library-report-facts"><span>机会等级<b>{tier || "待评估"}</b></span><span>新奇特程度<b>{novelty || "待评估"}</b></span><span>AI 参考分<b>{Number(selected.ai_score ?? selected.weighted_score ?? 0).toFixed(1)}</b></span><span>TK 销量合计<b>{Number(selected.sales_count ?? 0).toLocaleString()}</b></span></div><p className="library-report-copy">{reason}</p>{content && <p className="library-report-copy">{content}</p>}</div>
+    <div className="library-report-section"><h3>市场与运营参考</h3><div className="library-report-text-grid"><div><b>市场信息</b><p>{market || "当前商品未携带市场分析摘要，可结合任务报告进一步判断。"}</p></div><div><b>目标人群</b><p>{audience || "暂无目标人群信息"}</p></div><div><b>使用场景</b><p>{scene || "暂无使用场景信息"}</p></div><div><b>合规/限售状态</b><p>{compliance}</p></div></div></div>
+    <div className="smart-report-actions"><button className="secondary" onClick={collect}>{saved ? "★ 已在采集箱" : "☆ 加入采集箱"}</button><button className="primary" onClick={() => { onNotice("选品库详情已展示当前可用分析信息"); downloadReport(selected); }}>⇩ 导出报告</button></div>
+  </>;
 }
 
 function downloadReport(item: Product) {
@@ -310,7 +399,6 @@ function LibraryPage({ rows, onNotice }: { rows: Product[]; onNotice: (message: 
   const [category, setCategory] = useState("全部");
   const [selected, setSelected] = useState<Product | null>(null);
   const [regions, setRegions] = useState<Array<{ region_name?: string; region_code?: string }>>([]);
-  const [reportTab, setReportTab] = useState<"first" | "last">("first");
   const [favorites, setFavorites] = useState<Product[]>([]);
   const dimensions = ["使用场景", "商品周期性", "目标群体", "短视频流量种草适配能力", "日本市场偏好", "是否属于新奇特商品", "复购属性", "竞品属性"];
   const categories = FIXED_CATEGORIES;
@@ -324,13 +412,12 @@ function LibraryPage({ rows, onNotice }: { rows: Product[]; onNotice: (message: 
     return regionMatch && categoryMatch;
   }), [rows, region, category]);
   useEffect(() => { if (selected && !filtered.some((item) => pid(item) === pid(selected))) setSelected(filtered[0] || null); }, [filtered]);
-  const visibleDimensions = reportTab === "first" ? dimensions.slice(0, 6) : dimensions.slice(6);
   const saved = selected && favorites.some((item) => title(item) === title(selected) && picture(item) === picture(selected));
   async function collect() { if (!selected) return; try { const response = await service.collect(selected); setFavorites((list) => [response?.data || selected, ...list]); onNotice("已加入采集箱"); } catch (e) { onNotice(e instanceof Error ? e.message : "加入采集箱失败"); } }
   return <section className="library-page">
     <div className="library-heading"><div><h2>选品库</h2><p>查看当前账号最近 7 天的 AI 搜索选品结果</p></div></div>
     <div className="library-filters"><div className="library-filter-row"><b>国家/地区：</b><button className={region === "ALL" ? "active" : ""} onClick={() => setRegion("ALL")}>全部</button>{regions.map((item) => <button key={item.region_code} className={region === item.region_code ? "active" : ""} onClick={() => setRegion(String(item.region_code || ""))}>{item.region_name || item.region_code}</button>)}</div><div className="library-filter-row"><b>商品分类：</b>{categories.map((item) => <button key={item} className={category === item ? "active" : ""} onClick={() => setCategory(item)}>{item}</button>)}</div></div>
-    <div className="library-workspace"><section><div className="smart-section-title"><h2>我的搜索选品</h2><span>{filtered.length} 个商品</span></div><div className="library-grid">{filtered.map((item) => <article key={String(pid(item))} className={selected && pid(selected) === pid(item) ? "library-card selected" : "library-card"} onClick={() => setSelected(item)}><div className="library-card-image">{picture(item) ? <img src={picture(item)} loading="lazy" /> : <div className="image-empty">暂无图片</div>}</div><h3>{title(item)}</h3><div className="library-card-meta"><strong>{money(item)}</strong><span>销量 {Number(item.sales_count ?? item.supplier_sales_count ?? 0).toLocaleString()}</span></div><button onClick={(e) => { e.stopPropagation(); collect(); }}>{saved && selected && pid(selected) === pid(item) ? "已在采集箱" : "加入采集箱"}</button></article>)}</div>{!filtered.length && <div className="empty-state">暂无搜索选品，请先在智能选品对话框提交需求。</div>}</section><aside className="library-report"><h2>选品分析报告</h2>{selected ? <><div className="smart-report-product">{picture(selected) ? <img src={picture(selected)} /> : <div className="image-empty">暂无图片</div>}<div><h3>{title(selected)}</h3><strong>{money(selected)}</strong><p>销量 {Number(selected.sales_count ?? selected.supplier_sales_count ?? 0).toLocaleString()}</p><p>AI 参考分 {Number(selected.ai_score ?? selected.weighted_score ?? 0).toFixed(1)}</p></div></div><div className="smart-report-tabs"><button className={reportTab === "first" ? "active" : ""} onClick={() => setReportTab("first")}>选品分析 1-6</button><button className={reportTab === "last" ? "active" : ""} onClick={() => setReportTab("last")}>选品分析 7-8</button></div><div className="smart-dimensions">{visibleDimensions.map((name, index) => <div key={name}><span className="smart-dimension-icon">{index + 1}</span><div><b>{name}</b><small>{reportHas(selected, name) ? "已生成分析报告" : "暂无分析内容"}</small></div><strong>{reportHas(selected, name) ? "参考" : "-"}</strong></div>)}</div><div className="smart-report-actions"><button className="secondary" onClick={collect}>{saved ? "★ 已在采集箱" : "☆ 加入采集箱"}</button><button className="primary" onClick={() => downloadReport(selected)}>⇩ 导出报告</button></div></> : <div className="empty-state">选择商品查看分析</div>}</aside></div>
+    <div className="library-workspace"><section><div className="smart-section-title"><h2>我的搜索选品</h2><span>{filtered.length} 个商品</span></div><div className="library-grid">{filtered.map((item) => <article key={String(pid(item))} className={selected && pid(selected) === pid(item) ? "library-card selected" : "library-card"} onClick={() => setSelected(item)}><div className="library-card-image">{picture(item) ? <img src={picture(item)} loading="lazy" /> : <div className="image-empty">暂无图片</div>}</div><h3>{title(item)}</h3><div className="library-card-meta"><strong>{money(item)}</strong><span>销量 {Number(item.sales_count ?? item.supplier_sales_count ?? 0).toLocaleString()}</span></div><button onClick={(e) => { e.stopPropagation(); collect(); }}>{saved && selected && pid(selected) === pid(item) ? "已在采集箱" : "加入采集箱"}</button></article>)}</div>{!filtered.length && <div className="empty-state">暂无搜索选品，请先在智能选品对话框提交需求。</div>}</section><aside className="library-report"><h2>选品分析报告</h2>{selected ? <LibraryReport selected={selected} saved={Boolean(saved)} collect={collect} onNotice={onNotice} /> : <div className="empty-state">选择商品查看分析</div>}</aside></div>
   </section>;
 }
 
@@ -553,7 +640,33 @@ function AdminConsoleLegacy({ notice }: { notice: (s: string) => void }) {
       setRows(Array.isArray(data) ? data as Record<string, unknown>[] : Object.entries(data).map(([key, value]) => ({ setting_key: key, setting_value: String(value ?? "") })));
     } catch (error) { notice(error instanceof Error ? error.message : "读取管理数据失败"); }
   }
+  const syncingRanks = false;
   useEffect(() => { void load(); }, [tab]);
+  useEffect(() => {
+    const tabsNode = document.querySelector<HTMLElement>(".admin-console > .admin-tabs");
+    if (!tabsNode || tabsNode.querySelector(".admin-sync-ranks")) return;
+    const releaseTab = Array.from(tabsNode.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "版本更新");
+    if (!releaseTab) return;
+    const button = document.createElement("button");
+    button.className = "primary admin-sync-ranks";
+    button.textContent = "同步新品榜单";
+    button.onclick = async () => {
+      if (syncingRanks) return;
+      button.disabled = true;
+      button.textContent = "同步中...";
+      try {
+        const result = await service.syncConfiguredRanks();
+        notice(`新品榜单同步完成：${Number(result?.success_region_count || 0)} 个地区，新增/更新 ${Number(result?.synced_count || 0)} 个商品`);
+      } catch (error) {
+        notice(error instanceof Error ? error.message : "新品榜单同步失败");
+      } finally {
+        button.disabled = false;
+        button.textContent = "同步新品榜单";
+      }
+    };
+    releaseTab.insertAdjacentElement("afterend", button);
+    return () => button.remove();
+  }, [notice, syncingRanks]);
   function startEdit(row: Record<string, unknown> = {}) {
     setEditing(true);
     const base: Record<string, string> = row.id ? { id: String(row.id) } : {};
@@ -587,7 +700,7 @@ function AdminConsoleLegacy({ notice }: { notice: (s: string) => void }) {
   async function uploadRelease() { if (!releaseFile || !releaseMeta.version) { notice("请填写版本号并选择安装包"); return; } try { setBusy(true); await service.uploadAppRelease({ ...releaseMeta, package: releaseFile }); setReleaseFile(null); setReleaseMeta({ version: "", release_notes: "", force_update: false }); await load(); notice("版本发布成功"); } catch (error) { notice(error instanceof Error ? error.message : "版本发布失败"); } finally { setBusy(false); } }
   function field(label: string, key: string, type = "text") { return <label className="admin-field">{label}<input type={type} value={form[key] || ""} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} /></label>; }
   const actionButtons = (row: Record<string, unknown>) => <div className="admin-actions"><button onClick={() => startEdit({ ...row, id: row.id })}>编辑</button>{["users", "models", "third"].includes(tab) && <button onClick={() => void toggle(row)}>{Number(row.status) === 1 ? "停用" : "启用"}</button>}{tab === "users" && <button onClick={() => void recharge(row)}>充值</button>}{tab === "models" && <button onClick={() => void testModel(row)}>测试</button>}{["users", "models", "third", "releases"].includes(tab) && <button className="danger-text" onClick={() => void remove(row)}>删除</button>}</div>;
-  return <section className="admin-console"><div className="admin-console-head"><div><h2>系统管理</h2><p>集中管理账号、模型、第三方接口、业务阈值和版本发布。</p></div><button className="secondary" onClick={() => void load()}>刷新</button></div><div className="admin-tabs">{tabs.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => { setTab(item.id); closeEdit(); }}>{item.label}</button>)}</div>{tab === "releases" ? <div className="release-upload"><div><b>发布新版本</b><span>支持 .exe 或 .zip 安装包</span></div><input value={releaseMeta.version} onChange={(e) => setReleaseMeta((v) => ({ ...v, version: e.target.value }))} placeholder="版本号，例如 1.0.3" /><input value={releaseMeta.release_notes} onChange={(e) => setReleaseMeta((v) => ({ ...v, release_notes: e.target.value }))} placeholder="更新说明" /><input type="file" accept=".exe,.zip" onChange={(e) => setReleaseFile(e.target.files?.[0] || null)} /><label className="release-check"><input type="checkbox" checked={releaseMeta.force_update} onChange={(e) => setReleaseMeta((v) => ({ ...v, force_update: e.target.checked }))} /> 强制更新</label><button className="primary" disabled={busy} onClick={() => void uploadRelease()}>上传并发布</button></div> : <button className="primary admin-add" onClick={() => startEdit()}>＋ 新增{tabs.find((x) => x.id === tab)?.label}</button>}<div className="admin-table"><table><thead><tr><th>名称</th><th>类型</th><th>状态</th><th>信息</th><th>操作</th></tr></thead><tbody>{rows.map((row, index) => <tr key={String(row.id || index)}><td>{String(row.real_name || row.username || row.config_name || row.setting_name || row.version || row.setting_key || "-")}</td><td>{String(row.role || row.model_type || row.service_type || row.value_type || "-")}</td><td>{row.status === 1 || row.status === true ? "启用" : row.status === 0 || row.status === false ? "停用" : "-"}</td><td>{String(row.model_name || row.provider || row.filename || row.setting_value || row.release_notes || row.description || "-")}</td><td>{tab === "settings" ? <button onClick={() => startEdit(row)}>编辑</button> : actionButtons(row)}</td></tr>)}</tbody></table>{!rows.length && <div className="empty-state">暂无数据</div>}</div>{editing && <div className="admin-editor"><div className="admin-editor-head"><h3>{form.id ? "编辑配置" : "新增配置"}</h3><button onClick={closeEdit}>×</button></div><div className="admin-form-grid">{tab === "users" && <>{field("账号", "username")}{field("姓名", "real_name")}{field("初始密码", "password", "password")}<label className="admin-field">角色<select value={form.role || "student"} onChange={(e) => setForm((v) => ({ ...v, role: e.target.value }))}><option value="student">学生</option><option value="teacher">老师</option><option value="admin">管理员</option></select></label></>}{tab === "models" && <>{field("配置名称", "config_name")}{field("服务商", "provider")}{field("模型类型", "model_type")}{field("Base URL", "base_url")}{field("API Key", "api_key_encrypted", "password")}{field("模型名称", "model_name")}{field("温度", "temperature", "number")}{field("最大输出", "max_tokens", "number")}</>}{tab === "third" && <>{field("配置名称", "config_name")}{field("服务类型", "service_type")}{field("API Base URL", "api_base_url")}{field("Access Key", "access_key_encrypted", "password")}{field("Secret Key", "secret_key_encrypted", "password")}{field("签名名称", "sign_name")}{field("短信模板", "template_code")}{field("数据库地址", "db_host")}{field("数据库端口", "db_port", "number")}</>}{tab === "settings" && <>{field("配置键", "setting_key")}{field("配置值", "setting_value")}</>}</div><div className="admin-editor-actions"><button className="secondary" onClick={closeEdit}>取消</button><button className="primary" disabled={busy} onClick={() => void save()}>保存</button></div></div>}</section>;
+  return <section className="admin-console"><div className="admin-console-head"><div><h2>系统管理</h2><p>集中管理账号、模型、第三方接口、业务阈值和版本发布。</p></div><button className="secondary" onClick={() => void load()}>刷新</button></div><div className="admin-tabs">{tabs.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => { setTab(item.id); closeEdit(); }}>{item.label}</button>)}</div>{tab === "releases" ? <div className="release-upload"><div><b>发布新版本</b><span>支持 .exe 或 .zip 安装包</span></div><input value={releaseMeta.version} onChange={(e) => setReleaseMeta((v) => ({ ...v, version: e.target.value }))} placeholder="版本号，例如 1.0.3" /><input value={releaseMeta.release_notes} onChange={(e) => setReleaseMeta((v) => ({ ...v, release_notes: e.target.value }))} placeholder="更新说明" /><input type="file" accept=".exe,.zip" onChange={(e) => setReleaseFile(e.target.files?.[0] || null)} /><label className="release-check"><input type="checkbox" checked={releaseMeta.force_update} onChange={(e) => setReleaseMeta((v) => ({ ...v, force_update: e.target.checked }))} /> 强制更新</label><button className="primary" disabled={busy} onClick={() => void uploadRelease()}>上传并发布</button></div> : <button className="primary admin-add" onClick={() => startEdit()}>＋ 新增{tabs.find((x) => x.id === tab)?.label}</button>}<div className="admin-table"><table><thead><tr><th>名称</th><th>类型</th><th>状态</th><th>信息</th><th>操作</th></tr></thead><tbody>{rows.map((row, index) => <tr key={String(row.id || index)}><td>{String(row.real_name || row.username || row.config_name || row.setting_name || row.version || row.setting_key || "-")}</td><td>{String(row.role || row.model_type || row.service_type || row.value_type || "-")}</td><td>{row.status === 1 || row.status === true ? "启用" : row.status === 0 || row.status === false ? "停用" : "-"}</td><td>{String(row.model_name || row.provider || row.filename || row.setting_value || row.release_notes || row.description || "-")}</td><td>{tab === "settings" ? <button onClick={() => startEdit(row)}>编辑</button> : actionButtons(row)}</td></tr>)}</tbody></table>{!rows.length && <div className="empty-state">暂无数据</div>}</div>{editing && <div className="admin-editor"><div className="admin-editor-head"><h3>{form.id ? "编辑配置" : "新增配置"}</h3><button onClick={closeEdit}>×</button></div><div className="admin-form-grid">{tab === "users" && <>{field("账号", "username")}{field("姓名", "real_name")}{field("初始密码", "password", "password")}<label className="admin-field">角色<select value={form.role || "student"} onChange={(e) => setForm((v) => ({ ...v, role: e.target.value }))}><option value="student">普通用户</option><option value="teacher">老师</option><option value="admin">管理员</option></select></label></>}{tab === "models" && <>{field("配置名称", "config_name")}{field("服务商", "provider")}{field("模型类型", "model_type")}{field("Base URL", "base_url")}{field("API Key", "api_key_encrypted", "password")}{field("模型名称", "model_name")}{field("温度", "temperature", "number")}{field("最大输出", "max_tokens", "number")}</>}{tab === "third" && <>{field("配置名称", "config_name")}{field("服务类型", "service_type")}{field("API Base URL", "api_base_url")}{field("Access Key", "access_key_encrypted", "password")}{field("Secret Key", "secret_key_encrypted", "password")}{field("签名名称", "sign_name")}{field("短信模板", "template_code")}{field("数据库地址", "db_host")}{field("数据库端口", "db_port", "number")}</>}{tab === "settings" && <>{field("配置键", "setting_key")}{field("配置值", "setting_value")}</>}</div><div className="admin-editor-actions"><button className="secondary" onClick={closeEdit}>取消</button><button className="primary" disabled={busy} onClick={() => void save()}>保存</button></div></div>}</section>;
 }
 
 type CompleteAdminTab = "users" | "models" | "third" | "settings" | "attributes" | "prompts" | "restrictions" | "releases";
@@ -631,7 +744,7 @@ function AdminConsoleContent({ notice }: { notice: (s: string) => void }) {
   const [releaseFile, setReleaseFile] = useState<File | null>(null);
   const [release, setRelease] = useState({ version: "", release_notes: "", force_update: false });
   const setField = (key: string, value: string) => setForm((current) => ({ ...(current || {}), [key]: value }));
-  const field = (label: string, key: string, type = "text") => <label className="admin-field">{label}<input type={type} value={form?.[key] || ""} onChange={(e) => setField(key, e.target.value)} /></label>;
+  const field = (label: string, key: string, type = "text") => <label className="admin-field">{label}<input type={type} value={form?.[key] || ""} onChange={(e) => setField(key, e.target.value)} />{tab === "users" && key === "status" && <select aria-label="待审核用户" value={form?.pending_review_student || "0"} onChange={(e) => setField("pending_review_student", e.target.value)}><option value="0">普通用户</option><option value="1">待审核用户</option></select>}</label>;
 
   async function load() {
     try {
@@ -640,9 +753,33 @@ function AdminConsoleContent({ notice }: { notice: (s: string) => void }) {
     } catch (error) { notice(error instanceof Error ? error.message : "读取管理数据失败"); }
   }
   useEffect(() => { void load(); }, [tab]);
+  useEffect(() => {
+    const tabsNode = document.querySelector<HTMLElement>(".admin-console > .admin-tabs");
+    if (!tabsNode || tabsNode.querySelector(".admin-sync-ranks")) return;
+    const releaseTab = Array.from(tabsNode.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "版本更新");
+    if (!releaseTab) return;
+    const button = document.createElement("button");
+    button.className = "primary admin-sync-ranks";
+    button.textContent = "同步新品榜单";
+    button.onclick = async () => {
+      button.disabled = true;
+      button.textContent = "同步中...";
+      try {
+        const result = await service.syncConfiguredRanks();
+        notice(`新品榜单同步完成：${Number(result?.success_region_count || 0)} 个地区，新增/更新 ${Number(result?.synced_count || 0)} 个商品`);
+      } catch (error) {
+        notice(error instanceof Error ? error.message : "新品榜单同步失败");
+      } finally {
+        button.disabled = false;
+        button.textContent = "同步新品榜单";
+      }
+    };
+    releaseTab.insertAdjacentElement("afterend", button);
+    return () => button.remove();
+  }, [notice]);
   function edit(row: Record<string, unknown> = {}) {
     const base: Record<string, string> = row.id ? { id: String(row.id) } : {};
-    if (tab === "users") setForm({ ...base, username: String(row.username || ""), real_name: String(row.real_name || ""), password: "", role: String(row.role || "student"), status: String(row.status ?? 1) });
+    if (tab === "users") setForm({ ...base, username: String(row.username || ""), real_name: String(row.real_name || ""), password: "", role: String(row.role || "student"), status: String(row.status ?? 1), pending_review_student: String(row.pending_review_student ?? 0) });
     else if (tab === "models") setForm({ ...base, config_name: String(row.config_name || ""), provider: String(row.provider || "custom"), model_type: String(row.model_type || "general"), base_url: String(row.base_url || ""), api_key_encrypted: String(row.api_key_encrypted || ""), model_name: String(row.model_name || ""), temperature: String(row.temperature ?? "0.2"), max_tokens: String(row.max_tokens ?? "4000"), remark: String(row.remark || ""), status: String(row.status ?? 1) });
     else if (tab === "third") setForm({ ...base, config_name: String(row.config_name || ""), service_type: String(row.service_type || "custom_api"), api_base_url: String(row.api_base_url || ""), access_key_encrypted: String(row.access_key_encrypted || ""), secret_key_encrypted: String(row.secret_key_encrypted || ""), db_host: String(row.db_host || ""), db_port: String(row.db_port || ""), db_name: String(row.db_name || ""), db_user: String(row.db_user || ""), db_password_encrypted: String(row.db_password_encrypted || ""), sign_name: String(row.sign_name || ""), template_code: String(row.template_code || ""), remark: String(row.remark || ""), status: String(row.status ?? 1) });
     else if (tab === "settings") setForm({ ...base, setting_key: String(row.setting_key || ""), setting_value: String(row.setting_value || "") });
@@ -653,7 +790,7 @@ function AdminConsoleContent({ notice }: { notice: (s: string) => void }) {
   async function save() {
     if (!form) return; setBusy(true);
     try { const id = Number(form.id || 0); const status = Number(form.status || 1);
-      if (tab === "users") { const p = { username: form.username, password: form.password || "123456", real_name: form.real_name, role: form.role, status }; id ? await service.updateUser(id, p) : await service.createUser(p); }
+      if (tab === "users") { const p = { username: form.username, password: form.password || "123456", real_name: form.real_name, role: form.role, status, pending_review_student: Number(form.pending_review_student || 0) }; id ? await service.updateUser(id, p) : await service.createUser(p); }
       if (tab === "models") { const p = { ...form, temperature: Number(form.temperature || 0.2), max_tokens: Number(form.max_tokens || 4000), status }; id ? await service.updateModelConfig(id, p) : await service.createModelConfig(p); }
       if (tab === "third") { const p = { ...form, db_port: form.db_port ? Number(form.db_port) : null, status }; id ? await service.updateThirdPartyConfig(id, p) : await service.createThirdPartyConfig(p); }
       if (tab === "settings") await service.updateSystemSettings({ [form.setting_key]: form.setting_value });
@@ -671,13 +808,76 @@ function AdminConsoleContent({ notice }: { notice: (s: string) => void }) {
   async function resetPassword(row: Record<string, unknown>) { const password = window.prompt("请输入新密码", "123456"); if (password === null) return; try { await service.resetUserPassword(Number(row.id), password || "123456"); notice("密码已重置"); } catch (error) { notice(error instanceof Error ? error.message : "密码重置失败"); } }
   async function uploadRelease() { if (!releaseFile || !release.version) return notice("请填写版本号并选择安装包"); try { setBusy(true); await service.uploadAppRelease({ ...release, package: releaseFile }); setRelease({ version: "", release_notes: "", force_update: false }); setReleaseFile(null); await load(); notice("版本发布成功"); } catch (error) { notice(error instanceof Error ? error.message : "版本发布失败"); } finally { setBusy(false); } }
   const name = (r: Record<string, unknown>) => String(r.real_name || r.username || r.config_name || r.attribute_name || r.constant_name || r.rule_code || r.setting_name || r.version || r.setting_key || "-");
-  const info = (r: Record<string, unknown>) => String(r.model_name || r.provider || r.filename || r.constant_key || r.category_keyword || r.setting_value || r.release_notes || r.description || r.reason || "-");
+  const info = (r: Record<string, unknown>) => tab === "users" ? `${Number(r.pending_review_student) === 1 ? "待审核用户" : "普通用户"} · 积分 ${String(r.credit_balance ?? 0)}` : String(r.model_name || r.provider || r.filename || r.constant_key || r.category_keyword || r.setting_value || r.release_notes || r.description || r.reason || "-");
   const actions = (r: Record<string, unknown>) => <div className="admin-actions"><button onClick={() => edit(r)}>编辑</button>{["users", "models", "third", "attributes", "prompts", "restrictions"].includes(tab) && <button onClick={() => void toggle(r)}>{Number(r.status) === 1 ? "停用" : "启用"}</button>}{tab === "users" && <><button onClick={() => void recharge(r)}>充值</button><button onClick={() => void resetPassword(r)}>重置密码</button></>}{tab === "models" && <button onClick={() => { setBusy(true); void service.testModelConfig(Number(r.id), "请用一句话介绍你自己").then(() => notice("模型测试完成")).catch((error) => notice(error instanceof Error ? error.message : "模型测试失败")).finally(() => setBusy(false)); }}>测试</button>}{tab === "releases" && Number(r.status) !== 1 && <button onClick={() => void service.publishAppRelease(Number(r.id)).then(load).then(() => notice("版本已发布")).catch((error) => notice(error instanceof Error ? error.message : "发布失败"))}>发布</button>}{["users", "models", "third", "attributes", "prompts", "restrictions", "releases"].includes(tab) && <button className="danger-text" onClick={() => void remove(r)}>删除</button>}</div>;
   const fields = tab === "users" ? <>{field("账号", "username")}{field("姓名", "real_name")}{field("密码", "password", "password")}{field("角色", "role")}{field("状态", "status", "number")}</> : tab === "models" ? <>{field("配置名称", "config_name")}{field("服务商", "provider")}{field("模型类型", "model_type")}{field("Base URL", "base_url")}{field("API Key", "api_key_encrypted", "password")}{field("模型名称", "model_name")}{field("温度", "temperature", "number")}{field("最大输出", "max_tokens", "number")}{field("备注", "remark")}{field("状态", "status", "number")}</> : tab === "third" ? <>{field("配置名称", "config_name")}{field("服务类型", "service_type")}{field("API Base URL", "api_base_url")}{field("Access Key", "access_key_encrypted", "password")}{field("Secret Key", "secret_key_encrypted", "password")}{field("数据库地址", "db_host")}{field("数据库端口", "db_port", "number")}{field("数据库名", "db_name")}{field("数据库用户", "db_user")}{field("数据库密码", "db_password_encrypted", "password")}{field("备注", "remark")}{field("状态", "status", "number")}</> : tab === "settings" ? <>{field("配置键", "setting_key")}{field("配置值", "setting_value")}</> : tab === "attributes" ? <>{field("属性名称", "attribute_name")}{field("属性编码", "attribute_code")}{field("属性类型", "attribute_type")}{field("说明", "description")}{field("默认权重", "default_weight", "number")}{field("状态", "status", "number")}</> : tab === "prompts" ? <>{field("常量编码", "constant_key")}{field("常量名称", "constant_name")}{field("常量内容", "constant_content")}{field("备注", "remark")}{field("状态", "status", "number")}</> : <>{field("规则编码", "rule_code")}{field("地区", "region")}{field("分类关键词", "category_keyword")}{field("标题关键词", "title_keyword")}{field("动作", "action")}{field("原因", "reason")}{field("状态", "status", "number")}</>;
   return <section className="admin-console"><div className="admin-console-head"><div><h2>系统管理</h2><p>账号、模型、第三方接口、选品规则、提示词常量、业务阈值和版本发布统一管理。</p></div><button className="secondary" onClick={() => void load()}>刷新</button></div><div className="admin-tabs">{tabs.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => { setTab(item.id); setForm(null); }}>{item.label}</button>)}</div>{tab === "releases" ? <div className="release-upload"><div><b>发布新版本</b><span>支持 .exe 或 .zip 安装包</span></div><input value={release.version} onChange={(e) => setRelease((v) => ({ ...v, version: e.target.value }))} placeholder="版本号，例如 1.0.3" /><input value={release.release_notes} onChange={(e) => setRelease((v) => ({ ...v, release_notes: e.target.value }))} placeholder="更新说明" /><input type="file" accept=".exe,.zip" onChange={(e) => setReleaseFile(e.target.files?.[0] || null)} /><label className="release-check"><input type="checkbox" checked={release.force_update} onChange={(e) => setRelease((v) => ({ ...v, force_update: e.target.checked }))} /> 强制更新</label><button className="primary" disabled={busy} onClick={() => void uploadRelease()}>上传并发布</button></div> : tab !== "settings" && <button className="primary admin-add" onClick={() => edit()}>＋ 新增{tabs.find((item) => item.id === tab)?.label}</button>}{form && <div className="admin-editor"><div className="admin-editor-head"><h3>{form.id ? "编辑记录" : "新增记录"}</h3><button onClick={() => setForm(null)}>×</button></div><div className="admin-form-grid">{fields}</div><div className="admin-editor-actions"><button className="secondary" onClick={() => setForm(null)}>取消</button><button className="primary" disabled={busy} onClick={() => void save()}>保存</button></div></div>}<div className="admin-table"><table><thead><tr><th>名称</th><th>类型</th><th>状态</th><th>信息</th><th>操作</th></tr></thead><tbody>{rows.map((row, index) => <tr key={String(row.id || index)}><td>{name(row)}</td><td>{String(row.role || row.model_type || row.service_type || row.attribute_type || row.action || row.value_type || "-")}</td><td>{row.status === 1 || row.status === true ? "启用" : row.status === 0 || row.status === false ? "停用" : "-"}</td><td>{info(row)}</td><td>{tab === "settings" ? <button onClick={() => edit(row)}>编辑</button> : actions(row)}</td></tr>)}</tbody></table>{!rows.length && <div className="empty-state">暂无数据</div>}</div></section>;
 }
 
-type ThemeState = { font: string; size: string; background: string; opacity: string };
+function FamilyManagementPanelV2({ notice }: { notice: (message: string) => void }) {
+  const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [form, setForm] = useState<Record<string, string> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = async (): Promise<Record<string, unknown>[]> => { try { const nextRows = await service.getRestrictionRules(); setRows(nextRows); return nextRows; } catch (error) { notice(error instanceof Error ? error.message : "读取商品族失败"); return []; } };
+  useEffect(() => { void load(); }, []);
+  const setField = (key: string, value: string) => setForm((current) => ({ ...(current || {}), [key]: value }));
+  const weightKeys = ["audience_weight", "scene_weight", "verb_weight", "periodicity_weight"];
+  const touchedWeights = useRef(new Set<string>());
+  const edit = (row: Record<string, unknown> = {}) => {
+    touchedWeights.current.clear();
+    setForm(Object.fromEntries(["id", "rule_code", "region", "category_keyword", "title_keyword", "action", "reason", "audience_weight", "scene_weight", "verb_weight", "periodicity_weight", "status"].map((key) => [key, String(row[key] ?? (key.endsWith("_weight") ? 25 : key === "region" ? "JP" : key === "action" ? "restricted" : key === "status" ? 1 : ""))])));
+  };
+  const setWeight = (key: string, raw: string) => setForm((current) => {
+    const value = Math.max(0, Math.min(100, Number(raw) || 0));
+    const next = { ...(current || {}), [key]: String(value) };
+    touchedWeights.current.add(key);
+    const otherKeys = weightKeys.filter((item) => item !== key);
+    const lockedKeys = otherKeys.filter((item) => touchedWeights.current.has(item));
+    const adjustableKeys = otherKeys.filter((item) => !touchedWeights.current.has(item));
+    const lockedTotal = lockedKeys.reduce((sum, item) => sum + Math.max(0, Math.min(100, Number(next[item]) || 0)), 0);
+    const remaining = Math.max(0, 100 - value - lockedTotal);
+    const share = adjustableKeys.length ? Math.round((remaining / adjustableKeys.length) * 10) / 10 : 0;
+    adjustableKeys.forEach((item, index) => { next[item] = String(index === adjustableKeys.length - 1 ? Math.round((remaining - share * (adjustableKeys.length - 1)) * 10) / 10 : share); });
+    return next;
+  });
+  const field = (label: string, key: string, type = "text") => <label className="admin-field">{label}<input type={type} value={form?.[key] || ""} placeholder={key === "rule_code" ? "留空自动生成" : undefined} onChange={(event) => weightKeys.includes(key) ? setWeight(key, event.target.value) : setField(key, event.target.value)} /></label>;
+  async function save() { if (!form) return; setBusy(true); try { const payload = { ...form, status: Number(form.status || 1), audience_weight: Number(form.audience_weight || 0), scene_weight: Number(form.scene_weight || 0), verb_weight: Number(form.verb_weight || 0), periodicity_weight: Number(form.periodicity_weight || 0) }; if (form.id) await service.updateRestrictionRule(Number(form.id), payload); else await service.createRestrictionRule(payload); const refreshedRows = await load(); if (form.id && !refreshedRows.some((row) => Number(row.id) === Number(form.id))) throw new Error("保存成功但刷新列表未找到该规则"); setForm(null); notice("商品族已保存，列表已刷新"); } catch (error) { notice(error instanceof Error ? error.message : "保存商品族失败"); } finally { setBusy(false); } }
+  async function remove(row: Record<string, unknown>) { if (!row.id || !window.confirm("确定删除这个商品族吗？")) return; try { await service.deleteRestrictionRule(Number(row.id)); await load(); notice("商品族已删除"); } catch (error) { notice(error instanceof Error ? error.message : "删除商品族失败"); } }
+  return <section className="admin-console family-management"><div className="admin-console-head"><div><h2>商品族管理</h2><p>维护限售商品族和四个选品维度权重。</p></div><button className="secondary" onClick={() => void load()}>刷新</button></div><div className="family-toolbar"><button className="primary" onClick={() => edit()}>新增商品族</button>{form && <button className="secondary" onClick={() => setForm(null)}>收起编辑</button>}</div>{form && <div className="admin-editor family-editor"><div className="admin-editor-head"><h3>{form.id ? "编辑商品族" : "新增商品族"}</h3><button onClick={() => setForm(null)}>×</button></div><div className="admin-form-grid">{field("规则编码", "rule_code")}{field("国家/地区", "region")}{field("分类关键词", "category_keyword")}{field("标题关键词", "title_keyword")}{field("处理动作", "action")}{field("人群权重 (%)", "audience_weight", "number")}{field("场景权重 (%)", "scene_weight", "number")}{field("动词权重 (%)", "verb_weight", "number")}{field("周期性权重 (%)", "periodicity_weight", "number")}{field("状态（1启用/0停用）", "status", "number")}<label className="admin-field wide">规则说明<textarea value={form.reason || ""} onChange={(event) => setField("reason", event.target.value)} /></label></div><div className="admin-editor-actions"><button className="secondary" onClick={() => setForm(null)}>取消</button><button className="primary" disabled={busy} onClick={() => void save()}>保存</button></div></div>}<div className="admin-table family-table-wrap"><table className="family-table"><thead><tr><th>ID</th><th>规则编码</th><th>国家/地区</th><th>分类关键词</th><th>标题关键词</th><th>处理动作</th><th>人群</th><th>场景</th><th>动词</th><th>周期性</th><th>规则说明</th><th>状态</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{rows.map((row) => <tr key={String(row.id)}><td>{String(row.id || "-")}</td><td className="family-code">{String(row.rule_code || "-")}</td><td>{String(row.region || "JP")}</td><td>{String(row.category_keyword || "-")}</td><td>{String(row.title_keyword || "-")}</td><td>{String(row.action || "-")}</td><td>{Number(row.audience_weight ?? 25).toFixed(1)}%</td><td>{Number(row.scene_weight ?? 25).toFixed(1)}%</td><td>{Number(row.verb_weight ?? 25).toFixed(1)}%</td><td>{Number(row.periodicity_weight ?? 25).toFixed(1)}%</td><td className="family-reason">{String(row.reason || "-")}</td><td>{Number(row.status) === 1 ? "启用" : "停用"}</td><td>{String(row.created_at || "-")}</td><td>{String(row.updated_at || "-")}</td><td className="admin-actions"><button onClick={() => edit(row)}>编辑</button><button className="danger-text" onClick={() => void remove(row)}>删除</button></td></tr>)}</tbody></table>{!rows.length && <div className="empty-state">暂无商品族</div>}</div></section>;
+}
+
+function FamilyManagementPanel({ notice }: { notice: (message: string) => void }) {
+  const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [form, setFormState] = useState<Record<string, string>>({});
+  const setForm = (value: Record<string, string> | null) => setFormState(value || {});
+  const [busy, setBusy] = useState(false);
+  const load = async () => { try { setRows(await service.getRestrictionRules()); } catch (error) { notice(error instanceof Error ? error.message : "读取商品族失败"); } };
+  useEffect(() => { void load(); }, []);
+  const setField = (key: string, value: string) => setFormState((current) => ({ ...current, [key]: value }));
+  const edit = (row: Record<string, unknown> = {}) => setForm(Object.fromEntries(["id", "rule_code", "region", "category_keyword", "title_keyword", "action", "reason", "audience_weight", "scene_weight", "verb_weight", "periodicity_weight", "status"].map((key) => [key, String(row[key] ?? (key.endsWith("_weight") ? 25 : key === "region" ? "JP" : key === "status" ? 1 : ""))])));
+  const field = (label: string, key: string, type = "text") => <label className="admin-field">{label}<input type={type} value={form?.[key] || ""} onChange={(event) => setField(key, event.target.value)} /></label>;
+  const save = async () => { if (!form) return; setBusy(true); try { const payload = { ...form, status: Number(form.status || 1), audience_weight: Number(form.audience_weight || 0), scene_weight: Number(form.scene_weight || 0), verb_weight: Number(form.verb_weight || 0), periodicity_weight: Number(form.periodicity_weight || 0) }; if (form.id) await service.updateRestrictionRule(Number(form.id), payload); else await service.createRestrictionRule(payload); setForm(null); await load(); notice("商品族已保存"); } catch (error) { notice(error instanceof Error ? error.message : "保存商品族失败"); } finally { setBusy(false); } };
+  const remove = async (row: Record<string, unknown>) => { if (!row.id || !window.confirm("确定删除这个商品族吗？")) return; try { await service.deleteRestrictionRule(Number(row.id)); await load(); notice("商品族已删除"); } catch (error) { notice(error instanceof Error ? error.message : "删除商品族失败"); } };
+  return <section className="admin-console family-management"><div className="admin-console-head"><div><h2>商品族管理</h2><p>维护限售商品族和四个选品维度权重。</p></div><button className="secondary" onClick={() => void load()}>刷新</button></div><button className="primary admin-add" onClick={() => edit()}>新增商品族</button>{form && <div className="admin-editor"><div className="admin-editor-head"><h3>{form.id ? "编辑商品族" : "新增商品族"}</h3><button onClick={() => setForm(null)}>×</button></div><div className="admin-form-grid">{field("规则编码", "rule_code")}{field("国家/地区", "region")}{field("分类关键词", "category_keyword")}{field("标题关键词", "title_keyword")}{field("处理动作", "action")}{field("人群权重 (%)", "audience_weight", "number")}{field("场景权重 (%)", "scene_weight", "number")}{field("动词权重 (%)", "verb_weight", "number")}{field("周期性权重 (%)", "periodicity_weight", "number")}{field("状态（1启用/0停用）", "status", "number")}<label className="admin-field wide">规则说明<textarea value={form.reason || ""} onChange={(event) => setField("reason", event.target.value)} /></label></div><div className="admin-editor-actions"><button className="secondary" onClick={() => setForm(null)}>取消</button><button className="primary" disabled={busy} onClick={() => void save()}>保存</button></div></div>}<div className="admin-table"><table><thead><tr><th>ID</th><th>规则编码</th><th>国家</th><th>分类关键词</th><th>标题关键词</th><th>处理动作</th><th>人群</th><th>场景</th><th>动词</th><th>周期性</th><th>规则说明</th><th>状态</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{rows.map((row) => <tr key={String(row.id)}><td>{String(row.id || "-")}</td><td>{String(row.rule_code || "-")}</td><td>{String(row.region || "JP")}</td><td>{String(row.category_keyword || "-")}</td><td>{String(row.title_keyword || "-")}</td><td>{String(row.action || "-")}</td><td>{Number(row.audience_weight ?? 25).toFixed(1)}%</td><td>{Number(row.scene_weight ?? 25).toFixed(1)}%</td><td>{Number(row.verb_weight ?? 25).toFixed(1)}%</td><td>{Number(row.periodicity_weight ?? 25).toFixed(1)}%</td><td className="family-reason">{String(row.reason || "-")}</td><td>{Number(row.status) === 1 ? "启用" : "停用"}</td><td>{String(row.created_at || "-")}</td><td>{String(row.updated_at || "-")}</td><td className="admin-actions"><button onClick={() => edit(row)}>编辑</button><button className="danger-text" onClick={() => void remove(row)}>删除</button></td></tr>)}</tbody></table>{!rows.length && <div className="empty-state">暂无商品族</div>}</div></section>;
+}
+
+function FamilyManagement({ notice }: { notice: (message: string) => void }) {
+  const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [form, setFormState] = useState<Record<string, string>>({});
+  const setForm = (value: Record<string, string> | null) => setFormState(value || {});
+  const [busy, setBusy] = useState(false);
+  const load = async () => { try { setRows(await service.getRestrictionRules()); } catch (error) { notice(error instanceof Error ? error.message : "读取商品族失败"); } };
+  useEffect(() => { void load(); }, []);
+  return <FamilyManagementPanelV2 notice={notice} />;
+  const setField = (key: string, value: string) => setFormState((current) => ({ ...current, [key]: value }));
+  const edit = (row: Record<string, unknown> = {}) => setForm({ id: row.id ? String(row.id) : "", rule_code: String(row.rule_code || ""), region: String(row.region || "JP"), category_keyword: String(row.category_keyword || ""), title_keyword: String(row.title_keyword || ""), action: String(row.action || "restricted"), reason: String(row.reason || ""), audience_weight: String(row.audience_weight ?? "25"), scene_weight: String(row.scene_weight ?? "25"), verb_weight: String(row.verb_weight ?? "25"), periodicity_weight: String(row.periodicity_weight ?? "25"), status: String(row.status ?? "1") });
+  const field = (label: string, key: string, type = "text") => <label className="admin-field">{label}<input type={type} value={form?.[key] || ""} onChange={(event) => setField(key, event.target.value)} /></label>;
+  async function save() { if (!form) return; setBusy(true); try { const payload = { ...form, status: Number(form.status || 1), audience_weight: Number(form.audience_weight || 0), scene_weight: Number(form.scene_weight || 0), verb_weight: Number(form.verb_weight || 0), periodicity_weight: Number(form.periodicity_weight || 0) }; if (form.id) await service.updateRestrictionRule(Number(form.id), payload); else await service.createRestrictionRule(payload); setForm(null); await load(); notice("商品族已保存"); } catch (error) { notice(error instanceof Error ? error.message : "保存商品族失败"); } finally { setBusy(false); } }
+  async function remove(row: Record<string, unknown>) { if (!row.id || !window.confirm("确定删除这个商品族吗？")) return; try { await service.deleteRestrictionRule(Number(row.id)); await load(); notice("商品族已删除"); } catch (error) { notice(error instanceof Error ? error.message : "删除商品族失败"); } }
+  return <section className="admin-console"><div className="admin-console-head"><div><h2>商品族管理</h2><p>维护限售商品族及其选品维度权重，四项权重按百分比记录。</p></div><button className="secondary" onClick={() => void load()}>刷新</button></div><button className="primary admin-add" onClick={() => edit()}>新增商品族</button>{form && <div className="admin-editor"><div className="admin-editor-head"><h3>{form.id ? "编辑商品族" : "新增商品族"}</h3><button onClick={() => setForm(null)}>×</button></div><div className="admin-form-grid">{field("规则编码", "rule_code")}{field("国家/地区", "region")}{field("分类关键词", "category_keyword")}{field("标题关键词", "title_keyword")}{field("处理动作", "action")}{field("人群权重 (%)", "audience_weight", "number")}{field("场景权重 (%)", "scene_weight", "number")}{field("动词权重 (%)", "verb_weight", "number")}{field("周期性权重 (%)", "periodicity_weight", "number")}{field("状态（1启用/0停用）", "status", "number")}<label className="admin-field wide">规则说明<textarea value={form.reason || ""} onChange={(event) => setField("reason", event.target.value)} /></label></div><div className="admin-editor-actions"><button className="secondary" onClick={() => setForm(null)}>取消</button><button className="primary" disabled={busy} onClick={() => void save()}>保存</button></div></div>}<div className="admin-table"><table><thead><tr><th>商品族</th><th>国家</th><th>人群</th><th>场景</th><th>动词</th><th>周期性</th><th>状态</th><th>操作</th></tr></thead><tbody>{rows.map((row) => <tr key={String(row.id)}><td>{String(row.rule_code || row.category_keyword || "-")}</td><td>{String(row.region || "JP")}</td><td>{Number(row.audience_weight ?? 25).toFixed(1)}%</td><td>{Number(row.scene_weight ?? 25).toFixed(1)}%</td><td>{Number(row.verb_weight ?? 25).toFixed(1)}%</td><td>{Number(row.periodicity_weight ?? 25).toFixed(1)}%</td><td>{Number(row.status) === 1 ? "启用" : "停用"}</td><td className="admin-actions"><button onClick={() => edit(row)}>编辑</button><button className="danger-text" onClick={() => void remove(row)}>删除</button></td></tr>)}</tbody></table>{!rows.length && <div className="empty-state">暂无商品族</div>}</div></section>;
+}
+
+type ThemeState = { font: string; size: string; background: string; opacity: string; style: string };
 
 const themeOptions = {
   fonts: [
@@ -699,21 +899,28 @@ const themeOptions = {
     { value: "theme-mountain.png", label: "雪山旷野" },
     { value: "theme-stars.png", label: "星星蓝幕" },
   ],
+  styles: [
+    { value: "business", label: "纯色商务" },
+    { value: "glass", label: "毛玻璃" },
+    { value: "dark", label: "深色主题" },
+  ],
 };
 
 function applyTheme(theme: ThemeState) {
   const root = document.documentElement;
   root.style.setProperty("--user-font", theme.font);
   root.style.setProperty("--user-font-size", theme.size);
-  root.style.setProperty("--ui-transparency", theme.opacity || "0.30");
-  document.body.style.backgroundImage = `linear-gradient(rgba(234, 241, 245, 0.48), rgba(234, 241, 245, 0.48)), url(\"${theme.background}\")`;
+  root.style.setProperty("--ui-transparency", theme.style === "glass" ? (theme.opacity || "0.30") : "1");
+  root.style.setProperty("--theme-background-image", `linear-gradient(rgba(234, 241, 245, 0.48), rgba(234, 241, 245, 0.48)), url(\"${theme.background}\")`);
+  root.dataset.uiTheme = theme.style || "business";
+  document.body.style.backgroundImage = theme.style === "glass" ? `linear-gradient(rgba(234, 241, 245, 0.48), rgba(234, 241, 245, 0.48)), url(\"${theme.background}\")` : "none";
 }
 
 function ThemeSettings() {
   const [theme, setTheme] = useState<ThemeState>(() => {
     try {
-      return { font: "Microsoft YaHei UI", size: "14px", background: "background.png", opacity: "0.30", ...JSON.parse(localStorage.getItem("tk_theme") || "{}") };
-    } catch { return { font: "Microsoft YaHei UI", size: "14px", background: "background.png", opacity: "0.30" }; }
+      return { font: "Microsoft YaHei UI", size: "14px", background: "background.png", opacity: "0.30", style: "glass", ...JSON.parse(localStorage.getItem("tk_theme") || "{}") };
+    } catch { return { font: "Microsoft YaHei UI", size: "14px", background: "background.png", opacity: "0.30", style: "glass" }; }
   });
   const [dragging, setDragging] = useState(false);
   const [uploadStatus, setUploadStatus] = useState("");
@@ -770,7 +977,8 @@ function ThemeSettings() {
   return <section className="theme-settings">
     <div className="theme-settings-heading"><div><h2>软件换肤</h2><p>调整字体、字号和软件背景，修改会即时生效。</p></div><span className="theme-preview-dot" /></div>
     <div className="theme-setting-grid">
-      <label>字体<select value={theme.font} onChange={(e) => update("font", e.target.value)}>{themeOptions.fonts.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+       <label>界面风格<select value={theme.style} onChange={(e) => update("style", e.target.value)}>{themeOptions.styles.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+       <label>字体<select value={theme.font} onChange={(e) => update("font", e.target.value)}>{themeOptions.fonts.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
       <label>字号<select value={theme.size} onChange={(e) => update("size", e.target.value)}>{themeOptions.sizes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
       <label>背景图<select value={theme.background} onChange={(e) => update("background", e.target.value)}>{themeOptions.backgrounds.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}{hasCustomBackground && <option value={theme.background}>自定义背景图</option>}</select></label>
     </div>
@@ -785,7 +993,7 @@ function ThemeSettings() {
 }
 
 function AboutPage() {
-  return <section className="about-page"><div className="about-card"><div className="about-mark">TK</div><div><h2>益行跨境 AI 平台</h2><p>TikTok 日本选品专家</p><span>跨境商品分析、AI 选品、1688 匹配与视频内容工作台</span></div></div><div className="about-card about-info"><h3>平台信息</h3><div><span>当前客户端</span><b>Electron 桌面版</b></div><div><span>服务范围</span><b>商品选品 · 供应链匹配 · 内容生成</b></div><div><span>数据服务</span><b>FastMoss · 1688 · 妙手</b></div></div></section>;
+  return <section className="about-page"><div className="about-card"><div className="about-mark">TK</div><div><h2>益行跨境AI平台</h2><p>面向跨境经营者的智能商品决策工作台</p><span>从商品机会发现、供应链匹配到内容准备，帮助你更高效地完成选品与运营决策。</span></div></div><div className="about-card about-info"><h3>平台信息</h3><div><span>平台名称</span><b>益行跨境AI平台</b></div><div><span>核心能力</span><b>智能选品 · 供应链匹配 · 风险筛查 · 内容生成</b></div><div><span>服务对象</span><b>跨境电商经营者与运营团队</b></div></div></section>;
 }
 
 function Products2({ page, rows, selected, onSelect, onCollect, onSync, regions, rankRegion, rankList, rankCategory, rankStart, rankEnd, categories, onRankChange }: { page: Page; rows: Product[]; selected: Product | null; onSelect: (p: Product) => void; onCollect: (p: Product) => void; onSync?: () => void; regions: Array<{ region_name?: string; region_code?: string }>; rankRegion: string; rankList: string; rankCategory: string; rankStart: string; rankEnd: string; categories: string[]; onRankChange: (key: string, value: string) => void }) {
@@ -812,12 +1020,16 @@ function Products2({ page, rows, selected, onSelect, onCollect, onSync, regions,
   return <div className="workspace"><section className="products"><div className="rank-filters"><div className="rank-filter-line"><b>上架时间</b><input type="date" value={rankStart} onChange={(e) => onRankChange("start", e.target.value)} /><span>至</span><input type="date" value={rankEnd} onChange={(e) => onRankChange("end", e.target.value)} /></div><div className="rank-filter-line"><b>国家/地区</b><button className={rankRegion === "ALL" ? "active" : ""} onClick={() => onRankChange("region", "ALL")}>全部</button>{regions.map((item) => <button key={item.region_code} className={rankRegion === item.region_code ? "active" : ""} onClick={() => onRankChange("region", String(item.region_code || ""))}>{item.region_name || item.region_code}</button>)}</div><div className="rank-filter-line"><b>商品分类</b><button className={!rankCategory ? "active" : ""} onClick={() => onRankChange("category", "")}>全部</button>{categories.map((item) => <button key={item} className={rankCategory === item ? "active" : ""} onClick={() => onRankChange("category", item)}>{item}</button>)}</div><div className="rank-filter-line"><b>商品榜单</b>{[{ value: "sales", label: "销量榜" }, { value: "new", label: "新品榜" }, { value: "hot", label: "热销榜" }].map((item) => <button key={item.value} className={rankList === item.value ? "active" : ""} onClick={() => onRankChange("list", item.value)}>{item.label}</button>)}</div></div><div className="section-heading"><div><h2>{rankList === "sales" ? "销量榜" : rankList === "hot" ? "热销榜" : "新品榜单"}</h2><p>{regionLabel} · {rows.length} 个商品</p></div></div><div className="product-grid">{rows.map((p) => <article className={selected && pid(selected) === pid(p) ? "product selected" : "product"} key={String(pid(p))} onClick={() => onSelect(p)}><div className="image-wrap">{picture(p) ? <img src={picture(p)} loading="lazy" /> : <div className="image-empty">暂无图片</div>}</div><h3>{title(p)}</h3><div className="product-tag">{p.category || p.source_type || "商品"}</div><div className="product-meta"><strong>{money(p)}</strong><span>销量 {Number(p.sales_count ?? p.supplier_sales_count ?? 0).toLocaleString()}</span></div><button className="primary" onClick={(e) => { e.stopPropagation(); onCollect(p); }}>加入采集箱</button></article>)}</div>{!rows.length && <div className="empty-state">暂无数据</div>}</section><aside className="report"><h2>选品分析报告</h2>{selected ? <><div className="report-product">{picture(selected) ? <img src={picture(selected)} /> : <div className="image-empty">暂无图片</div>}<div><h3>{title(selected)}</h3><strong>{money(selected)}</strong><p>销量 {Number(selected.sales_count ?? selected.supplier_sales_count ?? 0).toLocaleString()}</p><p>AI 参考分 {Number(selected.ai_score ?? selected.weighted_score ?? 0).toFixed(1)}</p></div></div><button className="primary full" onClick={() => onCollect(selected)}>加入采集箱</button></> : <div className="empty-state">请选择商品</div>}</aside></div>;
 }
 
-function Products3Content({ page, rows, selected, onSelect, onDerive, onAddLibrary, onPublish, regions }: { page: "rank" | "favorites"; rows: Product[]; selected: Product | null; onSelect: (p: Product) => void; onDerive: (p: Product) => void; onAddLibrary: (p: Product) => Promise<void>; onPublish: (p: Product) => void; regions: Array<{ region_name?: string; region_code?: string }> }) {
+function Products3Content({ page, rows, selected, onSelect, onDerive, onAddLibrary, onPublish, regions, showReview }: { page: "rank" | "favorites"; rows: Product[]; selected: Product | null; onSelect: (p: Product) => void; onDerive: (p: Product) => void; onAddLibrary: (p: Product) => Promise<void>; onPublish: (p: Product) => void; regions: Array<{ region_name?: string; region_code?: string }>; showReview?: boolean }) {
   const [detail, setDetail] = useState<Product | null>(null);
   const [added, setAdded] = useState<Record<string, boolean>>({});
-  const lookupRegionName = (value?: string) => regions.find((item) => String(item.region_code || "").toUpperCase() === String(value || "").toUpperCase())?.region_name || value || "未标注";
+  const lookupRegionName = (value?: string) => {
+    const raw = String(value || "").trim();
+    const matched = regions.find((item) => String(item.region_code || "").toUpperCase() === raw.toUpperCase() || String(item.region_name || "").toLowerCase() === raw.toLowerCase());
+    return matched?.region_name || ({ JP: "日本", CN: "中国", US: "美国", GB: "英国", KR: "韩国", TH: "泰国", VN: "越南", MY: "马来西亚", SG: "新加坡" } as Record<string, string>)[raw.toUpperCase()] || raw || "未标注";
+  };
   const regionLabel = lookupRegionName;
-  if (page === "favorites") return <section className="favorites-page"><div className="section-heading"><div><h2>采集箱</h2><p>已保存的商品快照与货源信息</p></div></div><div className="favorite-list"><div className="favorite-list-head"><span>商品信息</span><span>来源</span><span>国家/地区</span><span>商品分类</span><span>价格</span><span>销量</span><span>1688 链接</span><span>操作</span></div>{rows.map((item) => { const url = supplierUrl(item); return <div className="favorite-list-row" key={String(pid(item))}><div className="favorite-product"><div className="favorite-thumb">{picture(item) ? <img src={picture(item)} /> : <span>暂无图片</span>}</div><div><b>{title(item)}</b><small>{productSourceLabel(item)}</small></div></div><span>{productSourceLabel(item)}</span><span>{regionLabel(item.region)}</span><span>{categoryLabel(item.category)}</span><strong>{money(item)}</strong><span>{Number(item.sales_count ?? item.supplier_sales_count ?? 0).toLocaleString()}</span>{url ? <a className="supplier-link" href={url} target="_blank" rel="noreferrer">打开链接</a> : <span className="supplier-link disabled">待匹配</span>}<div className="favorite-actions"><button className="list-action" onClick={() => onPublish(item)}>加入上品</button><button className="list-action secondary-action" onClick={() => setDetail(item)}>查看详情</button></div></div>; })}{!rows.length && <div className="empty-state">暂无采集商品</div>}</div>{detail && <div className="collection-detail-backdrop" onClick={() => setDetail(null)}><section className="collection-detail" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setDetail(null)}>×</button><div className="collection-detail-head">{picture(detail) ? <img src={picture(detail)} /> : <div className="image-empty">暂无图片</div>}<div><h2>{title(detail)}</h2><strong>{money(detail)}</strong><p>来源：{productSourceLabel(detail)} · {regionLabel(detail.region)}</p><p>分类：{categoryLabel(detail.category)} · 销量：{Number(detail.sales_count ?? detail.supplier_sales_count ?? 0).toLocaleString()}</p></div></div><h3>商品说明</h3><p>{detail.recommendation_reason || "暂无商品说明"}</p><button className="primary" onClick={() => onPublish(detail)}>加入上品</button></section></div>}</section>;
+  if (page === "favorites") return <section className="favorites-page"><div className="section-heading"><div><h2>采集箱</h2><p>已保存的商品快照与货源信息</p></div></div><div className="favorite-list"><div className="favorite-list-head"><span>商品信息</span><span>来源</span>{showReview && <span>审核状态</span>}<span>国家/地区</span><span>商品分类</span><span>价格</span><span>销量</span><span>1688 链接</span><span>操作</span></div>{rows.map((item) => { const url = supplierUrl(item); const reviewStatus = item.review_status === "approved" ? "通过" : item.review_status === "rejected" ? `驳回${item.review_comment ? `：${item.review_comment}` : ""}` : "待审核"; return <div className="favorite-list-row" key={String(pid(item))}><div className="favorite-product"><div className="favorite-thumb">{picture(item) ? <img src={picture(item)} /> : <span>暂无图片</span>}</div><div><b>{title(item)}</b><small>{productSourceLabel(item)}</small></div></div><span>{productSourceLabel(item)}</span>{showReview && <span className={`favorite-review-status ${item.review_status || "pending"}`}>{reviewStatus}</span>}<span>{regionLabel(item.region)}</span><span>{categoryLabel(item.category)}</span><strong>{money(item)}</strong><span>{Number(item.sales_count ?? item.supplier_sales_count ?? 0).toLocaleString()}</span>{url ? <a className="supplier-link" href={url} target="_blank" rel="noreferrer">打开链接</a> : <span className="supplier-link disabled">待匹配</span>}<div className="favorite-actions"><button className="list-action" onClick={() => onPublish(item)}>加入上品</button><button className="list-action secondary-action" onClick={() => setDetail(item)}>查看详情</button></div></div>; })}{!rows.length && <div className="empty-state">暂无采集商品</div>}</div>{detail && <div className="collection-detail-backdrop" onClick={() => setDetail(null)}><section className="collection-detail" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setDetail(null)}>×</button><div className="collection-detail-head">{picture(detail) ? <img src={picture(detail)} /> : <div className="image-empty">暂无图片</div>}<div><h2>{title(detail)}</h2><strong>{money(detail)}</strong><p>来源：{productSourceLabel(detail)} · {regionLabel(detail.region)}</p><p>分类：{categoryLabel(detail.category)} · 销量：{Number(detail.sales_count ?? detail.supplier_sales_count ?? 0).toLocaleString()}</p></div></div><h3>商品说明</h3><p>{detail.recommendation_reason || "暂无商品说明"}</p><button className="primary" onClick={() => onPublish(detail)}>加入上品</button></section></div>}</section>;
   const regionName = regionLabel(String(selected?.region || "JP"));
   return <div className="rank-workspace"><section className="products"><div className="section-heading"><div><h2>新品榜单</h2><p>{regionName} · {rows.length} 个商品</p></div></div><div className="product-grid">{rows.map((p) => { const key = String(pid(p)); const hasDerived = Number(p.derived_count || 0) > 0; return <article className={selected && pid(selected) === pid(p) ? "product selected" : "product"} key={key} onClick={() => onSelect(p)}><div className="image-wrap">{picture(p) ? <img src={picture(p)} loading="lazy" /> : <div className="image-empty">暂无图片</div>}</div><h3>{title(p)}</h3><div className="product-tag">{categoryLabel(p.category)}</div><div className="product-meta"><strong>{money(p)}</strong><span>销量 {Number(p.sales_count ?? p.supplier_sales_count ?? 0).toLocaleString()}</span></div><div className="product-actions"><button className="primary" onClick={(event) => { event.stopPropagation(); onDerive(p); }}>{hasDerived ? "查看衍生品" : "可以衍生"}</button><button className="secondary" disabled={added[key]} onClick={async (event) => { event.stopPropagation(); await onAddLibrary(p); setAdded((current) => ({ ...current, [key]: true })); }}>{added[key] ? "已加入选品库" : "加入选品库"}</button></div></article>; })}</div>{!rows.length && <div className="empty-state">暂无新品榜单数据</div>}</section></div>;
 }
@@ -826,7 +1038,7 @@ function DerivationPipelineModal({ source, progress, stage, status, message, cou
   const nodes = ["AI 生成衍生方向", "1688 匹配货源", "以图搜款拓展市场", "日本法规风控", "蓝海竞争过滤", "生成可视化报告", "精选最终 10 款"];
   const stepMap: Record<string, number> = { created: 0, keyword_generation: 0, supplier_search: 1, price_seed_selection: 1, image_search: 2, product_detail: 2, compliance_filter: 3, blue_ocean_filter: 4, report_generation: 5, final_selection: 6 };
   const currentStep = stepMap[stage] ?? Math.min(6, Math.floor(progress / 15));
-  return <div className="modal-backdrop" onClick={status === "running" ? undefined : onClose}><section className="modal derived-pipeline-modal" onClick={(event) => event.stopPropagation()}><div className="derived-pipeline-head"><div><h2>衍生品智能任务</h2><p>原商品：{title(source)}</p></div><div className="derived-pipeline-actions"><button className="primary" onClick={onStart} disabled={status === "running" || status === "success"}>{status === "idle" ? "开始衍生" : status === "running" ? "衍生执行中..." : status === "success" ? "已完成" : "重新开始"}</button><button className="modal-close" onClick={onClose} disabled={status === "running"}>×</button></div></div><div className="derived-pipeline-progress"><div><span>{message || "确认后开始衍生任务"}</span><b>{progress}%</b></div><i><em style={{ width: `${progress}%` }} /></i></div><div className="derived-pipeline-layout"><div className="derived-pipeline-steps"><div className="derived-panel-title"><h3>任务执行流程</h3><span className={`flow-status ${status}`}>{status === "idle" ? "待开始" : status === "success" ? "已完成" : status === "failed" ? "失败" : "执行中"}</span></div><div className="selection-flow-row">{nodes.map((node, index) => <div key={node} className={`flow-node ${index < currentStep || status === "success" ? "done" : index === currentStep && status === "running" ? "active running" : ""}`}><span>{String(index + 1).padStart(2, "0")}</span><div><b>{node}</b><small>{status === "idle" ? "待开始" : index === currentStep ? message || "处理中" : index < currentStep || status === "success" ? "该步骤已完成" : "等待执行"}</small></div></div>)}</div></div><div className="derived-pipeline-board"><div className="derived-panel-title"><h3>任务结果看板</h3><span>关键词 {counters.keywords || 0}/50 · 1688 {counters.supplier_candidates || 0}/500</span></div><div className="derived-board-groups">{groups.map((group) => <section className="task-board-group" key={group.keyword_id}><div className="task-board-group-title"><b>{group.keyword}</b><span>{group.items.length}/10 个商品</span></div><div className="task-board-items">{group.items.map((item) => <article className={`task-board-item ${item.eliminated ? "eliminated" : ""}`} key={String(item.id)}><div className="task-board-image">{item.image_url ? <img src={String(item.image_url)} /> : <span>暂无图片</span>}</div><b>{String(item.title || "未命名商品")}</b><small>{String(item.shop_name || "1688 / EchoTik")}</small><div><strong>¥{Number(item.price || 0).toFixed(2)}</strong><span>{item.eliminated ? "已淘汰" : `销量 ${Number(item.sales_count || 0).toLocaleString()}`}</span></div></article>)}</div></section>)}{!groups.length && <div className="empty-state">任务执行后，衍生商品与匹配货源会显示在这里。</div>}</div></div></div></section></div>;
+  return createPortal(<div className="modal-backdrop" onClick={status === "running" ? undefined : onClose}><section className="modal derived-pipeline-modal" onClick={(event) => event.stopPropagation()}><div className="derived-pipeline-head"><div><h2>衍生品智能任务</h2><p>原商品：{title(source)}</p></div><div className="derived-pipeline-actions"><button className="primary" onClick={onStart} disabled={status === "running" || status === "success"}>{status === "idle" ? "开始衍生" : status === "running" ? "衍生执行中..." : status === "success" ? "已完成" : "重新开始"}</button><button className="modal-close" onClick={onClose} disabled={status === "running"}>×</button></div></div><div className="derived-pipeline-progress"><div><span>{message || "确认后开始衍生任务"}</span><b>{progress}%</b></div><i><em style={{ width: `${progress}%` }} /></i></div><div className="derived-pipeline-layout"><div className="derived-pipeline-steps"><div className="derived-panel-title"><h3>任务执行流程</h3><span className={`flow-status ${status}`}>{status === "idle" ? "待开始" : status === "success" ? "已完成" : status === "failed" ? "失败" : "执行中"}</span></div><div className="selection-flow-row">{nodes.map((node, index) => <div key={node} className={`flow-node ${index < currentStep || status === "success" ? "done" : index === currentStep && status === "running" ? "active running" : ""}`}><span>{String(index + 1).padStart(2, "0")}</span><div><b>{node}</b><small>{status === "idle" ? "待开始" : index === currentStep ? message || "处理中" : index < currentStep || status === "success" ? "该步骤已完成" : "等待执行"}</small></div></div>)}</div></div><div className="derived-pipeline-board"><div className="derived-panel-title"><h3>任务结果看板</h3><span>关键词 {counters.keywords || 0}/50 · 1688 {counters.supplier_candidates || 0}/500</span></div><div className="derived-board-groups">{groups.map((group) => <section className="task-board-group" key={group.keyword_id}><div className="task-board-group-title"><b>{group.keyword}</b><span>{group.items.length}/10 个商品</span></div><div className="task-board-items">{group.items.map((item) => <article className={`task-board-item ${item.eliminated ? "eliminated" : ""}`} key={String(item.id)}><div className="task-board-image">{item.image_url ? <img src={String(item.image_url)} /> : <span>暂无图片</span>}</div><b>{String(item.title || "未命名商品")}</b><small>{String(item.shop_name || "1688 / EchoTik")}</small><div><strong>¥{Number(item.price || 0).toFixed(2)}</strong><span>{item.eliminated ? "已淘汰" : `销量 ${Number(item.sales_count || 0).toLocaleString()}`}</span></div></article>)}</div></section>)}{!groups.length && <div className="empty-state">任务执行后，衍生商品与匹配货源会显示在这里。</div>}</div></div></div></section></div>, document.body);
 }
 
 function Products3ContentFixed({ rows, selected, onSelect, onDerive, onAddLibrary, regions }: { rows: Product[]; selected: Product | null; onSelect: (p: Product) => void; onDerive: (p: Product) => void; onAddLibrary: (p: Product) => Promise<void>; regions: Array<{ region_name?: string; region_code?: string }> }) {
@@ -845,6 +1057,16 @@ function Products3ContentFixed({ rows, selected, onSelect, onDerive, onAddLibrar
   const [pipelineMessage, setPipelineMessage] = useState("");
   const [pipelineCounters, setPipelineCounters] = useState<Record<string, number>>({});
   const [pipelineGroups, setPipelineGroups] = useState<Array<{ keyword_id: number; keyword: string; items: Array<Record<string, unknown>> }>>([]);
+  useEffect(() => {
+    let active = true;
+    service.getLibrary().then((saved) => {
+      if (!active) return;
+      const next: Record<string, boolean> = {};
+      rows.forEach((row) => { next[productIdentity(row)] = saved.some((item) => productMatches(row, item)); });
+      setAdded(next);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [rows]);
   const regionName = regions.find((item) => String(item.region_code || "").toUpperCase() === String(selected?.region || "").toUpperCase())?.region_name || selected?.region || "未标注";
   async function viewDerived(product: Product) {
     setDerivedLoading(true); setError(""); setDerivedSource(product); setDerivedRows([]);
@@ -870,27 +1092,123 @@ function Products3ContentFixed({ rows, selected, onSelect, onDerive, onAddLibrar
     return () => window.clearInterval(timer);
   }, [pipelineTaskId]);
   useEffect(() => {
-    if (!pipelineActive) return;
+    if (!pipelineActive && !derivedSource) return;
     const previousHtmlOverflow = document.documentElement.style.overflow;
     const previousBodyOverflow = document.body.style.overflow;
+    const main = document.querySelector(".main") as HTMLElement | null;
+    const previousMainOverflow = main?.style.overflow;
     document.documentElement.style.overflow = "hidden";
     document.body.style.overflow = "hidden";
-    return () => { document.documentElement.style.overflow = previousHtmlOverflow; document.body.style.overflow = previousBodyOverflow; };
-  }, [pipelineActive]);
+    if (main) main.style.overflow = "hidden";
+    const positionModal = () => {
+      if (!main) return;
+      // 弹窗由 rank 页面组件嵌套渲染，不一定是 .main 的直接子节点。
+      const backdrop = main.querySelector(".modal-backdrop") as HTMLElement | null;
+      const modal = backdrop?.firstElementChild as HTMLElement | null;
+      if (!backdrop || !modal) return;
+      const mainRect = main.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const modalWidth = modal.getBoundingClientRect().width;
+      const modalHeight = modal.getBoundingClientRect().height;
+      backdrop.style.setProperty("position", "absolute", "important");
+      backdrop.style.setProperty("top", `${-mainRect.top}px`, "important");
+      backdrop.style.setProperty("left", `${-mainRect.left}px`, "important");
+      backdrop.style.setProperty("width", `${viewportWidth}px`, "important");
+      backdrop.style.setProperty("height", `${viewportHeight}px`, "important");
+      backdrop.style.setProperty("padding", "0", "important");
+      backdrop.style.setProperty("display", "block", "important");
+      modal.style.setProperty("position", "absolute", "important");
+      // 右侧布局，但纵向跟随当前内容区可视范围，不能固定回页面顶部。
+      const visibleTop = Math.max(0, mainRect.top);
+      const visibleBottom = Math.min(viewportHeight, mainRect.bottom);
+      const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+      const modalTop = visibleTop + Math.max(12, (visibleHeight - modalHeight) / 2);
+      modal.style.setProperty("top", `${modalTop}px`, "important");
+      modal.style.setProperty("left", `${Math.max(12, viewportWidth - modalWidth - 24)}px`, "important");
+      modal.style.setProperty("right", "auto", "important");
+      modal.style.setProperty("bottom", "auto", "important");
+      modal.style.setProperty("margin", "0", "important");
+      modal.style.setProperty("transform", "none", "important");
+    };
+    const positionTimer = window.setTimeout(positionModal, 0);
+    window.addEventListener("resize", positionModal);
+    return () => {
+      window.clearTimeout(positionTimer);
+      window.removeEventListener("resize", positionModal);
+      document.documentElement.style.overflow = previousHtmlOverflow;
+      document.body.style.overflow = previousBodyOverflow;
+      if (main) main.style.overflow = previousMainOverflow || "";
+    };
+  }, [pipelineActive, derivedSource]);
+  useEffect(() => {
+    const cards = document.querySelectorAll(".rank-workspace .product");
+    cards.forEach((card, index) => {
+      const product = rows[index];
+      const action = card.querySelector(".product-actions button") as HTMLButtonElement | null;
+      if (!product || !action) return;
+      const canDerive = String(product.region || "").toUpperCase() === "JP" && String(product.list_type || "").toLowerCase() === "new";
+      if (!canDerive) {
+        action.disabled = true;
+        action.classList.remove("primary");
+        action.classList.add("secondary");
+        action.textContent = "不支持衍生";
+      }
+    });
+  }, [rows]);
   return <>
-     <div className="rank-workspace"><section className="products"><div className="section-heading"><div><h2>新品榜单</h2><p>{regionName} · {rows.length} 个商品</p></div></div><div className="product-grid">{rows.map((p) => { const key = String(pid(p)); const hasDerived = derivedReady[key] ?? (Number(p.derived_count || 0) > 0); return <article className={selected && pid(selected) === pid(p) ? "product selected" : "product"} key={key} onClick={() => onSelect(p)}><div className="image-wrap">{picture(p) ? <img src={picture(p)} loading="lazy" /> : <div className="image-empty">暂无图片</div>}</div><h3>{title(p)}</h3><div className="product-tag">{categoryLabel(p.category)}</div><div className="product-meta"><strong>{money(p)}</strong><span>销量 {Number(p.sales_count ?? p.supplier_sales_count ?? 0).toLocaleString()}</span></div><div className="product-actions"><button className="primary" onClick={(event) => { event.stopPropagation(); if (hasDerived) void viewDerived(p); else void generateDerived(p); }}>{hasDerived ? "查看衍生品" : "可以衍生"}</button><button className="secondary" disabled={added[key]} onClick={async (event) => { event.stopPropagation(); await onAddLibrary(p); setAdded((current) => ({ ...current, [key]: true })); }}>{added[key] ? "已加入选品库" : "加入选品库"}</button></div></article>; })}</div>{!rows.length && <div className="empty-state">暂无新品榜单数据</div>}</section></div>
-    {derivedSource && !pipelineActive && <div className="modal-backdrop" onClick={() => setDerivedSource(null)}><section className="modal derived-products-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setDerivedSource(null)}>×</button><h2>查看衍生品</h2><p className="derived-source-title">原商品：{title(derivedSource)}</p>{derivedLoading ? <div className="empty-state">正在读取衍生品...</div> : error ? <div className="empty-state">{error}</div> : !derivedRows.length ? <div className="empty-state">暂无衍生品</div> : <div className="derived-modal-grid">{derivedRows.map((item) => { const itemKey = String(pid(item)); return <article className="derived-modal-card" key={itemKey}><div className="derived-modal-image">{picture(item) ? <img src={picture(item)} /> : <div className="image-empty">暂无图片</div>}</div><h3>{title(item)}</h3><div><strong>{money(item)}</strong><span>销量 {Number(item.sales_count ?? item.supplier_sales_count ?? 0).toLocaleString()}</span></div><button className="secondary derived-library-button" disabled={derivedAdded[itemKey]} onClick={async () => { await onAddLibrary(item); setDerivedAdded((current) => ({ ...current, [itemKey]: true })); }}>{derivedAdded[itemKey] ? "已加入选品库" : "加入选品库"}</button></article>; })}</div>}</section></div>}
+     <div className="rank-workspace"><section className="products"><div className="section-heading"><div><h2>新品榜单</h2><p>{regionName} · {rows.length} 个商品</p></div></div><div className="product-grid">{rows.map((p) => { const key = productIdentity(p); const hasDerived = derivedReady[String(pid(p))] ?? (Number(p.derived_count || 0) > 0); return <article className={selected && pid(selected) === pid(p) ? "product selected" : "product"} key={key} onClick={() => onSelect(p)}><div className="image-wrap">{picture(p) ? <img src={picture(p)} loading="lazy" /> : <div className="image-empty">暂无图片</div>}</div><h3>{title(p)}</h3><div className="product-tag">{categoryLabel(p.category)}</div><div className="product-meta"><strong>{money(p)}</strong><span>销量 {Number(p.sales_count ?? p.supplier_sales_count ?? 0).toLocaleString()}</span></div><div className="product-actions"><button className="primary" onClick={(event) => { event.stopPropagation(); if (hasDerived) void viewDerived(p); else void generateDerived(p); }}>{hasDerived ? "查看衍生品" : "可以衍生"}</button><button className="secondary" disabled={added[key]} onClick={async (event) => { event.stopPropagation(); await onAddLibrary(p); setAdded((current) => ({ ...current, [key]: true })); }}>{added[key] ? "已加入选品库" : "加入选品库"}</button></div></article>; })}</div>{!rows.length && <div className="empty-state">暂无新品榜单数据</div>}</section></div>
+    {derivedSource && !pipelineActive && createPortal(<div className="modal-backdrop" onClick={() => setDerivedSource(null)}><section className="modal derived-products-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setDerivedSource(null)}>×</button><h2>查看衍生品</h2><p className="derived-source-title">原商品：{title(derivedSource)}</p>{derivedLoading ? <div className="empty-state">正在读取衍生品...</div> : error ? <div className="empty-state">{error}</div> : !derivedRows.length ? <div className="empty-state">暂无衍生品</div> : <div className="derived-modal-grid">{derivedRows.map((item) => { const itemKey = String(pid(item)); return <article className="derived-modal-card" key={itemKey}><div className="derived-modal-image">{picture(item) ? <img src={picture(item)} /> : <div className="image-empty">暂无图片</div>}</div><h3>{title(item)}</h3><div><strong>{money(item)}</strong><span>销量 {Number(item.sales_count ?? item.supplier_sales_count ?? 0).toLocaleString()}</span></div><button className="secondary derived-library-button" disabled={derivedAdded[itemKey]} onClick={async () => { await onAddLibrary(item); setDerivedAdded((current) => ({ ...current, [itemKey]: true })); }}>{derivedAdded[itemKey] ? "已加入选品库" : "加入选品库"}</button></article>; })}</div>}</section></div>, document.body)}
     {derivedSource && pipelineActive && <DerivationPipelineModal source={derivedSource} progress={pipelineProgress} stage={pipelineStage} status={pipelineStatus} message={pipelineMessage} counters={pipelineCounters} groups={pipelineGroups} onStart={startDerived} onClose={() => { setPipelineTaskId(null); setPipelineActive(false); setDerivedSource(null); }} />}
   </>;
 }
 
-function Products3({ page, rows, selected, onSelect, onDerive, onAddLibrary, onPublish, regions }: { page: "rank" | "favorites"; rows: Product[]; selected: Product | null; onSelect: (p: Product) => void; onDerive: (p: Product) => void; onAddLibrary: (p: Product) => Promise<void>; onPublish: (p: Product) => void; regions: Array<{ region_name?: string; region_code?: string }> }) {
-  const [region, setRegion] = useState("ALL");
+function Products3({ page, rows, selected, onSelect, onDerive, onAddLibrary, onPublish, regions, showReview }: { page: "rank" | "favorites"; rows: Product[]; selected: Product | null; onSelect: (p: Product) => void; onDerive: (p: Product) => void; onAddLibrary: (p: Product) => Promise<void>; onPublish: (p: Product) => void; regions: Array<{ region_name?: string; region_code?: string }>; showReview?: boolean }) {
+  const [region, setRegionState] = useState("JP");
   const [category, setCategory] = useState("ALL");
-  if (page === "favorites") return <Products3Content page={page} rows={rows} selected={selected} onSelect={onSelect} onDerive={onDerive} onAddLibrary={onAddLibrary} onPublish={onPublish} regions={regions} />;
+  const [listType, setListTypeState] = useState("new");
+  const setRegion = (value: string) => { setRegionState(value); window.dispatchEvent(new CustomEvent("tk-rank-region-change", { detail: value })); };
+  const setListType = (value: string) => { setListTypeState(value); window.dispatchEvent(new CustomEvent("tk-rank-list-change", { detail: value })); };
+  useEffect(() => {
+    if (page !== "rank") return;
+    const filters = document.querySelector(".rank-page .rank-page-filters");
+    if (!filters || filters.querySelector(".rank-type-filter-row")) return;
+    const row = document.createElement("div");
+    row.className = "rank-filter-row rank-type-filter-row";
+    const label = document.createElement("b");
+    label.textContent = "榜单类型：";
+    row.appendChild(label);
+    [["new", "新品榜"], ["sales", "销量榜"], ["hot", "热销榜"]].forEach(([value, text]) => {
+      const button = document.createElement("button");
+      button.textContent = text;
+      button.className = value === listType ? "active" : "";
+      button.onclick = () => setListType(value);
+      row.appendChild(button);
+    });
+    filters.appendChild(row);
+    return () => row.remove();
+  }, [page, listType]);
+  showReview = showReview ?? Number((JSON.parse(localStorage.getItem("tk_electron_user") || "{}") as User).pending_review_student || 0) === 1;
+  if (page === "favorites") return <Products3Content page={page} rows={rows} selected={selected} onSelect={onSelect} onDerive={onDerive} onAddLibrary={onAddLibrary} onPublish={onPublish} regions={regions} showReview={showReview} />;
   const categoryOptions = FIXED_CATEGORIES;
   const filtered = rows.filter((item) => (region === "ALL" || String(item.region || "").toUpperCase() === region) && (category === "ALL" || categoryLabel(item.category) === category));
   return <section className="rank-page"><div className="rank-page-heading"><div><h2>新品榜单</h2><p>按国家/地区和商品分类筛选新品</p></div><span>{filtered.length} 个商品</span></div><div className="rank-page-filters"><div className="rank-filter-row"><b>国家/地区：</b><button className={region === "ALL" ? "active" : ""} onClick={() => setRegion("ALL")}>全部</button>{regions.map((item) => <button key={item.region_code} className={region === item.region_code ? "active" : ""} onClick={() => setRegion(String(item.region_code || ""))}>{item.region_name || item.region_code}</button>)}</div><div className="rank-filter-row"><b>商品分类：</b><button className={category === "ALL" ? "active" : ""} onClick={() => setCategory("ALL")}>全部</button>{categoryOptions.filter((item) => item !== "全部").map((item) => <button key={item} className={category === item ? "active" : ""} onClick={() => setCategory(item)}>{item}</button>)}</div></div><Products3ContentFixed rows={filtered} selected={selected} onSelect={onSelect} onDerive={onDerive} onAddLibrary={onAddLibrary} regions={regions} /></section>;
+}
+
+function TeacherReview({ notice }: { notice: (s: string) => void }) {
+  const [rows, setRows] = useState<Array<{ student: Record<string, unknown>; product: Product }>>([]);
+  const [comments, setComments] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  async function load() { try { setRows(await service.getTeacherStudentFavorites()); } catch (error) { notice(error instanceof Error ? error.message : "读取普通用户采集箱失败"); } }
+  useEffect(() => { void load(); }, []);
+  async function review(row: { student: Record<string, unknown>; product: Product }, result: "approved" | "rejected") {
+    const id = String(row.product.id || "");
+    if (!id) return;
+    if (result === "rejected" && !comments[id]?.trim()) { notice("驳回时请填写审核说明"); return; }
+    setBusy(`${id}-${result}`);
+    try { await service.reviewTeacherStudentFavorite(Number(id), result, comments[id] || ""); setRows((items) => items.filter((item) => String(item.product.id) !== id)); notice(result === "approved" ? "商品已通过审核" : "商品已驳回"); } catch (error) { notice(error instanceof Error ? error.message : "审核操作失败"); } finally { setBusy(null); }
+  }
+  return <section className="teacher-review-workspace"><div className="teacher-review-head"><div><h2>教师审核</h2><p>审核标记为“待审核用户”的采集箱商品。</p></div><button className="secondary" onClick={() => void load()}>刷新</button></div><div className="teacher-review-list">{rows.map((row) => { const id = String(row.product.id); const student = row.student; const product = row.product; return <article className="teacher-review-card" key={id}><div className="teacher-review-student"><b>{String(student.real_name || student.username || "未知学员")}</b><span>{String(student.username || "")}</span></div><div className="teacher-review-product">{picture(product) ? <img src={picture(product)} /> : <div className="image-empty">暂无图片</div>}<div className="teacher-review-info"><h3>{title(product)}</h3><strong>{money(product)}</strong><p>来源：{String(product.source_type || "商品快照")} · 分类：{String(product.category || "未分类")}</p><p>审核状态：{String(product.review_status || "pending")}</p></div></div><textarea value={comments[id] || ""} onChange={(event) => setComments((current) => ({ ...current, [id]: event.target.value }))} placeholder="填写审核说明，驳回时必填" /><div className="teacher-review-actions"><button className="success" disabled={busy !== null} onClick={() => void review(row, "approved")}>通过</button><button className="danger" disabled={busy !== null} onClick={() => void review(row, "rejected")}>驳回</button></div></article>; })}{!rows.length && <div className="empty-state">暂无待审核商品</div>}</div></section>;
 }
 
 function App2Clean() {
@@ -900,38 +1218,112 @@ function App2Clean() {
   const [rows, setRows] = useState<Product[]>([]);
   const [selected, setSelected] = useState<Product | null>(null);
   const [regions, setRegions] = useState<Array<{ region_name?: string; region_code?: string }>>([]);
-  const [rankRegion, setRankRegion] = useState("ALL");
+  const [rankRegion, setRankRegion] = useState("JP");
   const [rankList, setRankList] = useState("new");
   const [rankCategory, setRankCategory] = useState("");
   const [rankStart, setRankStart] = useState("");
   const [rankEnd, setRankEnd] = useState("");
+  const [rankPage, setRankPage] = useState(1);
+  const [rankHasMore, setRankHasMore] = useState(true);
+  const rankLoadingRef = useRef(false);
+  const rankPageRef = useRef(1);
+  const previousPageRef = useRef<Page>("studio");
   const [notice, setNotice] = useState("");
   const allowed = useMemo(() => menus.filter((m) => m.roles.includes(user?.role || "student")), [user]);
   const flash = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(""), 3000); };
-  const load = async (next: Page) => {
+  const load = async (next: Page, append = false, forceDefaultRank = false) => {
     if (!["library", "rank", "favorites"].includes(next)) return;
+    if (next === "rank" && rankLoadingRef.current) return;
+    if (next === "rank") rankLoadingRef.current = true;
     try {
-      const data = next === "library" ? await service.getLibrary() : next === "favorites" ? await service.getFavorites() : await service.getRanks({ region: rankRegion === "ALL" ? "JP" : rankRegion, list_type: rankList, category: rankCategory, start_date: rankStart, end_date: rankEnd, page: 1, pagesize: 50, paged: true });
-      const list = Array.isArray(data) ? data : (data as { items?: Product[] })?.items || [];
-       const normalized = list.map((item) => ({ ...item, region: String(item.region || "").toUpperCase(), category: categoryLabel(item.category) }));
-      setRows(normalized); setSelected(normalized[0] || null);
+      const data = next === "library" ? await service.getLibrary() : next === "favorites" ? await service.getFavorites() : await (async () => {
+        const pageNumber = append ? rankPageRef.current + 1 : 1;
+        const queryRegion = forceDefaultRank ? "JP" : rankRegion;
+        const queryList = forceDefaultRank ? "new" : rankList;
+        // “全部”必须显式传给后端；省略 region 会触发接口默认值 JP，导致仍然只返回日本榜单。
+        const result = await service.getRanks({ region: queryRegion, list_type: queryList, category: forceDefaultRank ? "" : rankCategory, start_date: forceDefaultRank ? "" : rankStart, end_date: forceDefaultRank ? "" : rankEnd, paged: true, page: pageNumber, pagesize: 20 });
+        return { result, pageNumber };
+      })();
+      if (next !== "rank") {
+        const list = Array.isArray(data) ? data : (data as { items?: Product[] })?.items || [];
+        const normalized = list.map((item) => ({ ...item, region: String(item.region || (item as Product & { region_code?: string }).region_code || "").toUpperCase(), category: categoryLabel(item.category) }));
+        const unique = uniqueProducts(normalized);
+        setRows(unique); setSelected(unique[0] || null);
+      } else {
+        const payload = (data as { result: Product[] | { items?: Product[]; total?: number }; pageNumber: number });
+        const pageItems = Array.isArray(payload.result) ? payload.result : payload.result.items || [];
+        const normalized = uniqueProducts(pageItems.map((item) => ({ ...item, region: String(item.region || (item as Product & { region_code?: string }).region_code || "").toUpperCase(), category: categoryLabel(item.category) })));
+        const total = Array.isArray(payload.result) ? undefined : Number(payload.result.total || 0);
+        rankPageRef.current = payload.pageNumber;
+        setRankPage(payload.pageNumber);
+        setRankHasMore(total ? payload.pageNumber * 20 < total : normalized.length === 20 && payload.pageNumber * 20 < 1000);
+        setRows((current) => append ? uniqueProducts([...current, ...normalized]) : normalized);
+        if (!append) setSelected(normalized[0] || null);
+      }
     } catch (e) { flash(e instanceof Error ? e.message : "读取数据失败"); }
+    finally { if (next === "rank") rankLoadingRef.current = false; }
   };
   useEffect(() => { if (user) { service.getRegions().then(setRegions).catch(() => setRegions([])); } }, [user]);
-  useEffect(() => { if (user) load(page); }, [user, page, rankRegion, rankList, rankCategory, rankStart, rankEnd]);
+  useEffect(() => { if (user && page === "rank") { service.getRegions().then(setRegions).catch(() => setRegions([])); } }, [user, page]);
+  useEffect(() => {
+    const handleRegionChange = (event: Event) => setRankRegion(String((event as CustomEvent<string>).detail || "ALL"));
+    window.addEventListener("tk-rank-region-change", handleRegionChange);
+    return () => window.removeEventListener("tk-rank-region-change", handleRegionChange);
+  }, []);
+  useEffect(() => {
+    const handleListChange = (event: Event) => setRankList(String((event as CustomEvent<string>).detail || "new"));
+    window.addEventListener("tk-rank-list-change", handleListChange);
+    return () => window.removeEventListener("tk-rank-list-change", handleListChange);
+  }, []);
+  useEffect(() => {
+    setRows([]);
+    setSelected(null);
+    const enteringRank = page === "rank" && previousPageRef.current !== "rank";
+    previousPageRef.current = page;
+    if (enteringRank) {
+      rankLoadingRef.current = false;
+      setRankRegion("JP");
+      setRankList("new");
+      setRankCategory("");
+      setRankStart("");
+      setRankEnd("");
+      rankPageRef.current = 1;
+      setRankPage(1);
+      setRankHasMore(true);
+      void load("rank", false, true);
+    }
+  }, [page]);
+  useEffect(() => {
+    if (user) void load(page);
+  }, [user, page, rankRegion, rankList, rankCategory, rankStart, rankEnd]);
+  useEffect(() => {
+    if (!user || page !== "rank" || !rankHasMore) return;
+    const scroller = document.querySelector(".main") as HTMLElement | null;
+    const onScroll = () => {
+      const reachedBottom = scroller
+        ? scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 240
+        : window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 240;
+      if (reachedBottom) void load("rank", true);
+    };
+    const target = scroller || window;
+    target.addEventListener("scroll", onScroll, { passive: true });
+    return () => target.removeEventListener("scroll", onScroll);
+  }, [user, page, rankHasMore, rankList, rankCategory, rankStart, rankEnd, rankRegion]);
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("tk_theme") || "{}");
-      applyTheme({ font: "Microsoft YaHei UI", size: "14px", background: "background.png", opacity: "0.30", ...saved });
-    } catch { applyTheme({ font: "Microsoft YaHei UI", size: "14px", background: "background.png", opacity: "0.30" }); }
+      applyTheme({ font: "Microsoft YaHei UI", size: "14px", background: "background.png", opacity: "0.30", style: "glass", ...saved });
+    } catch { applyTheme({ font: "Microsoft YaHei UI", size: "14px", background: "background.png", opacity: "0.30", style: "glass" }); }
   }, []);
   if (!user) return <><WindowTitlebar /><Login done={setUser} /></>;
+  if (page === "families") return <><WindowTitlebar /><div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark">TK</div><div><b>益行跨境 AI 平台</b><span>TikTok 日本选品专家</span></div></div><nav>{allowed.map((item) => <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)}><i>{item.icon}</i>{item.label}</button>)}</nav><div className="account"><div className="avatar">{(user.real_name || user.username || "A").slice(0, 1)}</div><div className="account-copy"><b>{user.real_name || user.username}</b><span>{roleLabel(user.role)} · 积分 {user.credits ?? user.credit_balance ?? 0}</span></div><button className="logout" onClick={() => { service.logout(); setUser(null); }}>退出登录</button></div></aside><main className="main"><header><div><h1>商品族管理</h1><span>益行跨境 · 日本市场选品工作台</span></div></header><FamilyManagement notice={flash} /></main></div></>;
   const collect = async (product: Product) => { try { if (page === "favorites" && product.id) { await service.removeFavorite(product.id); await load("favorites"); flash("已从采集箱移除"); } else if (page === "rank" && product.id) { await service.generateDerived(product.id); flash("已开始生成衍生品"); } else { await service.collect(product); flash("已加入采集箱"); } } catch (e) { flash(e instanceof Error ? e.message : "操作失败"); } };
   const addToLibrary = async (product: Product) => { try { await service.addLibraryProduct(product); flash("商品已加入选品库"); } catch (e) { flash(e instanceof Error ? e.message : "加入选品库失败"); throw e; } };
   const publishProduct = (product: Product) => { const url = supplierUrl(product); if (!url) { flash("该商品没有可用的 1688 链接"); return; } localStorage.setItem("tk_publish_prefill_url", url); setPage("store"); flash("已将商品链接带入店铺管理"); };
+  if (page === "teacher-review") return <><WindowTitlebar /><div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark">TK</div><div><b>益行跨境 AI 平台</b><span>TikTok 日本选品专家</span></div></div><nav>{allowed.map((item) => <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)}><i>{item.icon}</i>{item.label}</button>)}</nav><div className="account"><div className="avatar">{(user.real_name || user.username || "A").slice(0, 1)}</div><div className="account-copy"><b>{user.real_name || user.username}</b><span>{roleLabel(user.role)} · 积分 {user.credits ?? user.credit_balance ?? 0}</span></div><button className="logout" onClick={() => { service.logout(); setUser(null); }}>退出登录</button></div></aside><main className="main"><TeacherReview notice={flash} /></main></div></>;
   const categories = FIXED_CATEGORIES;
   const onRankChange = (key: string, value: string) => { if (key === "region") setRankRegion(value); if (key === "list") setRankList(value); if (key === "category") setRankCategory(value); if (key === "start") setRankStart(value); if (key === "end") setRankEnd(value); };
-  return <><WindowTitlebar /><div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark">TK</div><div><b>益行跨境 AI 平台</b><span>TikTok 日本选品专家</span></div></div><nav>{allowed.map((item) => <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)}><i>{item.icon}</i>{item.label}</button>)}</nav><div className="account"><div className="avatar">{(user.real_name || user.username || "A").slice(0, 1)}</div><div className="account-copy"><b>{user.real_name || user.username}</b><span>{user.role} · 积分 {user.credits ?? user.credit_balance ?? 0}</span></div><button className="logout" onClick={() => { service.logout(); setUser(null); }}>退出登录</button></div></aside><main className="main">{page === "studio" && <SmartSelectionWorkspace user={user} onNotice={flash} onExportReport={async (task) => { const intro = await service.getSmartSelectionIntro().catch(() => ""); await downloadPipelineReport(task as PipelineReportData, intro); }} />}{page === "library" && <LibraryPage rows={rows} onNotice={flash} />}{["rank", "favorites"].includes(page) && <Products3 page={page as "rank" | "favorites"} rows={rows} selected={selected} onSelect={setSelected} onDerive={collect} onAddLibrary={addToLibrary} onPublish={publishProduct} regions={regions} />}{page === "dashboard" && <Dashboard />}{page === "store" && <StorePage user={user} notice={flash} onCreditChange={(credits) => setUser((current) => current ? { ...current, credits } : current)} />}{page === "video" && <VideoPage user={user} notice={flash} onCreditChange={(credits) => setUser((current) => current ? { ...current, credits } : current)} />}{page === "profile" && <><Profile user={user} onNotice={flash} onCreditChange={(credits) => setUser((current) => current ? { ...current, credits } : current)} /><ThemeSettings /></>}{page === "teacher" && <Teacher notice={flash} />}{page === "about" && <AboutPage />}{page === "admin" && <AdminConsole notice={flash} />}{notice && <div className="toast">{notice}</div>}</main></div></>;
+  return <><WindowTitlebar /><div className="app-shell"><aside className="sidebar"><div className="brand"><div className="brand-mark">TK</div><div><b>益行跨境 AI 平台</b><span>TikTok 日本选品专家</span></div></div><nav>{allowed.map((item) => <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => setPage(item.id)}><i>{item.icon}</i>{item.label}</button>)}</nav><div className="account"><div className="avatar">{(user.real_name || user.username || "A").slice(0, 1)}</div><div className="account-copy"><b>{user.real_name || user.username}</b><span>{roleLabel(user.role)} · 积分 {user.credits ?? user.credit_balance ?? 0}</span></div><button className="logout" onClick={() => { service.logout(); setUser(null); }}>退出登录</button></div></aside><main className="main">{page === "studio" && <SmartSelectionWorkspace user={user} onNotice={flash} onExportReport={async (task) => { const intro = await service.getSmartSelectionIntro().catch(() => ""); await downloadPipelineReport(task as PipelineReportData, intro); }} />}{page === "library" && <LibraryPage rows={rows} onNotice={flash} />}{["rank", "favorites"].includes(page) && <Products3 page={page as "rank" | "favorites"} rows={rows} selected={selected} onSelect={setSelected} onDerive={collect} onAddLibrary={addToLibrary} onPublish={publishProduct} regions={regions} />}{page === "dashboard" && <Dashboard />}{page === "store" && <StorePage user={user} notice={flash} onCreditChange={(credits) => setUser((current) => current ? { ...current, credits } : current)} />}{page === "video" && <VideoPage user={user} notice={flash} onCreditChange={(credits) => setUser((current) => current ? { ...current, credits } : current)} />}{page === "profile" && <><Profile user={user} onNotice={flash} onCreditChange={(credits) => setUser((current) => current ? { ...current, credits } : current)} /><ThemeSettings /></>}{page === "teacher" && <Teacher notice={flash} />}{page === "about" && <AboutPage />}{page === "admin" && <AdminConsole notice={flash} />}{notice && <div className="toast">{notice}</div>}</main></div></>;
 }
 
 export default App2Clean;

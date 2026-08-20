@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import require_role
 from app.core.database import get_db
-from app.models.entities import DailyRecommendation, DerivedProductRecommendation, FastMossSyncLog, FmProduct, RegionConfig
+from app.models.entities import DailyRecommendation, DerivedProductRecommendation, FastMossSyncLog, FmProduct, RegionConfig, SelectionDidadogProduct, SelectionPipelineTask
 from app.services.fastmoss_service import (
     FastMossError,
     REGION_CODES,
@@ -118,6 +118,23 @@ def daily_recommendations(
         .limit(pagesize if paged else None)
     ).all()
     if products:
+        pipeline_derived_counts = dict(
+            db.execute(
+                select(
+                    SelectionPipelineTask.source_product_id,
+                    func.count(SelectionDidadogProduct.id),
+                )
+                .join(SelectionDidadogProduct, SelectionDidadogProduct.pipeline_task_id == SelectionPipelineTask.id)
+                .where(
+                    SelectionPipelineTask.pipeline_mode == "derivation",
+                    SelectionPipelineTask.status == "success",
+                    SelectionPipelineTask.user_id == current_user_id,
+                    SelectionPipelineTask.source_product_id.is_not(None),
+                    SelectionDidadogProduct.selection_status.in_(["candidate", "final", "restricted"]),
+                )
+                .group_by(SelectionPipelineTask.source_product_id)
+            ).all()
+        )
         result = [
             {
                 "id": item.id,
@@ -137,7 +154,7 @@ def daily_recommendations(
                     1 for derived in item.derived_products
                     if derived.owner_user_id is None
                     or derived.owner_user_id == current_user_id
-                ),
+                ) + int(pipeline_derived_counts.get(item.id, 0)),
                 "reason_summary": "FastMoss 日本新品榜：跨境商品=是，全托管商品=否。",
                 "sort_order": (page - 1) * pagesize + index,
             }

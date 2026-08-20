@@ -25,7 +25,7 @@ from app.services.auto_publish_service import (
 router = APIRouter(
     prefix="/api/auto-publish",
     tags=["auto-publish"],
-    dependencies=[Depends(require_role("admin", "teacher"))],
+    dependencies=[Depends(require_role("admin", "teacher", "student"))],
 )
 
 
@@ -155,13 +155,13 @@ class MiaoshouReauthorizeRequest(BaseModel):
 
 
 @router.get("/latest")
-def latest(user: dict = Depends(require_role("admin", "teacher"))):
+def latest(user: dict = Depends(require_role("admin", "teacher", "student"))):
     user_id, role = user_id_and_role(user)
     return get_latest_result(user_id=user_id, role=role)
 
 
 @router.get("/history")
-def history(user: dict = Depends(require_role("admin", "teacher"))):
+def history(user: dict = Depends(require_role("admin", "teacher", "student"))):
     user_id, role = user_id_and_role(user)
     return list_history(user_id=user_id, role=role)
 
@@ -169,7 +169,7 @@ def history(user: dict = Depends(require_role("admin", "teacher"))):
 @router.post("/miaoshou/shop-list")
 def miaoshou_shop_list(
     payload: MiaoshouShopListRequest,
-    user: dict = Depends(require_role("admin", "teacher")),
+    user: dict = Depends(require_role("admin", "teacher", "student")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -181,7 +181,7 @@ def miaoshou_shop_list(
 @router.post("/miaoshou/reauthorize-picture-space")
 def miaoshou_reauthorize_picture_space(
     payload: MiaoshouReauthorizeRequest,
-    user: dict = Depends(require_role("admin", "teacher")),
+    user: dict = Depends(require_role("admin", "teacher", "student")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -191,7 +191,7 @@ def miaoshou_reauthorize_picture_space(
 
 
 @router.get("/tasks/{task_id}")
-def get_auto_publish_task(task_id: str, user: dict = Depends(require_role("admin", "teacher"))):
+def get_auto_publish_task(task_id: str, user: dict = Depends(require_role("admin", "teacher", "student"))):
     user_id, role = user_id_and_role(user)
     result = get_task_result(task_id, user_id=user_id, role=role)
     if not result:
@@ -202,7 +202,7 @@ def get_auto_publish_task(task_id: str, user: dict = Depends(require_role("admin
 @router.post("/tasks/{task_id}/run")
 def run_auto_publish_task(
     task_id: str,
-    user: dict = Depends(require_role("admin", "teacher")),
+    user: dict = Depends(require_role("admin", "teacher", "student")),
     db: Session = Depends(get_db),
 ):
     user_id, role = user_id_and_role(user)
@@ -220,7 +220,7 @@ def run_auto_publish_task(
 def run_auto_publish_task_async(
     task_id: str,
     background_tasks: BackgroundTasks,
-    user: dict = Depends(require_role("admin", "teacher")),
+    user: dict = Depends(require_role("admin", "teacher", "student")),
 ):
     user_id, role = user_id_and_role(user)
     existing = get_task_result(task_id, user_id=user_id, role=role)
@@ -243,7 +243,7 @@ def run_auto_publish_task_async(
 @router.post("/1688/tasks")
 def create_1688_task(
     payload: AutoPublish1688Request,
-    user: dict = Depends(require_role("admin", "teacher")),
+    user: dict = Depends(require_role("admin", "teacher", "student")),
     db: Session = Depends(get_db),
 ):
     user_id = int(user.get("id") or 0)
@@ -265,7 +265,7 @@ def create_1688_task(
 @router.post("/1688/batch-tasks")
 def create_1688_batch_task(
     payload: AutoPublish1688BatchRequest,
-    user: dict = Depends(require_role("admin", "teacher")),
+    user: dict = Depends(require_role("admin", "teacher", "student")),
     db: Session = Depends(get_db),
 ):
     user_id = int(user.get("id") or 0)

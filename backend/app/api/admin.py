@@ -40,12 +40,14 @@ class UserCreate(BaseModel):
     password: str = "123456"
     real_name: str
     role: str
+    pending_review_student: int = 0
 
 
 class UserUpdate(BaseModel):
     real_name: str
     role: str
     status: int = 1
+    pending_review_student: int = 0
 
 
 class ResetPasswordRequest(BaseModel):
@@ -98,7 +100,12 @@ class SelectionRestrictionRulePayload(BaseModel):
     title_keyword: str = ""
     action: str = "restricted"
     reason: str = ""
+    audience_weight: float = 25.0
+    scene_weight: float = 25.0
+    verb_weight: float = 25.0
+    periodicity_weight: float = 25.0
     status: int = 1
+    pending_review_student: int = 0
 
 
 class AttributeCreate(BaseModel):
@@ -292,6 +299,7 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
         real_name=payload.real_name,
         role=payload.role,
         status=1,
+        pending_review_student=payload.pending_review_student,
     )
     db.add(user)
     db.commit()
@@ -307,6 +315,7 @@ def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db)
     user.real_name = payload.real_name
     user.role = payload.role
     user.status = payload.status
+    user.pending_review_student = payload.pending_review_student
     db.commit()
     db.refresh(user)
     return user_to_dict(user)
@@ -435,16 +444,20 @@ def list_third_party_configs(db: Session = Depends(get_db)):
 @router.get("/selection-restriction-rules")
 def list_selection_restriction_rules(db: Session = Depends(get_db)):
     items = db.scalars(select(SelectionRestrictionRule).order_by(SelectionRestrictionRule.id.desc())).all()
-    return [{"id": item.id, "rule_code": item.rule_code, "region": item.region, "category_keyword": item.category_keyword, "title_keyword": item.title_keyword, "action": item.action, "reason": item.reason, "status": item.status} for item in items]
+    return [{"id": item.id, "rule_code": item.rule_code, "region": item.region, "category_keyword": item.category_keyword, "title_keyword": item.title_keyword, "action": item.action, "reason": item.reason, "audience_weight": item.audience_weight, "scene_weight": item.scene_weight, "verb_weight": item.verb_weight, "periodicity_weight": item.periodicity_weight, "status": item.status, "created_at": item.created_at.isoformat() if item.created_at else None, "updated_at": item.updated_at.isoformat() if item.updated_at else None} for item in items]
 
 
 @router.post("/selection-restriction-rules")
 def create_selection_restriction_rule(payload: SelectionRestrictionRulePayload, db: Session = Depends(get_db)):
-    item = SelectionRestrictionRule(**payload.model_dump())
+    values = payload.model_dump()
+    if not str(values.get("rule_code") or "").strip():
+        values["rule_code"] = f"RESTRICTED-{uuid.uuid4().hex[:10].upper()}"
+    values["action"] = str(values.get("action") or "restricted")
+    item = SelectionRestrictionRule(**values)
     db.add(item)
     db.commit()
     db.refresh(item)
-    return {"id": item.id, **payload.model_dump()}
+    return {"id": item.id, **{key: getattr(item, key) for key in values}}
 
 
 @router.put("/selection-restriction-rules/{rule_id}")
@@ -452,11 +465,14 @@ def update_selection_restriction_rule(rule_id: int, payload: SelectionRestrictio
     item = db.get(SelectionRestrictionRule, rule_id)
     if not item:
         raise HTTPException(status_code=404, detail="限售规则不存在")
-    for key, value in payload.model_dump().items():
+    values = payload.model_dump(exclude_unset=True)
+    if "action" in values:
+        values["action"] = str(values.get("action") or "restricted")
+    for key, value in values.items():
         setattr(item, key, value)
     db.commit()
     db.refresh(item)
-    return {"id": item.id, **payload.model_dump()}
+    return {"id": item.id, **{key: getattr(item, key) for key in values}}
 
 
 @router.delete("/selection-restriction-rules/{rule_id}")

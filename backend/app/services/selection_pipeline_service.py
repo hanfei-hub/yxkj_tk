@@ -23,6 +23,7 @@ from app.models.entities import (
 )
 from app.services.ai_model_service import MODEL_TYPE_GENERAL, ModelCallError, chat_completion, extract_json_object
 from app.services.echotik_service import EchoTikError, get_product_details, search_by_image
+from app.services.restriction_weight_service import restriction_weights_for_product, restriction_weights_prompt
 from app.services.supplier_1688_service import Supplier1688Error, search_1688_products
 from app.services.system_settings_service import ensure_system_settings, get_setting_int
 
@@ -747,8 +748,10 @@ def _auto_add_selected_products_to_library(
             "tier": tier,
             "tier_label": tier_label,
             "selection_reason": reason,
-            "_library_region": "JP",
-            "_library_currency": "JPY",
+            # 智能选品/衍生品的价格来自 1688 供应链，写入选品库时统一按中国货源展示。
+            # EchoTik 查询仍使用日本站参数，但不能把平台查询地区当成商品货币地区。
+            "_library_region": "CN",
+            "_library_currency": "CNY",
             "_library_category": str(p.category or ""),
             "didadog_product_id": str(p.didadog_product_id or ""),
             "pipeline_report_summary": report_analysis.get("executive_summary") or "",
@@ -762,8 +765,8 @@ def _auto_add_selected_products_to_library(
             title=title,
             image_url=str(p.image_url or ""),
             price=float(p.price or 0),
-            region="JP",
-            currency="JPY",
+            region="CN",
+            currency="CNY",
             sales_count=int(p.sales_count or 0),
             reason_summary=f"来自 AI 智能选品：{tier_label}款。{reason}"[:500],
             analysis_report=json.dumps(report_payload, ensure_ascii=False),
@@ -800,6 +803,13 @@ def run_selection_pipeline(task_id: int) -> None:
             input_message = task.input_message
             if derivation_mode and source_product:
                 input_message = f"原商品：{source_product.title}\n请围绕该原商品生成可衍生的同赛道商品方向。"
+                weights, match_info = restriction_weights_for_product(
+                    db,
+                    title=source_product.title,
+                    category=getattr(source_product, "category", ""),
+                    region=getattr(source_product, "region", "JP"),
+                )
+                constant += restriction_weights_prompt(weights, match_info)
             trend_note = _jp_trend_calendar(datetime.utcnow() + timedelta(hours=9))
             prompt = (
                 f"{constant}\n\n用户需求：{input_message}\n"
@@ -955,10 +965,48 @@ def run_selection_pipeline(task_id: int) -> None:
             task.didadog_detail_count = len([item for item in products if item.detail_status == "success"])
             detailed_products = [item for item in products if item.detail_status == "success"]
 
-            # 不使用 1688 兜底：EchoTik 以图搜款若全部失败或返回空，则本任务没有可用商品，
-            # 下游筛选直接跳过，终局不会填充任何兜底商品（界面不展示任何商品）。
+            # EchoTik 全部失败时，使用本轮选出的 1688 图片种子继续完成筛选。
+            # 这些记录沿用 SelectionDidadogProduct 结构，后面的蓝海、法规、限售和精选逻辑
+            # 可以继续复用；selection_meta 用于让前端/报告知道这是 1688 降级数据。
             if not detailed_products:
-                update_pipeline_stage(db, task, stage="image_search", progress=72, message="EchoTik 以图搜款未返回数据，本任务无可用商品，下游筛选跳过")
+                entry_rows = list(db.scalars(select(SelectionImageSearchEntry).where(SelectionImageSearchEntry.pipeline_task_id == task.id)).all())
+                entry_by_seed = {item.seed_candidate_id: item for item in entry_rows}
+                fallback_seeds = sorted(
+                    [seed for seed in seeds if seed.image_url and entry_by_seed.get(seed.id)],
+                    key=lambda item: (
+                        0 if item.image_url else 1,
+                        0 if float(item.price or 0) > 0 else 1,
+                        int(item.sales_count or 0),
+                        str(item.title or ""),
+                        item.id,
+                    ),
+                )[:10]
+                for seed in fallback_seeds:
+                    entry = entry_by_seed[seed.id]
+                    fallback_id = f"1688-fallback-{seed.external_product_id or seed.id}"
+                    db.add(SelectionDidadogProduct(
+                        pipeline_task_id=task.id,
+                        keyword_id=seed.keyword_id,
+                        image_search_entry_id=entry.id,
+                        user_id=task.user_id,
+                        didadog_product_id=fallback_id,
+                        title=str(seed.title or "")[0:512],
+                        image_url=str(seed.image_url or ""),
+                        detail_url=str(seed.source_url or ""),
+                        price=float(seed.price or 0),
+                        currency=seed.currency or "CNY",
+                        sales_count=int(seed.sales_count or 0),
+                        category=str(getattr(seed, "category", "") or "")[0:255],
+                        detail_status="success",
+                        selection_status="candidate",
+                        selection_meta=json.dumps({"fallback_source": "1688", "fallback_reason": "EchoTik 图片搜索失败"}, ensure_ascii=False),
+                        raw_data=seed.raw_data or "{}",
+                    ))
+                db.commit()
+                products = list(db.scalars(select(SelectionDidadogProduct).where(SelectionDidadogProduct.pipeline_task_id == task.id)).all())
+                detailed_products = [item for item in products if item.detail_status == "success"]
+                task.didadog_detail_count = 0
+                update_pipeline_stage(db, task, stage="image_search", progress=72, message=f"EchoTik 暂无返回，已降级使用 {len(fallback_seeds)} 个 1688 商品继续筛选")
 
             update_pipeline_stage(db, task, stage="blue_ocean_filter", progress=78, message="正在按大模型商品分组，筛出 100 个低销量蓝海候选")
             grouped: dict[int, list[SelectionDidadogProduct]] = {}
@@ -1143,10 +1191,13 @@ def run_selection_pipeline(task_id: int) -> None:
             task.finished_at = datetime.utcnow()
             task.result_snapshot = json.dumps({"targets": _pipeline_targets(keyword_limit, supplier_page_size, seed_per_keyword), "test_mode": test_mode, "message": "已完成选品流程和市场报告分析", "report_analysis": report_analysis}, ensure_ascii=False)
             db.commit()
-            try:
-                _auto_add_selected_products_to_library(db, task, report_analysis)
-            except Exception as exc:
-                # 自动入库失败不应影响任务成功状态，只记录日志
-                print(f"[selection_pipeline] 自动入库失败 task={task.id}: {exc}")
+            # 衍生任务只生成结果，必须由用户在“查看衍生品”弹窗中主动加入选品库。
+            # 智能选品任务保留候选品/精选品自动入库逻辑。
+            if task.pipeline_mode != "derivation":
+                try:
+                    _auto_add_selected_products_to_library(db, task, report_analysis)
+                except Exception as exc:
+                    # 自动入库失败不应影响任务成功状态，只记录日志
+                    print(f"[selection_pipeline] 自动入库失败 task={task.id}: {exc}")
         except Exception as exc:
             _write_error(db, task, str(exc))

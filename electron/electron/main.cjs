@@ -11,7 +11,8 @@ function createWindow() {
     height: 960,
     minWidth: 1180,
     minHeight: 760,
-    backgroundColor: "#f5f8fb",
+    transparent: true,
+    backgroundColor: "#00000000",
     frame: false,
     titleBarStyle: "hidden",
     show: false,
@@ -21,6 +22,7 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+  win.maximize();
   const revealWindow = () => {
     if (win.isDestroyed()) return;
     win.show();
@@ -33,6 +35,8 @@ function createWindow() {
     shell.openExternal(url);
     return { action: "deny" };
   });
+  // 开发直启和安装包使用不同的 Chromium 配置目录，统一锁定为 100% 缩放，避免打包后布局比例漂移。
+  win.webContents.setZoomFactor(1);
   if (isDev) {
     win.loadURL("http://127.0.0.1:5173");
   } else {

@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import require_role
@@ -12,22 +12,29 @@ from app.core.database import get_db
 from app.models.entities import (
     DerivedProductAttributeScore,
     DerivedProductRecommendation,
+    FavoriteProduct,
     FmProduct,
     SelectionAttribute,
     TeacherReviewRecord,
+    User,
 )
 from app.services.product_family_service import (
     adjust_family_weight_for_reject,
     adjust_family_weights_for_approve,
     attribute_to_dimension_code,
 )
-from app.services.serializers import derived_to_dict, product_to_dict, review_to_dict
+from app.services.serializers import derived_to_dict, favorite_to_dict, product_to_dict, review_to_dict
 
 router = APIRouter(prefix="/api/teacher", tags=["teacher"], dependencies=[Depends(require_role("teacher", "admin"))])
 
 
 class RejectRequest(BaseModel):
     attribute_ids: list[int]
+    review_comment: str = ""
+
+
+class FavoriteReviewRequest(BaseModel):
+    review_result: str
     review_comment: str = ""
 
 
@@ -132,3 +139,56 @@ def reject(
 def review_records(db: Session = Depends(get_db)):
     items = db.scalars(select(TeacherReviewRecord).order_by(TeacherReviewRecord.id.desc())).all()
     return [review_to_dict(item) for item in items]
+
+
+@router.get("/student-favorites")
+def student_favorites(db: Session = Depends(get_db)):
+    rows = db.execute(
+        select(FavoriteProduct, User)
+        .join(User, User.id == FavoriteProduct.user_id)
+        .where(
+            User.pending_review_student == 1,
+            or_(FavoriteProduct.review_status == "pending", FavoriteProduct.review_status.is_(None)),
+        )
+        .order_by(FavoriteProduct.created_at.desc(), FavoriteProduct.id.desc())
+    ).all()
+    result = []
+    for favorite, student in rows:
+        result.append({
+            "student": {
+                "id": student.id,
+                "username": student.username,
+                "real_name": student.real_name,
+            },
+            "product": favorite_to_dict(favorite),
+        })
+    return result
+
+
+@router.post("/student-favorites/{favorite_id}/review")
+def review_student_favorite(
+    favorite_id: int,
+    payload: FavoriteReviewRequest,
+    user: dict = Depends(require_role("teacher", "admin")),
+    db: Session = Depends(get_db),
+):
+    result = str(payload.review_result or "").strip().lower()
+    if result not in {"approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="审核结果只能是 approved 或 rejected")
+    favorite = db.get(FavoriteProduct, favorite_id)
+    if not favorite:
+        raise HTTPException(status_code=404, detail="采集箱商品不存在")
+    student = db.get(User, favorite.user_id)
+    if not student or int(student.pending_review_student or 0) != 1:
+        raise HTTPException(status_code=403, detail="该用户不是待审核学员")
+    favorite.review_status = result
+    favorite.reviewed_by = user["id"]
+    favorite.reviewed_at = datetime.utcnow()
+    favorite.review_comment = str(payload.review_comment or "").strip()
+    db.commit()
+    db.refresh(favorite)
+    return {
+        "ok": True,
+        "student": {"id": student.id, "username": student.username, "real_name": student.real_name},
+        "product": favorite_to_dict(favorite),
+    }

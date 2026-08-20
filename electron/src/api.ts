@@ -64,6 +64,8 @@ export const getLibrary = () => api.get<Product[]>("/api/ai/search-results").the
 export const getFavorites = () => api.get<Product[]>("/api/favorites").then((r) => r.data || []);
 export const getTeacherProducts = () => api.get<Product[]>("/api/teacher/products").then((r) => r.data || []);
 export const getTeacherDerived = (productId: number | string) => api.get<Product[]>(`/api/teacher/products/${productId}/derived-products`).then((r) => r.data || []);
+export const getTeacherStudentFavorites = () => api.get<Array<{ student: Record<string, unknown>; product: Product }>>("/api/teacher/student-favorites").then((r) => r.data || []);
+export const reviewTeacherStudentFavorite = (favoriteId: number | string, reviewResult: "approved" | "rejected", reviewComment = "") => api.post(`/api/teacher/student-favorites/${favoriteId}/review`, { review_result: reviewResult, review_comment: reviewComment }).then((r) => r.data);
 export const getDerivedProducts = (productId: number | string) => api.get<Product[]>(`/api/ai/products/${productId}/derived-products`).then((r) => r.data || []);
 export const generateDerived = (productId: number | string) => api.post(`/api/ai/products/${productId}/generate-derived`).then((r) => r.data);
 export const addLibraryProduct = (product: Product) => api.post("/api/ai/library-products", { product }).then((r) => r.data);
@@ -74,7 +76,7 @@ export const collect = (product: Product) => api.post("/api/favorites", {
   title: product.title || product.derived_title || "",
   image_url: product.image_url || product.supplier_image_url || "",
   price: Number(product.price ?? product.supplier_price ?? 0),
-  currency: product.currency || (product.region === "CN" ? "CNY" : product.region === "JP" ? "JPY" : ""),
+  currency: product.currency || ({ CN: "CNY", JP: "JPY", US: "USD", TH: "THB", VN: "VND", MY: "MYR", PH: "PHP", SG: "SGD", ID: "IDR", KR: "KRW", GB: "GBP" } as Record<string, string>)[String(product.region || (product as Product & { region_code?: string }).region_code || (product.source_type === "derived" ? "CN" : "")).toUpperCase()] || (product.source_type === "derived" ? "CNY" : ""),
   sales_count: Number(product.sales_count ?? product.supplier_sales_count ?? 0),
   category: product.category || "",
   recommendation_reason: product.recommendation_reason || "",
@@ -151,3 +153,4 @@ export const reauthorizeMiaoshou = (storage_state: Record<string, unknown>) => a
 export const createPublishBatch = (payload: Record<string, unknown>) => api.post("/api/auto-publish/1688/batch-tasks", payload).then((r) => r.data);
 export const runPublishTask = (taskId: string) => api.post(`/api/auto-publish/tasks/${taskId}/run-async`).then((r) => r.data);
 export const getPipelineStatus = () => api.get("/api/pipeline/status").then((r) => r.data);
+export const getDashboardSummary = () => api.get("/api/dashboard/summary").then((r) => r.data);

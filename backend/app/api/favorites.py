@@ -55,6 +55,25 @@ def create_favorite(
             report = json.loads(report)
         except (TypeError, ValueError):
             report = {"report_text": report}
+    incoming_supplier_id = str(snapshot.get("supplier_product_id") or snapshot.get("product_id") or "").strip()
+    incoming_image = str(payload.image_url or snapshot.get("image_url") or "").strip()
+    existing_rows = db.scalars(
+        select(FavoriteProduct).where(
+            FavoriteProduct.user_id == user["id"],
+            FavoriteProduct.source_type == payload.source_type,
+        )
+    ).all()
+    for existing_item in existing_rows:
+        try:
+            existing_snapshot = json.loads(existing_item.product_snapshot or "{}")
+        except (TypeError, ValueError):
+            existing_snapshot = {}
+        if incoming_supplier_id and str(existing_snapshot.get("supplier_product_id") or "").strip() == incoming_supplier_id:
+            return favorite_to_dict(existing_item)
+        if incoming_image and str(existing_item.image_url or "").strip() == incoming_image:
+            return favorite_to_dict(existing_item)
+        if existing_item.title.strip().casefold() == payload.title.strip().casefold():
+            return favorite_to_dict(existing_item)
     item = FavoriteProduct(
         user_id=user["id"],
         source_type=payload.source_type,

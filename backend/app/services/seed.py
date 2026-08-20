@@ -121,6 +121,7 @@ def ensure_runtime_schema() -> None:
     }
     user_columns = {
         "credit_balance": "INTEGER DEFAULT 0",
+        "pending_review_student": "INTEGER DEFAULT 0",
     }
     search_result_columns = {
         "source_type": "VARCHAR(32) DEFAULT 'ai_search'",
@@ -172,6 +173,18 @@ def ensure_runtime_schema() -> None:
         "pipeline_mode": "VARCHAR(32) DEFAULT 'selection'",
         "source_product_id": "INTEGER NULL",
     }
+    restriction_columns = {
+        "audience_weight": "FLOAT DEFAULT 25",
+        "scene_weight": "FLOAT DEFAULT 25",
+        "verb_weight": "FLOAT DEFAULT 25",
+        "periodicity_weight": "FLOAT DEFAULT 25",
+    }
+    favorite_columns = {
+        "review_status": "VARCHAR(32) DEFAULT 'pending'",
+        "reviewed_by": "INTEGER NULL",
+        "reviewed_at": "DATETIME NULL",
+        "review_comment": "TEXT",
+    }
     with engine.begin() as conn:
         dialect = engine.dialect.name
         if dialect not in {"mysql", "sqlite"}:
@@ -181,6 +194,7 @@ def ensure_runtime_schema() -> None:
         ensure_columns(conn, dialect, "model_configs", model_columns)
         ensure_columns(conn, dialect, "third_party_configs", third_party_columns)
         ensure_columns(conn, dialect, "users", user_columns)
+        ensure_columns(conn, dialect, "favorite_products", favorite_columns)
         ensure_columns(conn, dialect, "user_search_recommendations", search_result_columns)
         ensure_columns(conn, dialect, "video_projects", video_project_columns)
         ensure_columns(conn, dialect, "video_assets", video_asset_columns)
@@ -188,6 +202,7 @@ def ensure_runtime_schema() -> None:
         ensure_columns(conn, dialect, "video_tasks", video_task_columns)
         ensure_columns(conn, dialect, "selection_didadog_products", selection_didadog_columns)
         ensure_columns(conn, dialect, "selection_pipeline_tasks", selection_pipeline_columns)
+        ensure_columns(conn, dialect, "selection_restriction_rules", restriction_columns)
 
 
 def ensure_columns(conn, dialect: str, table_name: str, columns: dict[str, str]) -> None:

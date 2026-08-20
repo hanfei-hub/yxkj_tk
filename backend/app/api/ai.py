@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.deps import require_role
 from app.core.database import SessionLocal
 from app.core.database import get_db
-from app.models.entities import CreditTransaction, DerivedProductAttributeScore, DerivedProductRecommendation, FmProduct, TaskExecution, User, UserSearchRecommendation
+from app.models.entities import CreditTransaction, DerivedProductAttributeScore, DerivedProductRecommendation, FmProduct, SelectionDidadogProduct, SelectionPipelineTask, TaskExecution, User, UserSearchRecommendation
 from app.services.ai_selection_task_service import run_ai_selection_task, start_ai_selection_task, user_search_result_to_dict
 from app.services.selection_derivation_service import generate_derivatives_for_products
 from app.services.fastmoss_service import prepare_product_for_derivation
@@ -173,12 +173,27 @@ def add_library_product(
         report = {}
     report = dict(report)
     source_type = str(product.get("source_type") or ("new_product" if product.get("list_type") else "ai_search")).lower()
+    is_derived_product = source_type == "derived"
     is_rank_product = source_type == "new_product" or bool(product.get("list_type"))
     if is_rank_product:
         source_type = "new_product"
-        region = str(product.get("region") or report.get("_library_region") or report.get("region") or "JP").upper()
-        currency = str(product.get("currency") or report.get("_library_currency") or report.get("currency") or ("JPY" if region == "JP" else "")).upper()
+        region = str(product.get("region") or product.get("region_code") or report.get("_library_region") or report.get("region") or "JP").upper()
+        currency = str(product.get("currency") or product.get("currency_code") or report.get("_library_currency") or report.get("currency") or ({ "CN": "CNY", "JP": "JPY", "US": "USD", "TH": "THB", "VN": "VND", "MY": "MYR", "PH": "PHP", "SG": "SGD", "ID": "IDR", "KR": "KRW", "GB": "GBP" }.get(region, ""))).upper()
         search_query = "榜单加入选品库"
+    elif is_derived_product:
+        source_type = "derived"
+        region = str(product.get("region") or product.get("region_code") or "CN").upper()
+        currency = str(product.get("currency") or product.get("currency_code") or "CNY").upper()
+        search_query = "衍生品加入选品库"
+        existing_derived = db.scalar(
+            select(UserSearchRecommendation).where(
+                UserSearchRecommendation.user_id == int(user.get("id") or 0),
+                UserSearchRecommendation.source_type == "derived",
+                UserSearchRecommendation.title == title,
+            )
+        )
+        if existing_derived:
+            return user_search_result_to_dict(existing_derived)
     else:
         source_type = "ai_search"
         region = "CN"
@@ -187,19 +202,69 @@ def add_library_product(
     report["_library_region"] = region
     report["_library_currency"] = currency
     report["_library_category"] = str(product.get("category") or "")
+    source_product_id = product.get("source_product_id") or product.get("id")
+    if source_product_id not in (None, ""):
+        report["_library_source_product_id"] = str(source_product_id)
+    if is_derived_product:
+        derived_id = product.get("derived_id") or product.get("id")
+        if derived_id not in (None, ""):
+            report["_library_derived_id"] = str(derived_id)
+    snapshot = product.get("product_snapshot") if isinstance(product.get("product_snapshot"), dict) else {}
+    supplier_product_id = str(product.get("supplier_product_id") or snapshot.get("supplier_product_id") or product.get("product_id") or "")
+    supplier_title = str(product.get("supplier_title") or snapshot.get("supplier_title") or "")
+    supplier_image_url = str(product.get("supplier_image_url") or snapshot.get("supplier_image_url") or "")
+    supplier_shop_name = str(product.get("supplier_shop_name") or snapshot.get("supplier_shop_name") or product.get("shop_name") or snapshot.get("shop_name") or "")
+    supplier_source_url = str(product.get("supplier_source_url") or snapshot.get("supplier_source_url") or product.get("source_url") or snapshot.get("source_url") or "")
+    supplier_price = product.get("supplier_price") if product.get("supplier_price") not in (None, "") else snapshot.get("supplier_price")
+    supplier_sales_count = product.get("supplier_sales_count") if product.get("supplier_sales_count") not in (None, "") else snapshot.get("supplier_sales_count")
+    supplier_match_score = product.get("supplier_match_score") if product.get("supplier_match_score") not in (None, "") else snapshot.get("supplier_match_score")
+    incoming_supplier_id = str(product.get("supplier_product_id") or product.get("product_id") or "").strip()
+    incoming_image = str(product.get("image_url") or product.get("supplier_image_url") or "").strip()
+    existing_rows = db.scalars(
+        select(UserSearchRecommendation).where(
+            UserSearchRecommendation.user_id == int(user.get("id") or 0),
+            UserSearchRecommendation.source_type == source_type,
+        )
+    ).all()
+    for existing_item in existing_rows:
+        if incoming_supplier_id and str(existing_item.supplier_product_id or "").strip() == incoming_supplier_id:
+            return user_search_result_to_dict(existing_item)
+        if incoming_image and str(existing_item.image_url or "").strip() == incoming_image:
+            return user_search_result_to_dict(existing_item)
+        if existing_item.title.strip().casefold() == title.casefold():
+            return user_search_result_to_dict(existing_item)
+    if source_type == "new_product":
+        existing_rank = db.scalar(
+            select(UserSearchRecommendation).where(
+                UserSearchRecommendation.user_id == int(user.get("id") or 0),
+                UserSearchRecommendation.source_type == "new_product",
+                UserSearchRecommendation.region == region,
+                UserSearchRecommendation.title == title,
+            )
+        )
+        if existing_rank:
+            return user_search_result_to_dict(existing_rank)
     item = UserSearchRecommendation(
         user_id=int(user.get("id") or 0),
         task_id=task_id,
         search_query=search_query,
         source_type=source_type,
         title=title,
-        image_url=str(product.get("image_url") or ""),
-        price=float(product.get("price") or 0),
-        sales_count=int(float(product.get("sales_count") or 0)),
+        image_url=str(product.get("image_url") or product.get("supplier_image_url") or ""),
+        price=float(product.get("price") or product.get("supplier_price") or product.get("suggested_price_min") or 0),
+        sales_count=int(float(product.get("sales_count") or product.get("supplier_sales_count") or 0)),
         reason_summary="来自 FastMoss 榜单，已加入当前账号选品库。",
         region=region,
         currency=currency,
         analysis_report=json.dumps(report, ensure_ascii=False),
+        supplier_product_id=supplier_product_id,
+        supplier_title=supplier_title,
+        supplier_image_url=supplier_image_url,
+        supplier_price=float(supplier_price or 0) if supplier_price not in (None, "") else None,
+        supplier_sales_count=int(float(supplier_sales_count or 0)),
+        supplier_shop_name=supplier_shop_name,
+        supplier_source_url=supplier_source_url,
+        supplier_match_score=float(supplier_match_score or 0) if supplier_match_score not in (None, "") else None,
         sort_order=0,
         created_at=datetime.utcnow(),
     )
@@ -229,7 +294,57 @@ def user_visible_derived_products(
         )
         .order_by(DerivedProductRecommendation.weighted_score.desc(), DerivedProductRecommendation.id.desc())
     ).all()
-    return [derived_to_dict(item) for item in items]
+    result = [derived_to_dict(item) for item in items]
+    if result:
+        return result
+
+    # 新版衍生任务使用 selection_pipeline_tasks 保存结果，不再写入旧的
+    # derived_product_recommendations 表。兼容查看衍生品接口，避免任务成功但弹窗为空。
+    pipeline_task = db.scalar(
+        select(SelectionPipelineTask)
+        .where(
+            SelectionPipelineTask.pipeline_mode == "derivation",
+            SelectionPipelineTask.source_product_id == product_id,
+            SelectionPipelineTask.status == "success",
+            (SelectionPipelineTask.user_id == user_id) | (user.get("role") == "admin"),
+        )
+        .order_by(SelectionPipelineTask.id.desc())
+    )
+    if not pipeline_task:
+        return []
+    fallback_items = db.scalars(
+        select(SelectionDidadogProduct)
+        .where(
+            SelectionDidadogProduct.pipeline_task_id == pipeline_task.id,
+            SelectionDidadogProduct.selection_status.in_(["candidate", "final", "restricted"]),
+        )
+        .order_by(SelectionDidadogProduct.selection_status.desc(), SelectionDidadogProduct.id)
+    ).all()
+    return [
+        {
+            "id": item.id,
+            "derived_id": item.id,
+            "source_product_id": product_id,
+            "source_type": "derived",
+            "title": item.title or item.didadog_product_id,
+            "derived_title": item.title or item.didadog_product_id,
+            "image_url": item.image_url or "",
+            "price": float(item.price or 0),
+            "sales_count": int(item.sales_count or 0),
+            "currency": item.currency or "CNY",
+            "category": item.category or "",
+            "supplier_image_url": item.image_url or "",
+            "supplier_price": float(item.price or 0),
+            "supplier_currency": item.currency or "CNY",
+            "supplier_sales_count": int(item.sales_count or 0),
+            "supplier_source_url": item.detail_url or "",
+            "review_status": item.selection_status,
+            "selection_status": item.selection_status,
+            "eliminated": item.selection_status == "restricted",
+            "analysis_report": item.selection_meta or "{}",
+        }
+        for item in fallback_items
+    ]
 
 
 @router.post("/products/{product_id}/generate-derived")

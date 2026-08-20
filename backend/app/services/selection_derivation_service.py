@@ -25,10 +25,11 @@ from app.services.ai_model_service import (
     extract_json_object,
     get_model_config,
 )
-from app.services.product_family_service import active_dimensions, save_dimension_reports, weights_for_prompt
+from app.services.product_family_service import active_dimensions, save_dimension_reports
 from app.services.execution_log_service import create_task, elapsed_ms, finish_task, start_timer
 from app.services.system_settings_service import get_setting_int
 from app.services.prompt_constant_service import prompt_constants_block
+from app.services.restriction_weight_service import DEFAULT_RESTRICTION_WEIGHTS, restriction_weights_for_product, restriction_weights_prompt
 
 
 PROMPT_CODE = "fastmoss_jp_derivation_v1"
@@ -234,7 +235,18 @@ def normalize_plain_text_items(answer: str, product_ids: set[int], dimensions: l
 
 def build_derivation_prompt(db: Session, products: list[FmProduct], prompt_template: AiPromptTemplate, derivative_count: int) -> str:
     current_product = products[0] if products else None
-    weight_info = weights_for_prompt(db, current_product.family_id if current_product else None)
+    if current_product:
+        weight_values, match_info = restriction_weights_for_product(
+            db,
+            title=current_product.title,
+            category=current_product.category,
+            region=current_product.region,
+        )
+        weight_info = {name: f"{value:.2f}%" for name, value in weight_values.items()}
+        restriction_weight_note = restriction_weights_prompt(weight_values, match_info)
+    else:
+        weight_info = {name: f"{value:.2f}%" for name, value in DEFAULT_RESTRICTION_WEIGHTS.items()}
+        restriction_weight_note = restriction_weights_prompt(DEFAULT_RESTRICTION_WEIGHTS, {"matched": False})
     prompt_content = prompt_template.prompt_content.replace(
         "[维度权重信息]",
         format_weight_prompt(weight_info),
@@ -243,6 +255,7 @@ def build_derivation_prompt(db: Session, products: list[FmProduct], prompt_templ
     constants = prompt_constants_block(db)
     if constants:
         prompt_content = f"{prompt_content}\n\n{constants}"
+    prompt_content = f"{prompt_content}\n{restriction_weight_note}"
     return (
         f"{prompt_content}\n\n"
         "请不要输出 JSON、Markdown、代码块或额外解释，只按以下纯文本格式输出。"
